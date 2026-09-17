@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-17T20:33:32.512",
+    "gpu": "",
+    "backend": "cpu",
+    "nthreads": 16,
+    "nsys_grid": [
+      1
+    ],
+    "ninsert_grid": [
+      10000,
+      100000
+    ],
+    "bench_seconds": 10,
+    "bench_samples": 5,
+    "kernel_chunk": 65536
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "ninsert": 10000,
+      "backend": "cpu",
+      "times_s": [
+        0.812618754,
+        0.712540825,
+        0.764187281,
+        0.727898554,
+        0.747602785
+      ]
+    },
+    {
+      "nsys": 1,
+      "ninsert": 100000,
+      "backend": "cpu",
+      "times_s": [
+        6.106266644000001,
+        6.057097112
+      ]
+    }
+  ],
+  "kernel_only_s": [
+    {
+      "nsys": 1,
+      "chunk": 65536,
+      "backend": "cpu",
+      "times_s": [
+        3.911595333,
+        3.9427233630000003,
+        4.0287825260000005
+      ]
+    },
+    {
+      "nsys": 64,
+      "chunk": 65536,
+      "backend": "cpu",
+      "times_s": [
+        4.258348412,
+        4.164635738,
+        4.292938951
+      ]
+    }
+  ]
+}

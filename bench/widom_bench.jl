@@ -1,9 +1,9 @@
 # Widom insertion throughput, wall time only (no GPU event timers).
 #
-# Grid and repeat counts are smaller on CPU than on a GPU backend: `nsys=64` batches take
-# ~9 s to assemble on this CPU and `ninsert=10^6` would run for minutes per sample, so the
-# CPU grid stays at nsys=1 with ninsert up to 10^5. The grid actually used is recorded in
-# `meta` so a JSON file is self-describing regardless of which host produced it.
+# Grid and repeat counts are smaller on CPU than on a GPU backend: assembling an `nsys=64`
+# batch is expensive enough on CPU, and `ninsert=10^6` would run for minutes per sample there,
+# that the CPU grid stays at nsys=1 with ninsert up to 10^5. The grid actually used is recorded
+# in `meta` so a JSON file is self-describing regardless of which host produced it.
 #
 # `PA_BACKEND` selects the KernelAbstractions backend: "cpu" (default), "cuda", or "rocm".
 using PureAdsorb, StaticArrays, Chairmarks, JSON, LinearAlgebra, Dates, KernelAbstractions, Statistics, Random

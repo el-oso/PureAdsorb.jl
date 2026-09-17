@@ -68,7 +68,5 @@ per `test/Project.toml`) and by the real `bench/gpu` run above. CPU-only work
 
 ## kUPS head-to-head: not present
 
-`bench/run_headtohead.sh` (the kUPS-vs-PureAdsorb driver) and any `kups_widom_timing_*.json`
-are a separate, not-yet-approved piece of work and are not in this checkout. `bench/plot_widom.jl`
-already draws a kUPS series if one of those JSON files appears here later; nothing needs to
-change to pick it up.
+No kUPS comparison numbers are present. `plot_widom.jl` picks up any additional results file
+automatically.

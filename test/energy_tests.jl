@@ -27,7 +27,7 @@ end
     kpre = [w[i] * PureAdsorb.pk(dot(ks[i], ks[i]), α, V) for i in eachindex(ks, w)]
     rng = Xoshiro(7)
     pos = A * rand(rng, SVector{3, Float64}); q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
-    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, 10.0, hpos, htype, hq, A, invA, α, ks, kpre, Sh, V)
+    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, 10.0, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
     gpos = [pos + PureAdsorb.rotate(q, s) for s in g.sites]
     mol_h = collect(1:length(hpos)); mol_g = fill(0, 3) # noidiom: hpos is a freshly built Vector, always one-based
     Ecoul = PureAdsorb.ewald_energy(A, vcat(hpos, gpos), vcat(hq, collect(g.charges)), vcat(mol_h, mol_g), α, 10.0, ks, w) -
@@ -69,7 +69,7 @@ end
     kpre = [w[i] * PureAdsorb.pk(dot(ks[i], ks[i]), α, V) for i in eachindex(ks, w)]
     rng = Xoshiro(11)
     pos = A * rand(rng, SVector{3, Float64}); q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
-    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald_cutoff, hpos, htype, hq, A, invA, α, ks, kpre, Sh, V)
+    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald_cutoff, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
     gpos = [pos + PureAdsorb.rotate(q, s) for s in g.sites]
     mol_h = collect(1:length(hpos)); mol_g = fill(0, 3) # noidiom: hpos is a freshly built Vector, always one-based
     Ecoul = PureAdsorb.ewald_energy(A, vcat(hpos, gpos), vcat(hq, collect(g.charges)), vcat(mol_h, mol_g), α, ewald_cutoff, ks, w) -

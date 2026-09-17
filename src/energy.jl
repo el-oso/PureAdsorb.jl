@@ -24,7 +24,7 @@ end
 # reads, so this runs unchanged inside a GPU kernel.
 function insertion_energy(
         pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
-        hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost, V
+        hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost
     ) where {T, N}
     rc_lj2 = cutoff * cutoff
     rc_ew2 = ewald_cutoff * ewald_cutoff

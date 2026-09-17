@@ -50,8 +50,7 @@ end
     e = insertion_energy(
         pos, quat[i], guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         view(batch.positions, a0:a1), view(batch.types, a0:a1), view(batch.charges, a0:a1),
-        A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1),
-        batch.volumes[s]
+        A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1)
     )
     ΔU[i] = e + batch.constant_offset[s]
 end

@@ -12,3 +12,10 @@
     @test length(PureAdsorb.structure_factor(ks, pos, q)) == length(ks)
     @test_throws ArgumentError PureAdsorb.ewald_energy(A, pos, q, [1, 2], 0.3, 4.0, ks, w)
 end
+
+@testitem "tail_delta rejects counts that don't match the force field's LJ types" begin
+    using OffsetArrays
+    ff = ForceField(["A", "B"], [3.0, 4.0], [0.01, 0.04]; cutoff = 12.0)
+    @test_throws DimensionMismatch PureAdsorb.tail_delta(ff, [10], [0], 1000.0)
+    @test_throws DimensionMismatch PureAdsorb.tail_delta(ff, OffsetArray([10, 0], 0:1), [0, 2], 1000.0)
+end

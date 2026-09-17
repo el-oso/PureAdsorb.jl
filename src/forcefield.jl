@@ -80,6 +80,8 @@ end
 function tail_delta(ff::ForceField{T}, counts::AbstractVector{<:Integer}, guest_counts::AbstractVector{<:Integer}, V) where {T}
     ff.tail || return zero(T)
     idxs = eachindex(counts, guest_counts)
+    length(idxs) == size(ff.sigma, 1) ||
+        throw(DimensionMismatch("counts must have one entry per LJ type ($(size(ff.sigma, 1))), got $(length(idxs))"))
     acc = zero(T)
     for (a, i) in enumerate(idxs), (b, j) in enumerate(idxs)
         c = tail_coefficient(ff, a, b)

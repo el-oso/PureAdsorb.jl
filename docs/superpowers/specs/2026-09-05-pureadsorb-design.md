@@ -110,10 +110,12 @@ Reduction on the host or with a second kernel: per system, `⟨e^{−βΔU}⟩` 
 insertions give the same standard error and are simpler). Then
 
 ```
-μ_ex  = −kT · ln ⟨e^{−βΔU}⟩
-K_H   = ⟨e^{−βΔU}⟩ / (R T)          per unit volume; converted to mol/(kg·Pa) with the framework mass
-q_st  = ⟨ΔU e^{−βΔU}⟩ / ⟨e^{−βΔU}⟩ − kT   reported as −q_st in kJ/mol, kUPS's sign convention
+μ_ex  = −kT · ln⟨W⟩                eV
+K_H   = V⟨W⟩ / kT                  Å³/eV
+q_st  = kT − ⟨ΔU·W⟩ / ⟨W⟩          eV; kUPS's heat_of_adsorption, the negative of the isosteric heat
 ```
+
+where `W = e^{−ΔU/kT}` is the Boltzmann insertion weight.
 
 Insertions are processed in chunks (default 2^16 per launch) so the random arrays and output
 stay bounded; chunk results are accumulated on the host.
@@ -124,16 +126,18 @@ extensions mechanism (`ext/`), with `Adapt` doing the data movement.
 ### Public API
 
 ```julia
-fw   = Framework("RUBTAK.cif")                      # P1 CIF with charges
-ff   = ForceField("trappe.yaml")                    # or a Dict of σ, ε per type
-co2  = Guest("co2.yaml")
-batch = FrameworkBatch([replicate(fw, (3,3,3))]; ff, guest = co2, ewald = (cutoff = 12.0, precision = 1e-6))
-res  = widom(batch, co2, ff; T = 298.15, ninsert = 1_000_000, backend = CUDABackend(), seed = 42)
-res[1].K_H, res[1].μ_ex, res[1].q_st, res[1].K_H_err
+fw    = read_cif("RUBTAK.cif")                       # P1 CIF with partial charges
+ff    = read_forcefield("trappe.yaml")
+co2   = read_guest("co2.yaml", ff)
+batch = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, co2, EwaldParams(cutoff = 12.0, precision = 1e-6))
+res   = widom(batch, co2; T = 298.15, ninsert = 1_000_000, seed = 42)
+# res   = widom(batch, co2; T = 298.15, ninsert = 1_000_000, seed = 42, backend = CUDABackend())
+res[1].K_H, res[1].mu_ex, res[1].q_st, res[1].K_H_err
 ```
 
-Input files use the same YAML shapes as kUPS's examples so the two codes run from identical
-inputs. YAML parsing through `YAML.jl`.
+The batch owns σ/ε/cutoff (from `ff`) and the Ewald tables (from `ewald`), so `widom` takes
+only the batch and the guest. Input files use the same YAML shapes as kUPS's examples so the
+two codes run from identical inputs. YAML parsing through `YAML.jl`.
 
 ## Data flow
 
@@ -201,7 +205,6 @@ TestItems.jl + TestItemRunner.jl. `max_workers` always passed. Items:
 PureAdsorb.jl/
   Project.toml            deps: KernelAbstractions, Adapt, YAML, SpecialFunctions (erfc), Random
   src/PureAdsorb.jl       structure.jl batch.jl energy.jl ewald.jl widom.jl io.jl
-  ext/                    PureAdsorbCUDAExt.jl, PureAdsorbAMDGPUExt.jl
   test/                   Project.toml, runtests.jl, *_tests.jl, reference/
   bench/                  Project.toml, widom_bench.jl, run_kups.sh, plot_widom.jl, results/, audit.jl
   docs/                   DocumenterVitepress

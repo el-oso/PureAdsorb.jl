@@ -7,16 +7,22 @@ struct ForceField{T}
 end
 
 function ForceField(names::AbstractVector{<:AbstractString}, σ::AbstractVector, ε::AbstractVector; cutoff, tail = true)
-    axes(names, 1) == axes(σ, 1) == axes(ε, 1) || throw(DimensionMismatch("names, σ and ε must share axes: $(axes(names)) $(axes(σ)) $(axes(ε))"))
     T = float(promote_type(eltype(σ), eltype(ε), typeof(cutoff)))
-    n = length(names)
+    idxs = eachindex(names, σ, ε)
+    n = length(idxs)
     S = Matrix{T}(undef, n, n)
     E = Matrix{T}(undef, n, n)
-    for (a, i) in enumerate(eachindex(σ)), (b, j) in enumerate(eachindex(σ))
+    for (a, i) in enumerate(idxs), (b, j) in enumerate(idxs)
         S[a, b] = (σ[i] + σ[j]) / 2
         E[a, b] = sqrt(ε[i] * ε[j])
     end
-    return ForceField{T}(collect(String, names), S, E, T(cutoff), tail)
+    # A comprehension over `idxs` would inherit its (possibly offset) axes; `names` and the
+    # sigma/epsilon tables must land in the same 1-based positions that `typeindex` searches.
+    table = Vector{String}(undef, n)
+    for (a, i) in enumerate(idxs)
+        table[a] = String(names[i])
+    end
+    return ForceField{T}(table, S, E, T(cutoff), tail)
 end
 
 function typeindex(ff::ForceField, name::AbstractString)
@@ -73,10 +79,9 @@ end
 # species is added to a system holding `counts` particles per species.
 function tail_delta(ff::ForceField{T}, counts::AbstractVector{<:Integer}, guest_counts::AbstractVector{<:Integer}, V) where {T}
     ff.tail || return zero(T)
-    n = length(ff.names)
-    length(counts) == length(guest_counts) == n || throw(DimensionMismatch("counts must have one entry per LJ type ($n)"))
+    idxs = eachindex(counts, guest_counts)
     acc = zero(T)
-    for (a, i) in enumerate(eachindex(counts)), (b, j) in enumerate(eachindex(counts))
+    for (a, i) in enumerate(idxs), (b, j) in enumerate(idxs)
         c = tail_coefficient(ff, a, b)
         acc += 2 * counts[i] * guest_counts[j] * c + guest_counts[i] * guest_counts[j] * c
     end

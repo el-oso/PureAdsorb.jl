@@ -1,3 +1,10 @@
+"""
+    ForceField{T}
+
+Lennard-Jones parameters for a set of atom types: `names` indexes into the `sigma` (Å) and
+`epsilon` (eV) pairwise tables, `cutoff` (Å) truncates the LJ sum, and `tail` selects whether
+an analytic long-range tail correction is applied.
+"""
 struct ForceField{T}
     names::Vector{String}
     sigma::Matrix{T}
@@ -6,6 +13,12 @@ struct ForceField{T}
     tail::Bool
 end
 
+"""
+    ForceField(names, σ, ε; cutoff, tail = true) -> ForceField
+
+Build per-pair `sigma`/`epsilon` tables from per-type LJ parameters (Å, eV) using
+Lorentz-Berthelot combining rules: `σ_ij = (σ_i + σ_j)/2`, `ε_ij = √(ε_i ε_j)`.
+"""
 function ForceField(names::AbstractVector{<:AbstractString}, σ::AbstractVector, ε::AbstractVector; cutoff, tail = true)
     T = float(promote_type(eltype(σ), eltype(ε), typeof(cutoff)))
     idxs = eachindex(names, σ, ε)
@@ -31,7 +44,13 @@ function typeindex(ff::ForceField, name::AbstractString)
     return i
 end
 
-# kUPS parameter files list [σ, ε] per type name; a missing σ defaults to 1 and a missing ε to 0.
+"""
+    read_forcefield(path; T = Float64) -> ForceField{T}
+
+Read a kUPS-style YAML force field file: `parameters` lists `[σ, ε]` (Å, eV) per type name
+(a missing σ defaults to 1, a missing ε to 0), `cutoff` (Å) is required, and `tail_correction`
+defaults to `true`.
+"""
 function read_forcefield(path::AbstractString; T = Float64)
     d = YAML.load_file(path)
     params = d["parameters"]
@@ -46,6 +65,14 @@ end
 parse_number(::Type{T}, x::AbstractString) where {T} = parse(T, replace(x, "_" => ""))
 parse_number(::Type{T}, x) where {T} = T(x)
 
+"""
+    Guest{T, N}
+
+A rigid guest molecule with `N` sites: `sites` gives each site's position (Å) relative to the
+molecule's reference frame, `types` indexes the force field's LJ types, `charges` are partial
+charges (e), and `tc`/`pc`/`omega` are the critical temperature (K), critical pressure (Pa) and
+acentric factor.
+"""
 struct Guest{T, N}
     sites::SVector{N, SVector{3, T}}
     types::SVector{N, Int}
@@ -55,6 +82,12 @@ struct Guest{T, N}
     omega::T
 end
 
+"""
+    read_guest(path, ff::ForceField; T = Float64) -> Guest{T}
+
+Read a kUPS-style YAML guest file: site `positions` (Å), `symbols` (looked up in `ff`),
+`charges` (e), `critical_temperature` (K), `critical_pressure` (Pa) and `acentric_factor`.
+"""
 function read_guest(path::AbstractString, ff::ForceField; T = Float64)
     d = YAML.load_file(path)
     N = length(d["positions"])

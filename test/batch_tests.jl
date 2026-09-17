@@ -1,4 +1,5 @@
 @testitem "batch layout and offsets" begin
+    using LinearAlgebra
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
@@ -9,6 +10,14 @@
     @test length(b.ks) == 2 * (b.k_offsets[2] - b.k_offsets[1])
     @test b.constant_offset[1] == b.constant_offset[2]
     @test b.types[1] == PureAdsorb.typeindex(ff, "Zr_")
+    @test b.ewald_cutoff == 12.0
+    i = 1
+    k = b.ks[i]
+    # `kvectors` weights n1 == 0 by 1 and n1 > 0 by 2; n1 is k's component along the first
+    # reciprocal lattice vector, recovered by solving k = B * (n1, n2, n3).
+    n1 = round(Int, (PureAdsorb.reciprocal_basis(b.cells[1]) \ k)[1])
+    w = iszero(n1) ? 1.0 : 2.0
+    @test b.kprefactor[i] ≈ w * PureAdsorb.pk(dot(k, k), b.alphas[1], b.volumes[1])
 end
 
 @testitem "batch rejects a cell too small for the cutoff" begin

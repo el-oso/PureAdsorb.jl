@@ -1,3 +1,16 @@
+"""
+    WidomResult{T}
+
+Per-system result of Widom test-particle insertion, with `W = exp(-ΔU/kT)` the Boltzmann
+insertion weight:
+
+- `mu_ex` (eV): excess chemical potential, `-kT·ln⟨W⟩`.
+- `K_H` (Å³/eV): Henry's constant, `V⟨W⟩/kT`.
+- `q_st` (eV): `kT - ⟨ΔU·W⟩/⟨W⟩`, kUPS's `heat_of_adsorption` (the negative of the isosteric
+  heat of adsorption).
+- `mu_ex_err`, `K_H_err`, `q_st_err`: standard errors of the above, from block statistics.
+- `nsamples`: total insertions used; `nblocks`: number of blocks the standard errors are from.
+"""
 struct WidomResult{T}
     mu_ex::T
     mu_ex_err::T
@@ -9,12 +22,8 @@ struct WidomResult{T}
     nblocks::Int
 end
 
-# A backend must be loaded (its package `using`d) before a kernel can dispatch on it;
-# CPU is always available, every other backend type overrides this to true once loaded.
-backend_loaded(::KernelAbstractions.Backend) = false
-backend_loaded(::CPU) = true
-
-# Insertions are dealt round-robin over systems so every chunk samples each system equally.
+# Insertions are dealt round-robin within each chunk; per-system counts across a chunk differ
+# by at most one.
 function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, nsys)
     for i in eachindex(sys_of, rpos, quat)
         sys_of[i] = Int32(mod1(i, nsys))
@@ -39,23 +48,30 @@ end
     invA = batch.invcells[s]
     pos = A * rpos[i]
     e = insertion_energy(
-        pos, quat[i], guest, batch.sigma, batch.epsilon, batch.cutoff,
+        pos, quat[i], guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         view(batch.positions, a0:a1), view(batch.types, a0:a1), view(batch.charges, a0:a1),
-        A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kweights, k0:k1), view(batch.Shost, k0:k1),
+        A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1),
         batch.volumes[s]
     )
     ΔU[i] = e + batch.constant_offset[s]
 end
 
-# Widom test-particle insertion: `ninsert` random poses per system give the Boltzmann-weighted
-# insertion average W = ⟨exp(-ΔU/kT)⟩, split into `nblocks` blocks for a standard-error estimate.
-# From W: excess chemical potential μ_ex = -kT log W, Henry's constant K_H = V·W/kT, and the
-# isosteric heat of adsorption q_st = kT - ⟨ΔU·exp(-ΔU/kT)⟩/W (ideal-gas limit).
+"""
+    widom(batch::FrameworkBatch, guest::Guest; T, ninsert, backend = CPU(), seed = 0,
+          chunk = 2^16, nblocks = 10) -> Vector{WidomResult}
+
+Widom test-particle insertion at temperature `T` (K): `ninsert` random poses per system give
+the Boltzmann-weighted insertion average `W = ⟨exp(-ΔU/kT)⟩`, split into `nblocks` blocks for a
+standard-error estimate, and reduced to a `WidomResult` per system in `batch`. Insertions are
+generated and evaluated in chunks of `chunk` poses per `backend` kernel launch. `seed` sets the
+random-pose generator.
+"""
 function widom(
         batch::FrameworkBatch{F}, guest::Guest{F}; T, ninsert::Integer, backend = CPU(), seed = 0,
         chunk::Integer = 2^16, nblocks::Integer = 10
     ) where {F}
-    backend_loaded(backend) || throw(ArgumentError("backend $(typeof(backend)) requested but its package is not loaded"))
+    nblocks >= 2 || throw(ArgumentError("nblocks=$nblocks: at least two blocks are needed for a standard error"))
+    chunk >= 1 || throw(ArgumentError("chunk=$chunk must be ≥ 1"))
     nsys = batch.nsys
     ninsert >= 2 * nblocks * nsys ||
         throw(ArgumentError("ninsert=$ninsert is too small: need at least 2·nblocks·nsys = $(2 * nblocks * nsys)"))
@@ -117,6 +133,8 @@ function _reduce(sW, sUW, n, kT, V)
     semW = sqrt(varW / nb)
     ratio = UW / W
     var_ratio = iszero(UW) ? zero(T) : ratio^2 * (varUW / UW^2 + varW / W^2 - 2cov / (UW * W)) / nb
+    # The first-order delta method can return a negative variance when the block covariance
+    # term dominates; the true variance is non-negative, so clamp at zero.
     return WidomResult{T}(
         -kT * log(W), kT * semW / W, V * W / kT, V * semW / kT,
         kT - ratio, sqrt(max(var_ratio, zero(T))), sum(n), nb

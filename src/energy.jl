@@ -16,39 +16,46 @@ function rotate(q::SVector{4}, v::SVector{3})
 end
 
 # Energy of inserting one guest molecule at pose (pos, q) into a fixed host: LJ against every
-# host site within cutoff, the real-space Ewald cross term (screened by erfc_dev, GPU-safe),
-# and the reciprocal cross plus guest-self terms against the host's precomputed structure
-# factor Shost. All arguments are isbits scalars, SVectors or plain array reads, so this runs
-# unchanged inside a GPU kernel.
+# host site within the LJ cutoff, the real-space Ewald cross term (screened by erfc_dev,
+# GPU-safe) against every host site within the (generally larger) Ewald cutoff, and the
+# reciprocal cross plus guest-self terms against the host's precomputed structure factor
+# Shost. `kprefactor[i]` is `w_k · pk(|k|², α, V)`, precomputed once per batch since it does
+# not depend on the insertion pose. All arguments are isbits scalars, SVectors or plain array
+# reads, so this runs unchanged inside a GPU kernel.
 function insertion_energy(
-        pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff,
-        hpos, htype, hq, A, invA, alpha, ks, weights, Shost, V
+        pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
+        hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost, V
     ) where {T, N}
-    rc2 = cutoff * cutoff
+    rc_lj2 = cutoff * cutoff
+    rc_ew2 = ewald_cutoff * ewald_cutoff
+    gpos = map(s -> pos + rotate(q, s), guest.sites)
     E_lj = zero(T); E_sr = zero(T)
     for s in 1:N
-        gp = pos + rotate(q, guest.sites[s])
+        gp = gpos[s]
         gt = guest.types[s]; gq = guest.charges[s]
         for j in eachindex(hpos, htype, hq)
             Δ = minimum_image(A, invA, gp - hpos[j])
             r2 = dot(Δ, Δ)
-            r2 < rc2 || continue
-            σ = sigma[gt, htype[j]]; ε = epsilon[gt, htype[j]]
-            x = (σ * σ / r2)^3
-            E_lj += 4 * ε * (x * x - x)
-            r = sqrt(r2)
-            E_sr += gq * hq[j] * erfc_dev(alpha * r) / r
+            (r2 < rc_lj2 || r2 < rc_ew2) || continue
+            if r2 < rc_lj2
+                σ = sigma[gt, htype[j]]; ε = epsilon[gt, htype[j]]
+                x = (σ * σ / r2)^3
+                E_lj += 4 * ε * (x * x - x)
+            end
+            if r2 < rc_ew2
+                r = sqrt(r2)
+                E_sr += gq * hq[j] * erfc_dev(alpha * r) / r
+            end
         end
     end
     E_lr = zero(T)
-    for i in eachindex(ks, weights, Shost)
+    for i in eachindex(ks, kprefactor, Shost)
         k = ks[i]
         Sg = zero(Complex{T})
         for s in 1:N
-            gp = pos + rotate(q, guest.sites[s])
-            Sg += guest.charges[s] * cis(dot(k, gp))
+            Sg += guest.charges[s] * cis(dot(k, gpos[s]))
         end
-        E_lr += weights[i] * pk(dot(k, k), alpha, V) * (2 * real(conj(Shost[i]) * Sg) + abs2(Sg))
+        E_lr += kprefactor[i] * (2 * real(conj(Shost[i]) * Sg) + abs2(Sg))
     end
-    return E_lj + KE * (E_sr + E_lr)
+    return E_lj + T(KE) * (E_sr + E_lr)
 end

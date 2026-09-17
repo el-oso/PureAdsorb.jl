@@ -1,7 +1,12 @@
-# Structure-of-arrays layout for a set of independent framework systems, so a single GPU
-# kernel launch can evaluate an insertion in every system at once. Per-system slices are
-# `atom_offsets[n]+1:atom_offsets[n+1]` into positions/types/charges and
-# `k_offsets[n]+1:k_offsets[n+1]` into ks/kweights/Shost.
+"""
+    FrameworkBatch{T}
+
+Structure-of-arrays layout for a set of independent framework systems, so a single GPU kernel
+launch can evaluate an insertion in every system at once. Per-system slices are
+`atom_offsets[n]+1:atom_offsets[n+1]` into positions/types/charges and
+`k_offsets[n]+1:k_offsets[n+1]` into ks/kprefactor/Shost. `cutoff` (Å) truncates the LJ sum and
+`ewald_cutoff` (Å) truncates the real- and reciprocal-space Ewald sums; they may differ.
+"""
 struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
     positions::VP
     types::VI
@@ -12,21 +17,30 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
     volumes::VT
     alphas::VT
     ks::VK
-    kweights::VT
+    kprefactor::VT
     Shost::VS
     k_offsets::VI
     constant_offset::VT
     sigma::MT
     epsilon::MT
     cutoff::T
+    ewald_cutoff::T
     nsys::Int
 end
 Adapt.@adapt_structure FrameworkBatch
 
-# `constant_offset[n]` collects every pose-independent term of inserting `guest` into system
-# `n`: the tail-correction change, the guest self-energy, its intramolecular exclusion (using
-# the same erfc_dev convention as `ewald_energy`'s E_excl, since the guest is rigid this is
-# pose-independent), and the net-charge correction from adding the guest's total charge.
+"""
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams) -> FrameworkBatch
+
+Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
+parameters across all of them. Each framework must already be replicated large enough that its
+minimum image exceeds `2 * max(ff.cutoff, ewald.cutoff)`.
+
+`constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
+the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
+erfc_dev convention as `ewald_energy`'s E_excl, since the guest is rigid this is
+pose-independent), and the net-charge correction from adding the guest's total charge.
+"""
 function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T}, ewald::EwaldParams{T}) where {T}
     rc = max(ff.cutoff, ewald.cutoff)
     positions = SVector{3, T}[]
@@ -38,7 +52,7 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     volumes = T[]
     alphas = T[]
     ks = SVector{3, T}[]
-    kweights = T[]
+    kprefactor = T[]
     Shost = Complex{T}[]
     k_offsets = Int32[0]
     constant_offset = T[]
@@ -50,6 +64,8 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
         m = min_multiplicity(fw.cell, rc)
         m == (1, 1, 1) || throw(ArgumentError("framework $n is too small for cutoff $rc; replicate it by $m first"))
         pos = cartesian(fw)
+        # kUPS UFF-style LJ type names carry a trailing underscore (e.g. "Zr_"); CIF element
+        # symbols don't, so the lookup appends it.
         ty = Int32[typeindex(ff, s * "_") for s in fw.symbols]
         append!(positions, pos)
         append!(types, ty)
@@ -65,7 +81,7 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
         if !neutral_guest
             kv, w = kvectors(A, kmax)
             append!(ks, kv)
-            append!(kweights, w)
+            append!(kprefactor, w[i] * pk(dot(kv[i], kv[i]), α, V) for i in eachindex(kv, w))
             append!(Shost, structure_factor(kv, pos, fw.charges))
         end
         push!(k_offsets, Int32(length(ks)))
@@ -84,6 +100,6 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     end
     return FrameworkBatch(
         positions, types, charges, atom_offsets, cells, invcells, volumes, alphas,
-        ks, kweights, Shost, k_offsets, constant_offset, ff.sigma, ff.epsilon, ff.cutoff, length(fws)
+        ks, kprefactor, Shost, k_offsets, constant_offset, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff, length(fws)
     )
 end

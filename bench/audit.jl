@@ -19,19 +19,16 @@ const MODE = get(ENV, "STRICT_MODE", "fast") == "full" ? :full : :fast
 signature_findings(f, types; guarantees) = MODE === :full ?
     StrictModeTest.proof_findings(f, types; guarantees) : StrictMode.findings(f, types; guarantees)
 
-const G = PureAdsorb.Guest{Float64, 3}
-const V3 = Vector{SVector{3, Float64}}
+insertion_energy_types(::Type{T}) where {T} = (
+    SVector{3, T}, SVector{4, T}, PureAdsorb.Guest{T, 3}, Matrix{T}, Matrix{T}, T, T,
+    Vector{SVector{3, T}}, Vector{Int32}, Vector{T}, SMatrix{3, 3, T, 9}, SMatrix{3, 3, T, 9},
+    T, Vector{SVector{3, T}}, Vector{T}, Vector{Complex{T}}, T,
+)
 const M3 = SMatrix{3, 3, Float64, 9}
 
 results = vcat(
-    signature_findings(
-        PureAdsorb.insertion_energy,
-        (
-            SVector{3, Float64}, SVector{4, Float64}, G, Matrix{Float64}, Matrix{Float64}, Float64,
-            V3, Vector{Int32}, Vector{Float64}, M3, M3, Float64, V3, Vector{Float64}, Vector{ComplexF64}, Float64,
-        );
-        guarantees = (:typestable, :noalloc)
-    ),
+    signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.minimum_image, (M3, M3, SVector{3, Float64}); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.rotate, (SVector{4, Float64}, SVector{3, Float64}); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.erfc_dev, (Float64,); guarantees = (:typestable, :noalloc)),

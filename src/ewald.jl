@@ -1,7 +1,20 @@
+"""
+    EwaldParams{T}
+
+Ewald summation controls: `cutoff` (Å) for the real-space and reciprocal-space sums, and the
+requested relative `precision`, from which the splitting parameter α and the k-space cutoff
+are derived.
+"""
 struct EwaldParams{T}
     cutoff::T
     precision::T
 end
+
+"""
+    EwaldParams(; cutoff, precision = 1.0e-6) -> EwaldParams
+
+Construct with a real-space cutoff (Å) and a target relative precision (default `1e-6`).
+"""
 EwaldParams(; cutoff, precision = 1.0e-6) = EwaldParams(promote(float(cutoff), float(precision))...)
 
 # α such that erfc(α r_c) = r_c · ε/2, the kUPS selection when the real-space cutoff is fixed.
@@ -20,7 +33,10 @@ end
 
 ewald_kmax(alpha, precision) = 2 * alpha * sqrt(-log(precision / 2))
 
-pk(k2, alpha, V) = (2π / V) * exp(-k2 / (4 * alpha^2)) / k2
+function pk(k2, alpha, V)
+    T = typeof(V)
+    return 2 * T(π) / V * exp(-k2 / (4 * alpha^2)) / k2
+end
 
 # Complementary error function callable inside GPU kernels: a Chebyshev fit valid for every
 # z ≥ 0, following the construction in Numerical Recipes 3rd ed. §6.2.2. With
@@ -39,10 +55,9 @@ const _ERFC_COF = (
     -3.0494735135424696e-17,
 )
 
-# Clenshaw evaluation of the Chebyshev series above at x = ty/2, in the standard form
-# f(x) = (ty/2)·d - dd + c₀/2 (Numerical Recipes' `chebev`); halving the whole bracket
-# instead, as a naive reading of the recursion suggests, discards half of every `dd` term
-# and is wrong by ~1% at z = O(1).
+# Clenshaw evaluation of the Chebyshev series above at x = ty/2 (Numerical Recipes' `chebev`).
+# The bracket is `(ty/2)·d − dd + c₀/2`; halving the whole bracket drops half of each `dd` and
+# is wrong by ~1% at z ≈ 1.
 function _erfccheb(z)
     T = typeof(z)
     t = 2 / (2 + z)

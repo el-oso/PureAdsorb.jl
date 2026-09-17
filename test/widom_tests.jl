@@ -13,6 +13,21 @@
     @test r.nsamples == 10_000
 end
 
+@testitem "empty box in Float32 stays Float32 throughout" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0f0, 0, 0, 0, 30.0f0, 0, 0, 0, 30.0f0)
+    fw = Framework{Float32}(A, SVector{3, Float32}[], String[], String[], Float32[])
+    ff = ForceField(["X_"], Float32[3.0], Float32[0.001]; cutoff = 12.0f0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0f0, 0.0f0, 0.0f0)), SVector(1), SVector(0.0f0), 1.0f0, 1.0f0, 0.0f0)
+    b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0f0, precision = 1.0f-6))
+    r = widom(b, g; T = 300.0f0, ninsert = 10_000, seed = 1)[1]
+    kT = Float32(PureAdsorb.KB) * 300.0f0
+    for field in (:mu_ex, :mu_ex_err, :K_H, :K_H_err, :q_st, :q_st_err)
+        @test getfield(r, field) isa Float32
+    end
+    @test r.K_H ≈ 30.0f0^3 / kT
+end
+
 @testitem "a remainder-sized insertion count leaves no block empty" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
@@ -66,14 +81,14 @@ end
     @test r.K_H > 0
 end
 
-@testitem "widom rejects too few insertions and unloaded backends" begin
-    using StaticArrays, KernelAbstractions
+@testitem "widom rejects too few insertions, too few blocks, and a zero chunk" begin
+    using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
     fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
     ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0)
     g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
     b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
     @test_throws "ninsert" widom(b, g; T = 300.0, ninsert = 5, nblocks = 10)
-    struct FakeBackend <: KernelAbstractions.Backend end
-    @test_throws "not loaded" widom(b, g; T = 300.0, ninsert = 100, backend = FakeBackend())
+    @test_throws "nblocks" widom(b, g; T = 300.0, ninsert = 100, nblocks = 1)
+    @test_throws "chunk" widom(b, g; T = 300.0, ninsert = 100, chunk = 0)
 end

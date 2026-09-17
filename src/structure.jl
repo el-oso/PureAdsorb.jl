@@ -1,3 +1,9 @@
+"""
+    Framework{T}
+
+A periodic host structure: unit cell `cell` (Å, lattice vectors as columns), atom fractional
+coordinates `frac`, per-atom `labels` and element `symbols`, and partial `charges` (e).
+"""
 struct Framework{T}
     cell::SMatrix{3, 3, T, 9}
     frac::Vector{SVector{3, T}}
@@ -10,8 +16,13 @@ natoms(fw::Framework) = length(fw.frac)
 total_charge(fw::Framework) = sum(fw.charges)
 cartesian(fw::Framework) = [fw.cell * f for f in fw.frac]
 
-# Minimal CIF reader: one data block, P1 only, one atom_site loop with fractional
-# coordinates and a charge column. Anything else is rejected rather than guessed.
+"""
+    read_cif(path; T = Float64) -> Framework{T}
+
+Read a minimal CIF: one data block, space group P1 only, one `_atom_site` loop with fractional
+coordinates and an `_atom_site_charge` column (partial charges, in e, are required). Anything
+else in the file is rejected rather than guessed.
+"""
 function read_cif(path::AbstractString; T = Float64)
     lines = strip.(readlines(path))
     getval(key) = begin
@@ -46,6 +57,12 @@ function read_cif(path::AbstractString; T = Float64)
     return Framework{T}(cell, frac, labels, symbols, charges)
 end
 
+"""
+    replicate(fw::Framework, n::NTuple{3, Int}) -> Framework
+
+Build the `n[1] × n[2] × n[3]` supercell of `fw`, replicating the unit cell along each lattice
+vector and repeating labels, symbols and charges accordingly.
+"""
 function replicate(fw::Framework{T}, n::NTuple{3, Int}) where {T}
     all(>=(1), n) || throw(ArgumentError("replication factors must be ≥ 1, got $n"))
     N = prod(n)

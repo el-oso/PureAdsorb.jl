@@ -16,6 +16,8 @@ end
 @testitem "cell_matrix rejects degenerate cells" begin
     @test_throws "cell" PureAdsorb.cell_matrix(1, 1, 1, 90, 90, 180)
     @test_throws "cell" PureAdsorb.cell_matrix(1, 1, 1, 10, 10, 170)
+    @test_throws "cell" PureAdsorb.cell_matrix(0, 1, 1, 90, 90, 90)
+    @test_throws "cell" PureAdsorb.cell_matrix(-1, 1, 1, 90, 90, 90)
 end
 
 @testitem "minimum image is exact inside the cutoff" begin

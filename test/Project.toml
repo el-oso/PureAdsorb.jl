@@ -1,4 +1,5 @@
 [deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 OffsetArrays = "6fe1bfb0-de20-5000-8ca7-80f57d26f881"
 QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
@@ -9,6 +10,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [compat]
+KernelAbstractions = "0.9.42"
 LinearAlgebra = "1"
 OffsetArrays = "1.17.0"
 QuadGK = "2.11.3"

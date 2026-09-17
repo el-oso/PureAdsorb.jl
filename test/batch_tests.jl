@@ -18,6 +18,21 @@ end
     @test_throws "replicate" FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
 end
 
+@testitem "an uncharged guest builds no reciprocal-space table" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g0 = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    gq = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(1.0), 1.0, 1.0, 0.0)
+    nsys = 2
+    b0 = FrameworkBatch(fill(fw, nsys), ff, g0, EwaldParams(cutoff = 12.0))
+    bq = FrameworkBatch(fill(fw, nsys), ff, gq, EwaldParams(cutoff = 12.0))
+    @test isempty(b0.ks)
+    @test b0.k_offsets == zeros(Int32, nsys + 1)
+    @test !isempty(bq.ks)
+end
+
 @testitem "constant offset matches the pose-independent terms" begin
     using StaticArrays, LinearAlgebra
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))

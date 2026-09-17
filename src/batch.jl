@@ -45,6 +45,7 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     gcounts = [count(==(t), guest.types) for t in eachindex(ff.names)]
     α = ewald_alpha(ewald.cutoff, ewald.precision)
     kmax = ewald_kmax(α, ewald.precision)
+    neutral_guest = all(iszero, guest.charges)
     for (n, fw) in pairs(fws)
         m = min_multiplicity(fw.cell, rc)
         m == (1, 1, 1) || throw(ArgumentError("framework $n is too small for cutoff $rc; replicate it by $m first"))
@@ -60,10 +61,13 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
         push!(invcells, inv(A))
         push!(volumes, V)
         push!(alphas, α)
-        kv, w = kvectors(A, kmax)
-        append!(ks, kv)
-        append!(kweights, w)
-        append!(Shost, structure_factor(kv, pos, fw.charges))
+        # a guest without charges has no Coulomb terms, so no reciprocal-space table is built
+        if !neutral_guest
+            kv, w = kvectors(A, kmax)
+            append!(ks, kv)
+            append!(kweights, w)
+            append!(Shost, structure_factor(kv, pos, fw.charges))
+        end
         push!(k_offsets, Int32(length(ks)))
         counts = [count(==(t), ty) for t in eachindex(ff.names)]
         self = -α / sqrt(T(π)) * sum(abs2, guest.charges)

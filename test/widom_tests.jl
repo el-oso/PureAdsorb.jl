@@ -23,7 +23,7 @@ end
     g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
     b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = rc))
     Tk = 300.0; β = 1 / (PureAdsorb.KB * Tk)
-    r = widom(b, g; T = Tk, ninsert = 1_000_000, seed = 2, nblocks = 20)[1]
+    r = widom(b, g; T = Tk, ninsert = 4_000_000, seed = 2, nblocks = 20)[1]
     u(x) = 4ε * ((σ / x)^12 - (σ / x)^6)
     integral, _ = quadgk(x -> (1 - exp(-β * u(x))) * x^2, 1.0e-3, rc; rtol = 1.0e-10)
     expected = 1 - 4π * integral / L^3

@@ -21,8 +21,9 @@ function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, nsys)
         rpos[i] = rand(rng, eltype(rpos))
         u1, u2, u3 = rand(rng), rand(rng), rand(rng)
         a, b = sqrt(1 - u1), sqrt(u1)
-        # Shoemake (1992) sample built in (x, y, z, w) order, matching `rotate`'s comment block.
-        quat[i] = eltype(quat)(a * sinpi(2u2), a * cospi(2u2), b * sinpi(2u3), b * cospi(2u3))
+        # Shoemake (1992) sample mapped into (x, y, z, w) order per the comment block above
+        # `rotate`: (√(1-u₁) cos 2πu₂, √u₁ sin 2πu₃, √u₁ cos 2πu₃, √(1-u₁) sin 2πu₂).
+        quat[i] = eltype(quat)(a * cospi(2u2), b * sinpi(2u3), b * cospi(2u3), a * sinpi(2u2))
     end
     return nothing
 end
@@ -74,7 +75,9 @@ function widom(
     n = zeros(Int, nsys, nblocks)
     kern = widom_kernel!(backend)
     done = 0
-    block_len = cld(ninsert, nblocks)
+    # Floor division so the clamp below absorbs the remainder into the last block instead of
+    # leaving it with zero samples (the guard above guarantees floor(ninsert/nblocks) >= 2·nsys).
+    block_len = ninsert ÷ nblocks
     while done < ninsert
         m = min(chunk, ninsert - done)
         random_poses!(rng, view(sys_of, 1:m), view(rpos, 1:m), view(quat, 1:m), nsys)
@@ -103,6 +106,7 @@ end
 function _reduce(sW, sUW, n, kT, V)
     T = eltype(sW)
     nb = length(sW)
+    all(>(0), n) || throw(ArgumentError("block $(findfirst(iszero, n)) of $nb has zero samples"))
     mW = sW ./ n
     mUW = sUW ./ n
     W = sum(sW) / sum(n)

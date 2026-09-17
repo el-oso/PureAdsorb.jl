@@ -13,6 +13,30 @@
     @test r.nsamples == 10_000
 end
 
+@testitem "a remainder-sized insertion count leaves no block empty" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
+    r = widom(b, g; T = 300.0, ninsert = 81, nblocks = 10, seed = 4)[1]
+    @test isfinite(r.mu_ex_err) && isfinite(r.K_H_err)
+    @test r.nsamples == 81
+end
+
+@testitem "a remainder-sized insertion count leaves no block empty across systems" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b = FrameworkBatch([fw, fw], ff, g, EwaldParams(cutoff = 12.0))
+    rs = widom(b, g; T = 300.0, ninsert = 45, nblocks = 10, seed = 5)
+    @test all(r -> isfinite(r.mu_ex_err) && isfinite(r.K_H_err), rs)
+    @test sum(r -> r.nsamples, rs) == 45
+end
+
 @testitem "single LJ atom matches the radial integral" begin
     using StaticArrays, QuadGK
     L = 40.0

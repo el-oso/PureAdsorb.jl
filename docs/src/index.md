@@ -1,8 +1,5 @@
 # PureAdsorb
 
-[![CI](https://github.com/el-oso/PureAdsorb.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/el-oso/PureAdsorb.jl/actions/workflows/CI.yml)
-[![Coverage Status](https://coveralls.io/repos/github/el-oso/PureAdsorb.jl/badge.svg)](https://coveralls.io/github/el-oso/PureAdsorb.jl)
-
 PureAdsorb computes gas adsorption properties of porous crystals by batched Widom test-particle
 insertion, on CPU or GPU through KernelAbstractions.jl, in pure Julia. Given a batch of host
 frameworks, a rigid guest molecule and a Lennard-Jones + Ewald force field, it reports the

@@ -59,12 +59,12 @@ end
 erfc_dev(x) = x >= 0 ? _erfccheb(x) : 2 - _erfccheb(-x)
 
 # Half-space enumeration with kUPS's weighting: n₁ ≥ 0, and every vector with n₁ > 0 stands
-# in for its mirror image with weight 2. n_i = ⌈k_max L_i / 2π⌉ bounds the integer range
-# exactly for a triclinic cell (L_i are the perpendicular lengths).
+# in for its mirror image with weight 2. Since aᵢ·bⱼ = 2π δᵢⱼ, nᵢ = k·aᵢ/2π, so any k with
+# |k| ≤ kmax has |nᵢ| ≤ kmax·|aᵢ|/2π, where |aᵢ| = norm(A[:,i]) is the lattice vector's own
+# length; the shorter perpendicular length underbounds this for a triclinic cell.
 function kvectors(A::SMatrix{3, 3, T}, kmax) where {T}
     B = reciprocal_basis(A)
-    L = perpendicular_lengths(A)
-    n = ntuple(i -> ceil(Int, kmax * L[i] / (2π)), 3)
+    n = ntuple(i -> ceil(Int, kmax * norm(A[:, i]) / (2π)), 3)
     ks = SVector{3, T}[]
     w = T[]
     for n1 in 0:n[1], n2 in (-n[2]):n[2], n3 in (-n[3]):n[3]

@@ -53,6 +53,36 @@ end
     @test all(e -> isapprox(e, Es[1]; rtol = 1.0e-6), Es)
 end
 
+@testitem "kvectors bound uses lattice vector lengths" begin
+    using StaticArrays, LinearAlgebra
+    A = PureAdsorb.cell_matrix(14.7619, 14.80147, 14.76539, 59.84578, 60.04729, 59.8131)
+    α = PureAdsorb.ewald_alpha(12.0, 1.0e-6)
+    kmax = PureAdsorb.ewald_kmax(α, 1.0e-6)
+    B = PureAdsorb.reciprocal_basis(A)
+
+    lat = ntuple(i -> norm(A[:, i]), 3)
+    perp = PureAdsorb.perpendicular_lengths(A)
+    n_lat = ntuple(i -> ceil(Int, kmax * lat[i] / (2π)), 3)
+    n_perp = ntuple(i -> ceil(Int, kmax * perp[i] / (2π)), 3)
+    @test all(n_lat[i] >= n_perp[i] for i in 1:3)
+    @test any(n_lat[i] > n_perp[i] for i in 1:3)   # the perpendicular-length bound undercounts here
+
+    N = maximum(n_lat)
+    ks_brute = SVector{3, Float64}[]
+    w_brute = Float64[]
+    for n1 in 0:(2N), n2 in (-2N):(2N), n3 in (-2N):(2N)
+        (iszero(n1) && iszero(n2) && iszero(n3)) && continue
+        k = B * SVector(n1, n2, n3)
+        norm(k) <= kmax || continue
+        push!(ks_brute, k)
+        push!(w_brute, iszero(n1) ? 1.0 : 2.0)
+    end
+
+    ks, w = PureAdsorb.kvectors(A, kmax)
+    @test length(ks) == length(ks_brute)
+    @test sum(w) == sum(w_brute)
+end
+
 @testitem "intramolecular exclusion removes the pair" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)

@@ -34,34 +34,37 @@ julia --project=bench bench/plot_widom.jl
 
 ## Machines
 
-| host | GPU | backend | status |
-|---|---|---|---|
-| neuromancer | — | cpu | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
-| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | blocked — see below |
+| host | GPU | backend | AMDGPU | result |
+|---|---|---|---|---|
+| neuromancer | — | cpu | — | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | 2.8.0 | `pureadsorb_widom_galen_rocm_20260917.json` |
 
-## ROCm on galen: blocked, not run
+## Running on a GPU host: `bench/gpu`, not `bench`
 
-`bench/widom_bench.jl PA_BACKEND=rocm` does not produce a result on galen as of 2026-09-17.
-`widom_kernel!` reduces to the same generic `@kernel function` on every backend, and a minimal
-repro (`nsys=1`, an 8-lane chunk) fails identically to the full grid, so this is not
-scale-dependent:
+`bench/Project.toml` also carries `AllocCheck`/`JET`/`StrictMode`/`TrimCheck` for
+`bench/audit.jl`, and `AllocCheck` 0.2.6 (the newest release) pins `GPUCompiler` to
+`1.3.0-1.23.0`. AMDGPU 2.8.0 needs `GPUCompiler` up to `2.8.1` (resolves to `2.6.0`), so the two
+requirements cannot share one environment — `Pkg.resolve()` under `bench/` reports an empty
+intersection between `AMDGPU@2.7.0` (the newest version that fits `AllocCheck`'s constraint) and
+a tightened `AMDGPU` compat. `bench/gpu/Project.toml` is a second, minimal environment (just
+`PureAdsorb`, `StaticArrays`, `Chairmarks`, `JSON`, `KernelAbstractions`, `AMDGPU = "2.8.0"`,
+`develop`ing `PureAdsorb` from `../..`) with no audit dependencies, so it resolves AMDGPU 2.8.0
+cleanly. `widom_bench.jl` doesn't care which environment activated it — it writes to
+`bench/results/` either way — so a GPU host runs:
 
-- **Julia 1.13.0 (the juliaup default here) + AMDGPU 2.7.0**: `GPUCompiler`'s IR validator
-  (`check_ir!`, reached from `AMDGPU.Compiler.hipcompile`) reports `Reason: unsupported dynamic
-  function invocation (call to convert)` / `unsupported call to an unknown function (call to
-  jl_f_throw_methoderror)` against the compiled kernel once, but printing that diagnostic
-  segfaults on every other attempt (`typekeyvalue_hash` / `jl_inst_arg_tuple_type`, called from
-  `check_ir!` at `GPUCompiler/src/validation.jl:297`) — reproduced 4/5 runs.
-- **Julia 1.12.7 + the same `bench/Manifest.toml`**: fails a different way before reaching the
-  kernel at all — `LLVM error: Invalid attribute group entry (Producer: 'LLVM20.0.0git' Reader:
-  'LLVM 18.1.7jl')` while linking AMDGPU's bundled ROCm device-library bitcode
-  (`AMDGPU.Compiler.load_and_link!`), i.e. `ROCmDeviceLibs_jll` as resolved for AMDGPU 2.7.0 was
-  built against a newer LLVM than Julia 1.12 bundles.
+```
+julia --project=bench/gpu -e 'using Pkg; Pkg.instantiate()'
+PA_BACKEND=rocm julia --project=bench/gpu bench/widom_bench.jl
+```
 
-Both failures are in the AMDGPU.jl / GPUCompiler / ROCm toolchain, not reproducible on the CPU
-backend, and outside `bench/`'s scope to fix. Until one of the two combinations above actually
-compiles a kernel on gfx1201, add `pureadsorb_widom_galen_rocm_<date>.json` here and rerun
-`bench/plot_widom.jl` — no code change to `bench/` is needed.
+**AMDGPU 2.7.0 does not compile `widom_kernel!` on gfx1201**: `GPUCompiler`'s IR validator
+reports `unsupported dynamic function invocation (call to convert)` once and then segfaults on
+repeat attempts while re-emitting that same diagnostic (`typekeyvalue_hash` /
+`jl_inst_arg_tuple_type`, from `GPUCompiler/src/validation.jl:297`). **AMDGPU 2.8.0 compiles and
+runs it correctly** — confirmed both by `test/gpu_tests.jl`'s `:gpu`-tagged item (`GPU matches
+CPU on the same poses`, run via `Pkg.test()` from the package root, which resolves AMDGPU 2.8.0
+per `test/Project.toml`) and by the real `bench/gpu` run above. CPU-only work
+(`bench/audit.jl`, plotting) keeps using plain `bench/Project.toml`.
 
 ## kUPS head-to-head: not present
 

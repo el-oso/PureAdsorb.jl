@@ -1,8 +1,6 @@
 # bench
 
-`audit.jl` gates the type stability and allocation-freedom of `insertion_energy`,
-`minimum_image`, `rotate` and `erfc_dev` — the Widom kernel's hot path.
-
-Run it from a fresh checkout with `julia --project=bench bench/audit.jl` (fast, value-free
-scan), or `STRICT_MODE=full julia --project=bench bench/audit.jl` for the AllocCheck/JET-backed
-gate; either exits non-zero on a finding.
+`audit.jl` gates type stability and allocation-freedom on the Widom kernel's hot path
+(`insertion_energy`, `minimum_image`, `rotate`, `erfc_dev`). Run `julia --project=bench
+bench/audit.jl` (fast) or `STRICT_MODE=full julia --project=bench bench/audit.jl` (the
+AllocCheck/JET gate); both exit non-zero on a finding.

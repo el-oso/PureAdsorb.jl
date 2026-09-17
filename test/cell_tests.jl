@@ -13,6 +13,11 @@
     @test B' * A ≈ 2π * I
 end
 
+@testitem "cell_matrix rejects degenerate cells" begin
+    @test_throws "cell" PureAdsorb.cell_matrix(1, 1, 1, 90, 90, 180)
+    @test_throws "cell" PureAdsorb.cell_matrix(1, 1, 1, 10, 10, 170)
+end
+
 @testitem "minimum image is exact inside the cutoff" begin
     using StaticArrays, LinearAlgebra, Random
     A = 3 * PureAdsorb.cell_matrix(14.7619, 14.80147, 14.76539, 59.84578, 60.04729, 59.8131)

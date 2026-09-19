@@ -74,6 +74,16 @@ function widom(
     nsys = batch.nsys
     ninsert >= 2 * nblocks * nsys ||
         throw(ArgumentError("ninsert=$ninsert is too small: need at least 2·nblocks·nsys = $(2 * nblocks * nsys)"))
+    axes(batch.positions) == axes(batch.types) == axes(batch.charges) || throw(
+        DimensionMismatch(
+            "batch positions/types/charges must share axes: $(axes(batch.positions)) vs $(axes(batch.types)) vs $(axes(batch.charges))"
+        )
+    )
+    axes(batch.ks) == axes(batch.kprefactor) == axes(batch.Shost) || throw(
+        DimensionMismatch(
+            "batch ks/kprefactor/Shost must share axes: $(axes(batch.ks)) vs $(axes(batch.kprefactor)) vs $(axes(batch.Shost))"
+        )
+    )
     kT = F(KB * T)
     dbatch = adapt(backend, batch)
     rng = Xoshiro(seed)

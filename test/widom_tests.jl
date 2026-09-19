@@ -81,6 +81,21 @@ end
     @test r.K_H > 0
 end
 
+@testitem "widom rejects a batch with mismatched array axes" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
+    bad = PureAdsorb.FrameworkBatch(
+        b.positions, push!(copy(b.types), Int32(1)), b.charges, b.atom_offsets, b.cells, b.invcells,
+        b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset,
+        b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff, b.nsys
+    )
+    @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
+end
+
 @testitem "widom rejects too few insertions, too few blocks, and a zero chunk" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)

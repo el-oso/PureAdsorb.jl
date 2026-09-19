@@ -1,0 +1,16 @@
+{
+    "mu_ex": { "mean": -0.14320134, "sem": 0.00022259, "n_blocks": 500 },
+    "K_H": { "mean": 630038920.0, "sem": 5458351.80531951, "n_blocks": 500 },
+    "q_st": { "mean": 0.26231857, "sem": 0.00034286, "n_blocks": 500 },
+    "meta": {
+        "system": "RUBTAK 3x3x3 + CO2, 298.15 K, real-space cutoff 12 A, Ewald precision 1e-6, empty host (zero loading), 1,000,000 ghost insertions, seed 42",
+        "config": "bench/kups_widom_reference.yaml",
+        "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+        "jax_version": "0.10.0",
+        "precision": "float64 (jax_enable_x64 forced True in kups.application.simulations.mcmc_widom)",
+        "gpu": "NVIDIA GeForce RTX 3050 6GB",
+        "driver_version": "615.71.09",
+        "host": "neuromancer",
+        "date": "2026-09-19"
+    }
+}

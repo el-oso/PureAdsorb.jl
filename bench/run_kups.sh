@@ -2,9 +2,8 @@
 # Runs the kUPS reference Widom simulation (bench/kups_widom_reference.yaml) and logs its
 # output. This is documentation of an external measurement: PureAdsorb never calls this script,
 # and nothing here is a dependency of the package. kUPS itself is a one-off checkout with its
-# own `uv`-managed environment outside this repo (the narrow, user-approved exception to the
-# project's no-Python rule); see docs/superpowers/plans/2026-09-05-milestone-a-widom.md Task 11
-# for that approval's scope.
+# own `uv`-managed environment outside this repo, the sole approved exception to the project's
+# no-Python rule.
 #
 # Usage: KUPS=~/src/kups bench/run_kups.sh
 set -euo pipefail

@@ -6,10 +6,13 @@
 # in `meta` so a JSON file is self-describing regardless of which host produced it.
 #
 # `PA_BACKEND` selects the KernelAbstractions backend: "cpu" (default), "cuda", or "rocm".
+# `PA_PRECISION` selects the element type: "f64" (default) or "f32".
 using PureAdsorb, StaticArrays, Chairmarks, JSON, LinearAlgebra, Dates, KernelAbstractions, Statistics, Random
 BLAS.set_num_threads(1)
 
 backend_name = get(ENV, "PA_BACKEND", "cpu")
+precision_name = get(ENV, "PA_PRECISION", "f64")
+F = precision_name == "f32" ? Float32 : Float64
 if backend_name == "cuda"
     using CUDA
     backend = CUDABackend()
@@ -24,11 +27,11 @@ else
 end
 is_gpu = backend_name in ("cuda", "rocm")
 
-fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
-ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
-g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T = F)
+ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = F)
+g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = F)
 sc = replicate(fw, (3, 3, 3))
-ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+ewald = EwaldParams(cutoff = F(12), precision = F(1.0e-6))
 
 nsys_grid = is_gpu ? (1, 64) : (1,)
 ninsert_grid = is_gpu ? (10^4, 10^5, 10^6) : (10^4, 10^5)
@@ -44,10 +47,10 @@ get_batch!(nsys) = get!(() -> FrameworkBatch(fill(sc, nsys), ff, g, ewald), batc
 samples = []
 for nsys in nsys_grid
     b = get_batch!(nsys)
-    widom(b, g; T = 298.15, ninsert = 200 * nsys, backend)          # warm-up: compile
+    widom(b, g; T = F(298.15), ninsert = 200 * nsys, backend)          # warm-up: compile
     for ninsert in ninsert_grid
         nsys * 20 <= ninsert || continue
-        bm = @be widom($b, $g; T = 298.15, ninsert = $ninsert, backend = $backend) seconds = bench_seconds samples = bench_samples evals = 1
+        bm = @be widom($b, $g; T = $(F(298.15)), ninsert = $ninsert, backend = $backend) seconds = bench_seconds samples = bench_samples evals = 1
         times = [s.time for s in bm.samples]
         push!(samples, (; nsys, ninsert, backend = backend_name, times_s = times))
         println("nsys=$nsys ninsert=$ninsert median=$(median(times)) s ips=$(ninsert / median(times))")
@@ -63,9 +66,9 @@ for nsys in (1, 64)
     b = get_batch!(nsys)
     rng = Xoshiro(0)
     sys_of = Vector{Int32}(undef, kernel_chunk)
-    rpos = Vector{SVector{3, Float64}}(undef, kernel_chunk)
-    quat = Vector{SVector{4, Float64}}(undef, kernel_chunk)
-    ΔU_h = Vector{Float64}(undef, kernel_chunk)
+    rpos = Vector{SVector{3, F}}(undef, kernel_chunk)
+    quat = Vector{SVector{4, F}}(undef, kernel_chunk)
+    ΔU_h = Vector{F}(undef, kernel_chunk)
     PureAdsorb.random_poses!(rng, sys_of, rpos, quat, nsys)
     dbatch = PureAdsorb.adapt(backend, b)
     dsys = PureAdsorb.adapt(backend, sys_of)
@@ -87,12 +90,13 @@ end
 
 meta = (;
     host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
-    nthreads = Threads.nthreads(), nsys_grid = collect(nsys_grid), ninsert_grid = collect(ninsert_grid),
-    bench_seconds, bench_samples, kernel_chunk,
+    precision = precision_name, nthreads = Threads.nthreads(), nsys_grid = collect(nsys_grid),
+    ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk,
 )
 mkpath(joinpath(@__DIR__, "results"))
 outpath = joinpath(
-    @__DIR__, "results", "pureadsorb_widom_$(meta.host)_$(backend_name)_$(Dates.format(now(), "yyyymmdd")).json"
+    @__DIR__, "results",
+    "pureadsorb_widom_$(meta.host)_$(backend_name)_$(precision_name)_$(Dates.format(now(), "yyyymmdd")).json"
 )
 open(outpath, "w") do io
     JSON.print(io, (; meta, samples, kernel_only_s), 2)

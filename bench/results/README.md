@@ -34,10 +34,27 @@ julia --project=bench bench/plot_widom.jl
 
 ## Machines
 
-| host | GPU | backend | AMDGPU | result |
+| host | GPU | backend | precision | result |
 |---|---|---|---|---|
-| neuromancer | — | cpu | — | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
-| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | 2.8.0 | `pureadsorb_widom_galen_rocm_20260917.json` |
+| neuromancer | — | cpu | f64 | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_20260917.json` |
+| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260919.json` |
+| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260919.json` |
+
+The RTX 3050 sits behind a Thunderbolt eGPU enclosure on neuromancer, and neuromancer's CPU
+clock is unpinned (see the top-level protocol note): its numbers are indicative only, never
+gate-authoritative (galen and wintermute are the clock-locked, gate-authoritative hosts).
+Consumer GeForce cards throttle double-precision throughput relative to a datacenter part, which
+is why the f64/f32 gap on this card (~20x insertions/s) is far larger than the AMD Radeon AI
+PRO R9700 numbers above.
+
+## Precision
+
+`PA_PRECISION` selects the element type the benchmark builds and runs in: `f64` (`Float64`,
+default) or `f32` (`Float32`). It is recorded in each JSON's `meta.precision` and appears in the
+result filename (`pureadsorb_widom_<host>_<backend>_<precision>_<date>.json`). Files predating
+this field (`..._20260917.json` above) are all `Float64`; `plot_widom.jl` treats a missing
+`meta.precision` as `f64`.
 
 ## Running on a GPU host: `bench/gpu`, not `bench`
 
@@ -48,13 +65,15 @@ requirements cannot share one environment — `Pkg.resolve()` under `bench/` rep
 intersection between `AMDGPU@2.7.0` (the newest version that fits `AllocCheck`'s constraint) and
 a tightened `AMDGPU` compat. `bench/gpu/Project.toml` is a second, minimal environment (just
 `PureAdsorb`, `StaticArrays`, `Chairmarks`, `JSON`, `KernelAbstractions`, `AMDGPU = "2.8.0"`,
-`develop`ing `PureAdsorb` from `../..`) with no audit dependencies, so it resolves AMDGPU 2.8.0
-cleanly. `widom_bench.jl` doesn't care which environment activated it — it writes to
-`bench/results/` either way — so a GPU host runs:
+`CUDA = "6.3.1"`, `develop`ing `PureAdsorb` from `../..`) with no audit dependencies, so it
+resolves both AMDGPU 2.8.0 and CUDA 6.3.1 cleanly in one environment. `widom_bench.jl` doesn't
+care which environment activated it — it writes to `bench/results/` either way — so a GPU host
+runs:
 
 ```
 julia --project=bench/gpu -e 'using Pkg; Pkg.instantiate()'
 PA_BACKEND=rocm julia --project=bench/gpu bench/widom_bench.jl
+PA_BACKEND=cuda julia --project=bench/gpu bench/widom_bench.jl
 ```
 
 **AMDGPU 2.7.0 does not compile `widom_kernel!` on gfx1201**: `GPUCompiler`'s IR validator
@@ -65,6 +84,14 @@ runs it correctly** — confirmed both by `test/gpu_tests.jl`'s `:gpu`-tagged it
 CPU on the same poses`, run via `Pkg.test()` from the package root, which resolves AMDGPU 2.8.0
 per `test/Project.toml`) and by the real `bench/gpu` run above. CPU-only work
 (`bench/audit.jl`, plotting) keeps using plain `bench/Project.toml`.
+
+`insertion_energy`'s host-side loops use single-array `eachindex`, not the multi-array form:
+`eachindex(hpos, htype, hq)` and `eachindex(ks, kprefactor, Shost)` additionally check that every
+array shares the same indices, and the mismatch branch builds an error string that GPUCompiler
+cannot compile, so `widom_kernel!` failed to compile for CUDA (`InvalidIRError`) while the same
+call happened to survive on the ROCm backend. `hpos`/`htype`/`hq` and `ks`/`kprefactor`/`Shost`
+are index-matched by construction (slices of the same `FrameworkBatch` arrays), so the
+single-array form is exact, not an approximation.
 
 ## kUPS head-to-head: not present
 

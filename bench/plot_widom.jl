@@ -10,7 +10,9 @@ isempty(paths) && error("no *.json files in $resultsdir to plot")
 records = NamedTuple[]
 for p in paths
     d = JSON.parsefile(p)
-    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])"
+    # Older result files predate PA_PRECISION and are all Float64.
+    precision = get(d["meta"], "precision", "f64")
+    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$precision"
     for s in d["samples"], t in s["times_s"]
         push!(records, (; nsys = s["nsys"], ninsert = s["ninsert"], label, ips = s["ninsert"] / t))
     end

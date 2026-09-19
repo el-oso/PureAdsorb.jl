@@ -33,7 +33,10 @@ function insertion_energy(
     for s in 1:N
         gp = gpos[s]
         gt = guest.types[s]; gq = guest.charges[s]
-        for j in eachindex(hpos, htype, hq)
+        # `hpos`, `htype` and `hq` are always index-matched slices of the same
+        # `FrameworkBatch` arrays: a multi-array `eachindex` would additionally check that here,
+        # but its mismatch branch builds an error string, which GPUCompiler cannot compile.
+        for j in eachindex(hpos)
             Δ = minimum_image(A, invA, gp - hpos[j])
             r2 = dot(Δ, Δ)
             (r2 < rc_lj2 || r2 < rc_ew2) || continue
@@ -49,7 +52,8 @@ function insertion_energy(
         end
     end
     E_lr = zero(T)
-    for i in eachindex(ks, kprefactor, Shost)
+    # Same reasoning as above: `ks`, `kprefactor` and `Shost` are index-matched by construction.
+    for i in eachindex(ks)
         k = ks[i]
         Sg = zero(Complex{T})
         for s in 1:N

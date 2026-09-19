@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "gpu": "NVIDIA GeForce RTX 3050",
+    "backend": "cuda",
+    "precision": "f64",
+    "julia": "1.13.0",
+    "date": "2026-09-19T23:48:47+02:00",
+    "description": "Whole-process wall time (date +%s.%N around the julia invocation) of PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID=1:10000 PA_REPS=1 julia --project=bench/gpu bench/widom_bench.jl: Julia startup, package load, kernel compile, and one warm Chairmarks sample, stated the same way as kUPS's whole-process wall time for a fair fixed-cost comparison."
+  },
+  "times_s": [
+    13.439393529,
+    13.197935910,
+    13.254081234
+  ]
+}

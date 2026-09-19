@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-19T15:31:39.504",
+    "gpu": "NVIDIA GeForce RTX 3050",
+    "backend": "cuda",
+    "precision": "f64",
+    "nthreads": 16,
+    "nsys_grid": [
+      1
+    ],
+    "ninsert_grid": [
+      100000
+    ],
+    "bench_seconds": 300,
+    "bench_samples": 5,
+    "kernel_chunk": 65536
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "ninsert": 100000,
+      "backend": "cuda",
+      "times_s": [
+        3.174089905,
+        3.174089328,
+        3.175016487,
+        3.201167104,
+        3.1732299520000002
+      ]
+    }
+  ],
+  "kernel_only_s": []
+}

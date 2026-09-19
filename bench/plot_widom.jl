@@ -1,20 +1,55 @@
 # Draws bench/results/widom_throughput.png from every bench/results/*.json — no benchmark
 # runs here. Regenerate after adding a new results file with:
 #   julia --project=bench bench/plot_widom.jl
-using CairoMakie, JSON
+#
+# kUPS's times_s are whole-process wall time (Python/JAX startup, compilation, and the timed
+# insertions); PureAdsorb's are Chairmarks samples, warm in-process. Plotting ninsert/t for both
+# would put a per-process cost and a per-call one on the same axis, so the kUPS series instead
+# uses its marginal rate: for each nsys, fit t = intercept + ninsert/rate by ordinary least
+# squares over that nsys's median times across the ninsert grid, then plot
+# ninsert/(t - intercept) per sample. PureAdsorb's series stays ninsert/t, labeled
+# "warm in-process".
+using CairoMakie, JSON, Statistics
 
 resultsdir = joinpath(@__DIR__, "results")
 paths = filter(p -> endswith(p, ".json"), readdir(resultsdir; join = true))
 isempty(paths) && error("no *.json files in $resultsdir to plot")
+# Files without a "samples" array (e.g. pureadsorb_widom_processcost_*.json, a single
+# whole-process wall-time measurement reported only in bench/results/README.md) carry no
+# throughput series to plot.
+filter!(p -> haskey(JSON.parsefile(p), "samples"), paths)
+
+# Least-squares intercept of t = a + b*ninsert; the caller only needs `a`, since `ninsert - 0`
+# needs no slope.
+function ols_intercept(ninsert::AbstractVector, t::AbstractVector)
+    length(ninsert) >= 2 || return zero(float(first(t)))
+    xm, ym = mean(ninsert), mean(t)
+    slope = sum((ninsert .- xm) .* (t .- ym)) / sum(abs2, ninsert .- xm)
+    return ym - slope * xm
+end
 
 records = NamedTuple[]
 for p in paths
     d = JSON.parsefile(p)
     # Older result files predate PA_PRECISION and are all Float64.
     precision = get(d["meta"], "precision", "f64")
-    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$precision"
-    for s in d["samples"], t in s["times_s"]
-        push!(records, (; nsys = s["nsys"], ninsert = s["ninsert"], label, ips = s["ninsert"] / t))
+    is_kups = d["meta"]["backend"] == "kups-jax"
+    backend_label = is_kups ? "kUPS (JAX), marginal" : "$(d["meta"]["backend"]), warm in-process"
+    label = "$(d["meta"]["host"])/$(backend_label)/$precision"
+    samples = d["samples"]
+    for nsys in unique(s["nsys"] for s in samples)
+        sub = filter(s -> s["nsys"] == nsys, samples)
+        intercept = if is_kups
+            ols_intercept(
+                Float64[s["ninsert"] for s in sub],
+                Float64[median(Float64.(s["times_s"])) for s in sub]
+            )
+        else
+            0.0
+        end
+        for s in sub, t in s["times_s"]
+            push!(records, (; nsys, ninsert = s["ninsert"], label, ips = s["ninsert"] / (t - intercept)))
+        end
     end
 end
 

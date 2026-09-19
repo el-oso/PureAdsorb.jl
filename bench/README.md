@@ -7,3 +7,8 @@ AllocCheck/JET gate); both exit non-zero on a finding.
 
 GPU throughput benchmarking (`widom_bench.jl` with `PA_BACKEND=cuda`/`rocm`) runs from
 `bench/gpu`, not this environment; see `bench/results/README.md`.
+
+`run_kups.sh` and `run_headtohead.sh` document how the kUPS reference numbers and head-to-head
+timings in `bench/results/` were produced, from a kUPS checkout outside this repo. Neither
+script is called by PureAdsorb or by any test. The head-to-head batches at `nsys = 4`, not 64:
+see `bench/results/README.md` for why.

@@ -7,11 +7,16 @@
 #
 # `PA_BACKEND` selects the KernelAbstractions backend: "cpu" (default), "cuda", or "rocm".
 # `PA_PRECISION` selects the element type: "f64" (default) or "f32".
+# `PA_GRID` restricts the timing grid to one "nsys:ninsert" point (e.g. "64:1000000") instead
+# of the full sweep below, for a head-to-head run against a single kUPS config
+# (bench/run_headtohead.sh); `PA_REPS` then sets how many Chairmarks samples that one point
+# collects (default 5).
 using PureAdsorb, StaticArrays, Chairmarks, JSON, LinearAlgebra, Dates, KernelAbstractions, Statistics, Random
 BLAS.set_num_threads(1)
 
 backend_name = get(ENV, "PA_BACKEND", "cpu")
 precision_name = get(ENV, "PA_PRECISION", "f64")
+pa_grid = get(ENV, "PA_GRID", "")
 F = precision_name == "f32" ? Float32 : Float64
 if backend_name == "cuda"
     using CUDA
@@ -33,10 +38,19 @@ g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = F)
 sc = replicate(fw, (3, 3, 3))
 ewald = EwaldParams(cutoff = F(12), precision = F(1.0e-6))
 
-nsys_grid = is_gpu ? (1, 64) : (1,)
-ninsert_grid = is_gpu ? (10^4, 10^5, 10^6) : (10^4, 10^5)
-bench_seconds = is_gpu ? 30 : 10
-bench_samples = is_gpu ? 10 : 5
+if isempty(pa_grid)
+    nsys_grid = is_gpu ? (1, 64) : (1,)
+    ninsert_grid = is_gpu ? (10^4, 10^5, 10^6) : (10^4, 10^5)
+    bench_seconds = is_gpu ? 30 : 10
+    bench_samples = is_gpu ? 10 : 5
+    point_nsys, point_ninsert = nothing, nothing
+else
+    point_nsys, point_ninsert = parse.(Int, split(pa_grid, ":"))
+    nsys_grid = (point_nsys,)
+    ninsert_grid = (point_ninsert,)
+    bench_samples = parse(Int, get(ENV, "PA_REPS", "5"))
+    bench_seconds = 60 * bench_samples          # generous: never cut short by the time budget
+end
 kernel_chunk = 2^16
 
 # Batch assembly (Ewald k-vector tables in particular) is expensive at nsys=64, so each nsys
@@ -60,9 +74,10 @@ end
 
 # Kernel-only: one prepared chunk of poses, timing just the kernel launch and its
 # synchronization, separated from the per-chunk RNG fill and host<->device copies that
-# `widom` also pays.
+# `widom` also pays. Skipped in PA_GRID mode: a head-to-head run only needs the end-to-end
+# `widom` timing that is comparable to a kUPS invocation.
 kernel_only_s = []
-for nsys in (1, 64)
+for nsys in (isempty(pa_grid) ? (1, 64) : ())
     b = get_batch!(nsys)
     rng = Xoshiro(0)
     sys_of = Vector{Int32}(undef, kernel_chunk)
@@ -94,10 +109,17 @@ meta = (;
     ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk,
 )
 mkpath(joinpath(@__DIR__, "results"))
-outpath = joinpath(
-    @__DIR__, "results",
-    "pureadsorb_widom_$(meta.host)_$(backend_name)_$(precision_name)_$(Dates.format(now(), "yyyymmdd")).json"
-)
+outpath = if isempty(pa_grid)
+    joinpath(
+        @__DIR__, "results",
+        "pureadsorb_widom_$(meta.host)_$(backend_name)_$(precision_name)_$(Dates.format(now(), "yyyymmdd")).json"
+    )
+else
+    joinpath(
+        @__DIR__, "results",
+        "pureadsorb_widom_headtohead_$(meta.host)_$(precision_name)_nsys$(point_nsys)_ninsert$(point_ninsert)_$(Dates.format(now(), "yyyymmdd")).json"
+    )
+end
 open(outpath, "w") do io
     JSON.print(io, (; meta, samples, kernel_only_s), 2)
 end

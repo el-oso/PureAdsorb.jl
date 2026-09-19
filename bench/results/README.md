@@ -23,8 +23,9 @@ for minutes per sample there:
 The kernel-only measurement always uses `nsys ∈ (1, 64)` with `chunk = 2^16`. The grid actually
 used, the host, the GPU name (when applicable), `Threads.nthreads()`, and the benchmark's
 `seconds`/`samples` are all recorded in each JSON's `meta` block, so a file is self-describing
-regardless of which host produced it. There is no CPU governor step here — no CPU-vs-kUPS
-interleaving is run (see below), so nothing needs the `performance` governor.
+regardless of which host produced it. Plain `widom_bench.jl` runs (this section) need no CPU
+governor step; `bench/run_headtohead.sh` (below) sets one, since it interleaves kUPS and
+PureAdsorb runs on the same host.
 
 Regenerate the plot from the committed JSON, without running anything:
 
@@ -93,7 +94,108 @@ call happened to survive on the ROCm backend. `hpos`/`htype`/`hq` and `ks`/`kpre
 are index-matched by construction (slices of the same `FrameworkBatch` arrays), so the
 single-array form is exact, not an approximation.
 
-## kUPS head-to-head: not present
+## kUPS head-to-head
 
-No kUPS comparison numbers are present. `plot_widom.jl` picks up any additional results file
-automatically.
+`bench/run_headtohead.sh` runs the same RUBTAK/CO2 Widom case on both codes on the same GPU
+(RTX 3050, `neuromancer`), alternating a kUPS block with a PureAdsorb block for each
+`(nsys, ninsert)` grid point so neither code is measured entirely cold or entirely GPU-warmed
+relative to the other. Both codes run float64 (kUPS forces `jax_enable_x64`), the same cutoffs
+(LJ 12 Å, Ewald real-space 12 Å, precision 1e-6), the same total insertion count, and the same
+force field, host CIF and adsorbate files (verified byte-identical to kUPS's own examples).
+Results:
+
+| file | nsys | ninsert |
+|---|---|---|
+| `kups_widom_timing_neuromancer_f64_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
+| `pureadsorb_widom_headtohead_neuromancer_f64_nsys{1,4}_ninsert{10000,100000,1000000}_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
+| `pureadsorb_widom_processcost_neuromancer_f64_20260919.json` | 1 | 10^4 (single point, whole-process cost only) |
+
+### nsys = 64 does not run
+
+kUPS's `num_widom_per_cycle` batches insertions across its systems in parallel, so a larger
+`nsys` needs more GPU memory to build the batched state before any cycle runs. On the 6 GB RTX
+3050, `nsys ∈ {8, 16, 32, 64}` all fail during state construction with
+
+```
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate
+51.26GiB.   # nsys=64
+23.82GiB.   # nsys=32
+10.08GiB.   # nsys=16
+5.10GiB.    # nsys=8
+```
+
+(measured by hand at `ninsert=10000`; exit code 1 in every case, no cycle logged). `nsys=4`
+succeeds and is the batched point used above. PureAdsorb runs `nsys=64` without difficulty (see
+`pureadsorb_widom_neuromancer_cuda_f64_20260919.json`); the constraint is specific to kUPS's
+batched-state memory footprint on this card.
+
+### A `num_cycles=1` kUPS run exits 1, harmlessly
+
+Every kUPS invocation here uses `num_cycles=1` (one compiled `while_loop`, matching
+`bench/run_headtohead.sh`'s design note). After that cycle finishes and its HDF5 output is
+written, `kups_mcmc_widom`'s `main()` calls `analyze_widom_file` as a convenience print;
+`optimal_block_average` there needs at least 8 cycles (`min_blocks=4` needs
+`n_samples // 2 >= 4`) and raises `OverflowError: cannot convert float infinity to integer` on
+fewer, so the process always exits 1. This happens after the timed work completes and does not
+affect the measured wall time. `run_headtohead.sh` distinguishes this exact traceback signature
+from a real failure (e.g. the OOM above) and treats only this one as non-fatal; every run is
+also checked for a `1/1` completed-cycle line in its log
+(`bench/results/logs/`, not committed).
+
+kUPS prints no insertion count, and its HDF5 output is zstd-compressed (filter id 32015) with no
+zstd HDF5 plugin on this host, so `h5dump`/`h5ls` cannot decode `n_samples` either — there is no
+independent count of insertions actually performed beyond the exit-status and completed-cycle
+checks above, plus the linear time-vs-ninsert scaling below.
+
+### Marginal throughput (like-for-like)
+
+kUPS times the whole process (Python/JAX startup, compilation, and the insertions);
+PureAdsorb's `times_s` are `Chairmarks` samples, warm in-process. Comparing `ninsert/t` between
+them directly would compare a per-process cost against a per-call one, so instead: for each
+`nsys`, fit `t = intercept + ninsert/rate` by ordinary least squares over the median time at
+each `ninsert`, and compare the fitted `rate` (`plot_widom.jl` uses the same fit for the kUPS
+series it draws). PureAdsorb's own fit intercept is near zero, consistent with "warm
+in-process":
+
+| code | nsys | intercept (s) | marginal rate (insertions/s) |
+|---|---|---|---|
+| kUPS (JAX) | 1 | 16.87 | 2,281 |
+| kUPS (JAX) | 4 | 18.51 | 4,159 |
+| PureAdsorb (CUDA f64, warm in-process) | 1 | 0.092 | 31,128 |
+| PureAdsorb (CUDA f64, warm in-process) | 4 | 0.083 | 30,946 |
+
+Ratio (PureAdsorb marginal / kUPS marginal): **13.6×** at nsys=1, **7.4×** at nsys=4 (kUPS
+batches more efficiently at nsys=4; PureAdsorb was already near its per-call floor at nsys=1).
+
+### Fixed cost per process
+
+Two different things, both fairly called a "fixed cost": kUPS's regression intercept above is a
+cost every kUPS invocation pays (Python/JAX startup and XLA compilation) before any insertion
+runs. PureAdsorb's Chairmarks loop excludes that by design (warm in-process), so its own
+fixed process cost is measured separately: whole-process wall time (`date +%s.%N` around the
+`julia` invocation) of `PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID=1:10000 PA_REPS=1 julia
+--project=bench/gpu bench/widom_bench.jl` — Julia startup, package load, kernel compilation and
+one warm sample, 3 repetitions:
+`pureadsorb_widom_processcost_neuromancer_f64_20260919.json` — 13.44 s, 13.20 s, 13.25 s
+(median 13.25 s).
+
+| code | fixed cost per process (s) | what it includes |
+|---|---|---|
+| kUPS (JAX) | ≈16.9–18.5 (regression intercept) | Python/JAX startup, XLA compilation |
+| PureAdsorb (CUDA) | ≈13.2–13.4 (whole-process wall time) | Julia startup, package load, kernel compile |
+
+### Caveats
+
+- Single card, Thunderbolt eGPU enclosure (see the Machines section above), neuromancer's CPU
+  clock unpinned.
+- Float64 on a GeForce card: double-precision throughput is throttled relative to a datacenter
+  part (see the Precision/Machines notes above); this affects both codes equally since both run
+  float64 here.
+- kUPS forces float64 (`jax_enable_x64=True`) and was not run in float32 for this comparison;
+  PureAdsorb's float32 numbers are `pureadsorb_widom_neuromancer_cuda_f32_20260919.json`.
+- `bench/run_headtohead.sh` sets the CPU governor to `performance` when writable; on this host
+  it was not (`powersave` throughout, recorded in each kUPS JSON's `meta.cpu_governor`).
+
+`plot_widom.jl` regenerates `widom_throughput.png` from the committed JSON only (no benchmark
+runs); its kUPS series is plotted as the marginal rate above (`ninsert / (t - intercept)`), not
+raw `ninsert/t`, and PureAdsorb's series is labeled "warm in-process".

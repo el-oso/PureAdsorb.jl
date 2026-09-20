@@ -27,8 +27,8 @@ insertion_energy_types(::Type{T}) where {T} = (
 const M3 = SMatrix{3, 3, Float64, 9}
 
 # Phase-0 kernel (`hardcore_kernel!`) callees not already covered by `insertion_energy`'s own
-# (`rotate`, `minimum_image`): the cell-list stencil primitives it now exercises alone, since
-# `insertion_energy` (phase 1) no longer walks a stencil.
+# (`rotate`, `minimum_image`): the cell-list stencil and per-site home-cell primitives that only
+# phase 0 uses, since `insertion_energy` (phase 1) loops linearly over the system's atoms.
 results = vcat(
     signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float32); guarantees = (:typestable, :noalloc)),
@@ -39,6 +39,8 @@ results = vcat(
     signature_findings(PureAdsorb.pair_erfc_dev, (Float32,); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.home_cell_dev, (Float64, Int32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.home_cell_dev, (Float32, Int32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.wrap_frac, (Float64,); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.wrap_frac, (Float32,); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.stencil_start_count, (Int32, Int32, Int32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.wrap_cell, (Int32, Int32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.cell_linear, (Int32, Int32, Int32, Int32, Int32); guarantees = (:typestable, :noalloc)),

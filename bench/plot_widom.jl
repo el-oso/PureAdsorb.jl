@@ -1,6 +1,8 @@
 # Draws bench/results/widom_throughput.png from every bench/results/*.json — no benchmark
 # runs here. Regenerate after adding a new results file with:
 #   julia --project=bench bench/plot_widom.jl
+# PA_PLOT_OUT overrides the output path, e.g. to write the docs copy:
+#   PA_PLOT_OUT=docs/src/assets/widom_throughput.png julia --project=bench bench/plot_widom.jl
 #
 # kUPS's times_s are whole-process wall time (Python/JAX startup, compilation, and the timed
 # insertions); PureAdsorb's are Chairmarks samples, warm in-process. Plotting ninsert/t for both
@@ -82,7 +84,7 @@ for (row, nsys) in enumerate(nsys_values)
     axislegend(ax; position = :rt, unique = true, merge = true)
 end
 
-mkpath(resultsdir)
-outpath = joinpath(resultsdir, "widom_throughput.png")
+outpath = get(ENV, "PA_PLOT_OUT", joinpath(resultsdir, "widom_throughput.png"))
+mkpath(dirname(outpath))
 save(outpath, fig)
 println("wrote $outpath")

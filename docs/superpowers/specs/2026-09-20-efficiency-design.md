@@ -31,7 +31,7 @@ times more atoms than the cutoff needs; most insertions are decided by one close
 - ☑ The neutral-guest shortcut (no reciprocal table at all) is unchanged.
 - ☑ Oracle: a test-only reference `insertion_energy_reference` keeps the full sum (all k-vectors, cross + self) and the brute-force real-space loop. The production energy agrees with it within `2·self_term_halfrange` plus 1e-12 relative, over random poses, for CO2 and for a polar three-site guest.
 - ☑ The kUPS cross-code test passes unchanged in tolerance.
-- ☐ Measured and recorded: kernel time before/after on the RTX 3050 and the R9700, both precisions; bytes per framework. R9700 row pending — the controller fills it in.
+- ☑ Measured and recorded: kernel time before/after on the RTX 3050 and the R9700, both precisions; bytes per framework.
 
   RUBTAK 3×3×3 + CO2, kernel-only time for a 65,536-insertion chunk on an RTX 3050 (`bench/gpu`,
   Julia 1.13.0):
@@ -40,6 +40,18 @@ times more atoms than the cutoff needs; most insertions are decided by one close
   |---|---|---|---|---|
   | Float32 | 190 (was 4587) | 66,120 B (was 171,648 B) | 96.4 ms | 77.2 ms |
   | Float64 | 190 (was 4587) | 119,928 B (was 330,984 B) | 2099.8 ms | 1621.9 ms |
+
+  Radeon AI PRO R9700 (ROCm, AMDGPU 2.8.0), kernel-only insertions per second with runs of 256
+  insertions per framework (`bench/widom_scaling.jl`, 262,144-insertion chunk), from
+  `bench/results/pureadsorb_widom_scaling_galen_rocm_{f32,f64}_run256_20260920.json` (c910867)
+  and `..._20260920_584b806.json`:
+
+  | Precision | Frameworks | Before (c910867) | After (584b806) |
+  |---|---|---|---|
+  | Float32 | 1 | 3.32M | 4.52M |
+  | Float32 | 32,768 | 3.22M | 4.49M |
+  | Float64 | 1 | 169k | 234k |
+  | Float64 | 32,768 | 169k | 234k |
 
 ### E2 — cell list for the real-space loop
 - ☐ Per framework, a grid in fractional coordinates of the stored cell with `n_i = max(1, floor(L_i / w))` cells along axis i (`L_i` perpendicular lengths, `w` the target width, default chosen by benchmark among 2, 3, 4, 6 Å and recorded).

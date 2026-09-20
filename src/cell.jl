@@ -49,10 +49,18 @@ stencil_reaches(L::SVector{3}, n::SVector{3, Int32}, reach) = SVector{3, Int32}(
 # 0-based cell coordinate of a fractional coordinate along one axis, wrapped into [0, 1) first:
 # `f*n` is truncated toward zero and is always < n by construction (f < 1), so clamping only
 # guards f == 1 exactly at the wrap boundary. Shared by `FrameworkBatch`'s cell sort (host,
-# `floor`-based) and `insertion_energy`'s stencil (kernel, `unsafe_trunc`-based, no throwing
-# `InexactError` branch and no negative intermediate since `f` is pre-wrapped there too).
+# `floor`-based) and the hard-core rejection kernel's per-site stencil (device,
+# `unsafe_trunc`-based, no throwing `InexactError` branch and no negative intermediate since `f`
+# is pre-wrapped there too).
 home_cell(f::T, n::Int32) where {T} = min(Int32(floor(f * n)), n - one(Int32))
 home_cell_dev(f::T, n::Int32) where {T} = min(unsafe_trunc(Int32, max(f * n, zero(T))), n - one(Int32))
+
+# Fractional coordinate wrapped into [0, 1), without a throwing branch: `floor` never raises for
+# a floating-point argument, unlike `mod` or an `Int`-truncating conversion. A guest site's
+# position can lie outside its system's stored cell (its offset from the pose's reference point
+# is added without a further minimum image), so its fractional coordinate needs this wrap before
+# `home_cell_dev`, unlike the reference point itself, which `widom` already samples in `[0,1)`.
+wrap_frac(f::T) where {T} = f - floor(f)
 
 # 0-based cell coordinate `i, j, k` of a point given its fractional coordinate (wrapped into
 # [0,1) first) in a grid of `n` cells per axis.

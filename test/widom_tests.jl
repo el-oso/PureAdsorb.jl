@@ -282,6 +282,83 @@ end
     end
 end
 
+@testsnippet PhaseZeroBrute begin
+    using StaticArrays, Random, KernelAbstractions
+
+    # Runs `hardcore_kernel!` on `nposes` random poses and compares its flags against a per-site
+    # brute-force scan over every atom (no cell list at all), in both directions. Returns
+    # (flagged-but-not-brute count, brute-but-not-flagged count): both must be zero for the
+    # kernel's per-site stencil to be a faithful (neither over- nor under-) rejection of the same
+    # rho2 table.
+    function phase0_vs_brute(b, g; nposes, seed)
+        N = length(g.sites)
+        g_compact = PureAdsorb.Guest{Float64, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
+        kT = PureAdsorb.KB * 298.15
+        rho2, reach0, ntypes = PureAdsorb.build_rejection_tables(b, g_compact, kT)
+        rng = Xoshiro(seed)
+        sys_of = Vector{Int32}(undef, nposes)
+        rpos = Vector{SVector{3, Float64}}(undef, nposes)
+        quat = Vector{SVector{4, Float64}}(undef, nposes)
+        PureAdsorb.random_poses!(rng, sys_of, rpos, quat, 1, PureAdsorb.default_run(nposes, b.nsys), b.nsys)
+        flags = zeros(UInt8, nposes)
+        backend = CPU()
+        kern0 = PureAdsorb.hardcore_kernel!(backend)
+        kern0(flags, sys_of, rpos, quat, b, g_compact, rho2, reach0, Int32(ntypes); ndrange = nposes)
+        KernelAbstractions.synchronize(backend)
+
+        n_flag_not_brute = 0
+        n_brute_not_flag = 0
+        for i in 1:nposes
+            s = sys_of[i]
+            A = b.cells[s]
+            invA = b.invcells[s]
+            pos = A * rpos[i]
+            gsites = [PureAdsorb.rotate(quat[i], sv) for sv in g.sites]
+            atoms = (b.atom_offsets[s] + 1):b.atom_offsets[s + 1]
+            base = (s - 1) * N * ntypes
+            brute = false
+            for a in 1:N, h in atoms
+                Δ = PureAdsorb.minimum_image(A, invA, (pos + gsites[a]) - b.positions[h])
+                ht = b.types[h]
+                idx = base + (a - 1) * ntypes + ht
+                if sum(abs2, Δ) < rho2[idx]
+                    brute = true
+                    break
+                end
+            end
+            kf = !iszero(flags[i])
+            kf && !brute && (n_flag_not_brute += 1)
+            brute && !kf && (n_brute_not_flag += 1)
+        end
+        return n_flag_not_brute, n_brute_not_flag
+    end
+end
+
+@testitem "phase-0 kernel flags match a per-site brute-force scan" setup = [PhaseZeroBrute] begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    n1, n2 = phase0_vs_brute(b, g; nposes = 200_000, seed = 101)
+    @test iszero(n1)
+    @test iszero(n2)
+
+    # A small cubic cell whose default cellwidth (2 Å) is smaller than the guest's r_guest
+    # (3 Å): a site's own home cell can then differ from the cells the pose's reference point's
+    # stencil would have covered.
+    L = 20.0
+    A2 = SMatrix{3, 3}(L, 0, 0, 0, L, 0, 0, 0, L)
+    fw2 = Framework{Float64}(A2, [SVector(0.5, 0.5, 0.5), SVector(0.2, 0.7, 0.3)], ["H", "H"], ["H", "H"], [1.0, -1.0])
+    ff2 = ForceField(["H_", "G_"], [3.0, 3.0], [0.01, 0.01]; cutoff = 6.0, tail = false)
+    g2 = PureAdsorb.Guest(
+        SVector(SVector(0.0, 0.0, 0.0), SVector(3.0, 0.0, 0.0)), SVector(2, 2), SVector(0.05, -0.05), 1.0, 1.0, 0.0
+    )
+    b2 = FrameworkBatch([fw2], ff2, g2, EwaldParams(cutoff = 6.0, precision = 1.0e-6))
+    n3, n4 = phase0_vs_brute(b2, g2; nposes = 200_000, seed = 202)
+    @test iszero(n3)
+    @test iszero(n4)
+end
+
 @testitem "widom rejects a guest different from the one FrameworkBatch was built with" begin
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))

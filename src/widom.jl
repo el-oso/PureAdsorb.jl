@@ -79,8 +79,13 @@ end
 # shorter reach instead of the LJ/Ewald cutoff). `rho2` is flat, `nsys × N × ntypes`
 # (`N = length(guest.sites)`), system `s`'s `(a, t)` entry at
 # `(s-1)*N*ntypes + (a-1)*ntypes + t`; `reach0[s]` is that system's stencil half-width for this
-# call's largest `rho2`. Every guest site is checked against every atom in the stencil (not just
-# one), so a single flag covers the whole pose.
+# call's largest `rho2`.
+#
+# Each guest site scans the stencil around ITS OWN home cell, not a single stencil shared by the
+# whole pose: a site's position can be far enough from the pose's reference point (a large
+# `r_guest`) that an atom within `rho_at` of the site falls outside a stencil centered on the
+# reference point's home cell instead. The site's fractional coordinate is wrapped into `[0,1)`
+# (`wrap_frac`) before finding its home cell, since it can lie outside the stored cell entirely.
 @kernel function hardcore_kernel!(flags, @Const(sys_of), @Const(rpos), @Const(quat), batch, guest, @Const(rho2), @Const(reach0), ntypes::Int32)
     i = @index(Global)
     s = sys_of[i]
@@ -97,27 +102,29 @@ end
     m = reach0[s]
     n1 = n[1]; n2 = n[2]; n3 = n[3]
     m1 = m[1]; m2 = m[2]; m3 = m[3]
-    f = invA * pos
-    h1 = home_cell_dev(f[1], n1); h2 = home_cell_dev(f[2], n2); h3 = home_cell_dev(f[3], n3)
-    start1, count1 = stencil_start_count(h1, m1, n1)
-    start2, count2 = stencil_start_count(h2, m2, n2)
-    start3, count3 = stencil_start_count(h3, m3, n3)
     flag = zero(UInt8)
     base = (s - 1) * N * ntypes
-    for t3 in zero(Int32):(count3 - one(Int32))
-        c3 = wrap_cell(start3 + t3, n3)
-        for t2 in zero(Int32):(count2 - one(Int32))
-            c2 = wrap_cell(start2 + t2, n2)
-            for t1 in zero(Int32):(count1 - one(Int32))
-                c1 = wrap_cell(start1 + t1, n1)
-                c = cell_linear(c1, c2, c3, n1, n2)
-                j0 = a0 + cell_offsets[c + 1] + 1
-                j1 = a0 + cell_offsets[c + 2]
-                for j in j0:j1
-                    Δ0 = minimum_image(A, invA, pos - batch.positions[j])
-                    ht = batch.types[j]
-                    for a in 1:N
-                        Δ = Δ0 + gsites[a]
+    for a in 1:N
+        site_pos = pos + gsites[a]
+        f = invA * site_pos
+        h1 = home_cell_dev(wrap_frac(f[1]), n1)
+        h2 = home_cell_dev(wrap_frac(f[2]), n2)
+        h3 = home_cell_dev(wrap_frac(f[3]), n3)
+        start1, count1 = stencil_start_count(h1, m1, n1)
+        start2, count2 = stencil_start_count(h2, m2, n2)
+        start3, count3 = stencil_start_count(h3, m3, n3)
+        for t3 in zero(Int32):(count3 - one(Int32))
+            c3 = wrap_cell(start3 + t3, n3)
+            for t2 in zero(Int32):(count2 - one(Int32))
+                c2 = wrap_cell(start2 + t2, n2)
+                for t1 in zero(Int32):(count1 - one(Int32))
+                    c1 = wrap_cell(start1 + t1, n1)
+                    c = cell_linear(c1, c2, c3, n1, n2)
+                    j0 = a0 + cell_offsets[c + 1] + 1
+                    j1 = a0 + cell_offsets[c + 2]
+                    for j in j0:j1
+                        Δ = minimum_image(A, invA, site_pos - batch.positions[j])
+                        ht = batch.types[j]
                         r2 = dot(Δ, Δ)
                         idx = base + (a - 1) * ntypes + ht
                         r2 < rho2[idx] && (flag = one(UInt8))

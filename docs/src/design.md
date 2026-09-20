@@ -102,13 +102,17 @@ site within `ρ_at` of any host atom of type `t` guarantees rejection is safe.
 
 **Widom kernel and statistics** (`src/widom.jl`) — each chunk runs two `@kernel function`s.
 `hardcore_kernel!` (phase 0) flags every insertion whose guest sites all stay outside the
-rejection radius of every nearby host atom, scanning the phase-0 cell list's stencil around the
-pose's home cell (reach sized from the call's largest `ρ_at`, typically 27 cells) rather than
-every atom. The host downloads the flags, builds the list of surviving insertion indices in
-order, and uploads it; `widom_kernel!` (phase 1) then computes `ΔU` for survivors only, reading
-each one's pose through the survivor index and writing back at that insertion's original
-position, so a rejected insertion's `ΔU` entry is simply never touched. A chunk with no survivors
-launches phase 1 at all. Insertion `g` of the global `1:ninsert` sequence is assigned to system
+rejection radius of every nearby host atom: each site scans the phase-0 cell list's stencil
+around ITS OWN home cell (reach sized from the call's largest `ρ_at`, typically 27 cells), not a
+single stencil shared by the whole pose — a site far enough from the pose's reference point could
+otherwise have a nearby host atom fall outside a stencil centered there instead. A site's
+fractional coordinate is wrapped into `[0,1)` before finding its home cell, since it can lie
+outside the stored cell entirely. The host downloads the flags, builds the list of surviving
+insertion indices in order, and uploads it; `widom_kernel!` (phase 1) then computes `ΔU` for
+survivors only, reading each one's pose through the survivor index and writing back at that
+insertion's original position, so a rejected insertion's `ΔU` entry is simply never touched. A
+chunk with no survivors launches phase 1 not at all. Insertion `g` of the global `1:ninsert`
+sequence is assigned to system
 `mod1((g - 1) ÷ run + 1, nsys)` (`sys_of_index`): `run` consecutive insertions share a system
 before the assignment cycles to the next one, so work-items adjacent in `g` — and so adjacent on
 the device — read the same framework's tables. Random poses (fractional position, Shoemake

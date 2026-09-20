@@ -40,12 +40,13 @@ julia --project=bench bench/plot_widom.jl
 | neuromancer | — | cpu | f64 | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_f64_20260920.json` |
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920.json` |
-| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260919.json` |
-| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260919.json` |
+| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260920.json` |
+| neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920.json` |
 
-The 2026-09-20 galen ROCm files supersede `pureadsorb_widom_galen_rocm_20260917.json` for the
-R9700 throughput tables in `docs/src/benchmarks.md`; the 2026-09-17 file stays committed but is
-not otherwise referenced.
+The 2026-09-20 galen ROCm files supersede `pureadsorb_widom_galen_rocm_20260917.json`, and the
+2026-09-20 neuromancer CUDA files supersede the 2026-09-19 CUDA files, for the throughput tables
+in `docs/src/benchmarks.md`; the superseded files stay committed but are not otherwise
+referenced (`plot_widom.jl` also keeps only the latest file per host/backend/precision).
 
 The RTX 3050 sits behind a Thunderbolt eGPU enclosure on neuromancer, and neuromancer's CPU
 clock is unpinned (see the top-level protocol note): its numbers are indicative only, never
@@ -57,10 +58,19 @@ PRO R9700 numbers above.
 ## Batch-size scaling
 
 `bench/widom_scaling.jl` measures kernel throughput against the number of frameworks in one
-batch, up to the largest batch each precision holds on the R9700 (galen, ROCm):
-`pureadsorb_widom_scaling_galen_rocm_f64_20260920.json` (up to 98,304 frameworks) and
-`pureadsorb_widom_scaling_galen_rocm_f32_20260920.json` (up to 196,608 frameworks). See
-`docs/src/benchmarks.md`, "Throughput against batch size".
+batch, up to the largest batch each precision holds on the R9700 (galen, ROCm), at two insertion
+run lengths:
+
+- Run length 256, `widom`'s own default once a framework receives at least 1024 insertions:
+  `pureadsorb_widom_scaling_galen_rocm_f64_run256_20260920.json` (up to 98,304 frameworks) and
+  `pureadsorb_widom_scaling_galen_rocm_f32_run256_20260920.json` (up to 196,608 frameworks).
+- Run length 1 (round-robin), kept as the comparison case:
+  `pureadsorb_widom_scaling_galen_rocm_f64_20260920.json` (up to 98,304 frameworks) and
+  `pureadsorb_widom_scaling_galen_rocm_f32_20260920.json` (up to 196,608 frameworks).
+
+`pureadsorb_widom_runlength_galen_rocm_20260920.json` sweeps the run length itself, at a fixed
+32,768 frameworks, for both precisions. See `docs/src/benchmarks.md`, "Throughput against batch
+size".
 
 ## Precision
 

@@ -34,53 +34,55 @@ Kernel-only (one launch of `widom_kernel!` + synchronize on a 2¹⁶-pose chunk)
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.2051 | 48,746 | 10 |
-| 1 | 100,000 | 0.7902 | 126,543 | 10 |
-| 1 | 1,000,000 | 6.1742 | 161,964 | 5 |
-| 64 | 10,000 | 0.2078 | 48,117 | 10 |
-| 64 | 100,000 | 0.7978 | 125,347 | 10 |
-| 64 | 1,000,000 | 6.2174 | 160,840 | 5 |
+| 1 | 10,000 | 0.2047 | 48,848 | 10 |
+| 1 | 100,000 | 0.7877 | 126,959 | 10 |
+| 1 | 1,000,000 | 6.164 | 162,242 | 5 |
+| 64 | 10,000 | 0.2089 | 47,869 | 10 |
+| 64 | 100,000 | 0.795 | 125,792 | 10 |
+| 64 | 1,000,000 | 6.18 | 161,804 | 5 |
 
-Kernel-only: nsys=1, 0.3926 s (166,933 ins/s); nsys=64, 0.3947 s (166,031 ins/s).
+Kernel-only (run length 256): nsys=1, 0.3917 s (167,322 ins/s); nsys=64, 0.3919 s (167,207 ins/s).
 
 ### AMD Radeon AI PRO R9700 (Float32, galen, ROCm)
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.01562 | 640,007 | 10 |
-| 1 | 100,000 | 0.05260 | 1,901,139 | 10 |
-| 1 | 1,000,000 | 0.42068 | 2,377,105 | 10 |
-| 64 | 10,000 | 0.01712 | 584,026 | 10 |
-| 64 | 100,000 | 0.07350 | 1,360,574 | 10 |
-| 64 | 1,000,000 | 0.63570 | 1,573,059 | 10 |
+| 1 | 10,000 | 0.01517 | 659,241 | 10 |
+| 1 | 100,000 | 0.05317 | 1,880,730 | 10 |
+| 1 | 1,000,000 | 0.4254 | 2,350,478 | 10 |
+| 64 | 10,000 | 0.01554 | 643,392 | 10 |
+| 64 | 100,000 | 0.05499 | 1,818,359 | 10 |
+| 64 | 1,000,000 | 0.4306 | 2,322,542 | 10 |
 
-Kernel-only: nsys=1, 0.02221 s (2,951,251 ins/s); nsys=64, 0.03701 s (1,770,550 ins/s).
+Kernel-only (run length 256): nsys=1, 0.02161 s (3,032,082 ins/s); nsys=64, 0.02231 s
+(2,937,811 ins/s).
 
 ### NVIDIA RTX 3050 (Float64, neuromancer, CUDA)
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.5335 | 18,743 | 10 |
-| 1 | 100,000 | 3.1967 | 31,282 | 10 |
-| 1 | 1,000,000 | 32.2178 | 31,039 | 1 |
-| 64 | 10,000 | 0.5424 | 18,435 | 10 |
-| 64 | 100,000 | 3.2482 | 30,786 | 10 |
-| 64 | 1,000,000 | 33.1286 | 30,185 | 1 |
+| 1 | 10,000 | 0.5275 | 18,957 | 10 |
+| 1 | 100,000 | 3.185 | 31,398 | 10 |
+| 1 | 1,000,000 | 32.48 | 30,792 | 1 |
+| 64 | 10,000 | 0.5423 | 18,441 | 10 |
+| 64 | 100,000 | 3.181 | 31,437 | 10 |
+| 64 | 1,000,000 | 32.24 | 31,021 | 1 |
 
-Kernel-only: nsys=1, 2.1309 s (30,756 ins/s); nsys=64, 2.1654 s (30,264 ins/s).
+Kernel-only (run length 256): nsys=1, 2.108 s (31,091 ins/s); nsys=64, 2.115 s (30,990 ins/s).
 
 ### NVIDIA RTX 3050 (Float32, neuromancer, CUDA)
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.02483 | 402,714 | 10 |
-| 1 | 100,000 | 0.15571 | 642,224 | 10 |
-| 1 | 1,000,000 | 1.58056 | 632,686 | 10 |
-| 64 | 10,000 | 0.06669 | 149,953 | 10 |
-| 64 | 100,000 | 0.36208 | 276,182 | 10 |
-| 64 | 1,000,000 | 3.18718 | 313,757 | 10 |
+| 1 | 10,000 | 0.03157 | 316,790 | 10 |
+| 1 | 100,000 | 0.1551 | 644,708 | 10 |
+| 1 | 1,000,000 | 1.575 | 634,888 | 10 |
+| 64 | 10,000 | 0.034 | 294,157 | 10 |
+| 64 | 100,000 | 0.1669 | 599,135 | 10 |
+| 64 | 1,000,000 | 1.651 | 605,675 | 10 |
 
-Kernel-only: nsys=1, 0.09976 s (656,932 ins/s); nsys=64, 0.18911 s (346,553 ins/s).
+Kernel-only (run length 256): nsys=1, 0.09944 s (659,081 ins/s); nsys=64, 0.1041 s
+(629,587 ins/s).
 
 Consumer GeForce cards throttle double-precision throughput relative to a datacenter part:
 the Float64/Float32 gap on the RTX 3050 (roughly 20× at nsys=1) is far larger than the
@@ -92,11 +94,64 @@ Float64-only R9700 numbers above would suggest by themselves.
 
 `bench/widom_scaling.jl` measures kernel throughput — one `widom_kernel!` launch plus
 synchronization, on a chunk of 262,144 insertions — against the number of frameworks (`nsys`)
-tiled into one batch, on the R9700 (galen, ROCm). One framework's host and Ewald tables are
-computed on the CPU and tiled onto the device; the batch stays on the device for the whole
-sweep, and each batch size runs in its own process.
+tiled into one batch, on the R9700 (galen, ROCm), at a given insertion run length. One
+framework's host and Ewald tables are computed on the CPU and tiled onto the device; the batch
+stays on the device for the whole sweep, and each batch size runs in its own process.
 
-### Float64
+`widom` assigns insertion `g` of `1:ninsert` to system `mod1((g - 1) ÷ run + 1, nsys)`: `run`
+consecutive insertions share a system before the assignment cycles to the next one, so device
+work-items adjacent in the insertion order read the same framework's tables. The default run
+length is `clamp((ninsert ÷ nsys) ÷ 4, 1, 256)`, reaching its ceiling of 256 once a system
+receives at least 1,024 insertions.
+
+### Run length 256
+
+Run length 256 is what `default_run` gives at every batch size in this sweep (`ninsert = chunk =
+262,144`, so `ninsert ÷ nsys >= 1,024` for every `nsys` tested).
+
+| frameworks | batch size (GiB) | median kernel insertions/s (Float64) |
+|---|---|---|
+| 1 | 0.0003083 | 169,292 |
+| 64 | 0.01973 | 169,203 |
+| 1,024 | 0.3157 | 169,105 |
+| 8,192 | 2.525 | 168,790 |
+| 32,768 | 10.1 | 168,792 |
+| 65,536 | 20.2 | 168,736 |
+| 98,304 | 30.3 | 168,596 |
+
+| frameworks | batch size (GiB) | median kernel insertions/s (Float32) |
+|---|---|---|
+| 1 | 0.0001599 | 3,315,371 |
+| 64 | 0.01023 | 3,299,559 |
+| 1,024 | 0.1637 | 3,211,654 |
+| 8,192 | 1.31 | 3,218,591 |
+| 32,768 | 5.238 | 3,219,615 |
+| 65,536 | 10.48 | 3,222,399 |
+| 131,072 | 20.95 | 3,223,046 |
+| 196,608 | 31.43 | 3,226,734 |
+
+Throughput under run length 256 is flat within a few percent across the whole sweep, for both
+precisions: Float64 stays within 0.4% (169,292 to 168,596 insertions/s), Float32 within 3.2%
+(3,315,371 to 3,211,654 insertions/s, with a modest recovery to 3,226,734 at the largest batch).
+
+### Run length sweep at 32,768 frameworks
+
+`pureadsorb_widom_runlength_galen_rocm_20260920.json` fixes the batch at 32,768 frameworks and
+varies the run length directly, for both precisions:
+
+| run length | insertions/s (Float64) | insertions/s (Float32) |
+|---|---|---|
+| 1 | 164,029 | 294,865 |
+| 16 | 169,213 | 3,033,118 |
+| 256 | 169,265 | 3,240,284 |
+| 4,096 | 169,185 | 3,344,249 |
+| 262,144 | 169,208 | 3,342,436 |
+
+Float64 throughput is close to its plateau already at run length 16 and does not move further
+out to a run spanning the whole chunk. Float32 keeps rising past run length 256, reaching its
+highest measured value at run length 4,096 (3,344,249 insertions/s) before leveling off.
+
+### Run length 1 (round-robin)
 
 | frameworks | batch size (GiB) | median kernel insertions/s |
 |---|---|---|
@@ -110,8 +165,6 @@ sweep, and each batch size runs in its own process.
 | 90,112 | 27.78 | 161,492 |
 | 94,208 | 29.04 | 161,301 |
 | 98,304 | 30.30 | 161,019 |
-
-### Float32
 
 | frameworks | batch size (GiB) | median kernel insertions/s |
 |---|---|---|
@@ -127,25 +180,26 @@ sweep, and each batch size runs in its own process.
 | 188,416 | 30.12 | 293,678 |
 | 196,608 | 31.43 | 293,585 |
 
-Float64 throughput changes by about 5% from 1 to 98,304 frameworks (170,210 to 161,019
-insertions/s). Float32 falls from its one-framework value to a plateau reached by about
-32,768 frameworks (295,531 insertions/s), essentially flat out to 196,608 frameworks
-(293,585 insertions/s).
+The first table is Float64, the second Float32. Every work-item reads a different framework's
+tables under round-robin, at every batch size above 1 — the opposite of run length 256, where
+adjacent work-items share a framework. Float64 throughput falls by about 5% from 1 to 98,304
+frameworks (170,210 to 161,019 insertions/s); Float32 falls much further, from its
+one-framework value to a plateau reached by about 32,768 frameworks (295,531 insertions/s),
+essentially flat out to 196,608 frameworks (293,585 insertions/s).
 
 At the plateau, `bytes_per_system` — the per-framework device bytes the kernel reads — times
 insertions/s gives an effective data rate: 330,984 B × 161,019 ins/s ≈ 53.3 GB/s (Float64, at
 98,304 frameworks) and 171,648 B × 293,585 ins/s ≈ 50.4 GB/s (Float32, at 196,608 frameworks).
-The two are close, consistent with the kernel being limited by memory traffic at large batch
-sizes; this is an inference from the throughput numbers above, not something confirmed with a
-profiler.
+The two rates are close despite the precisions differing by 2× in bytes per element; this is
+consistent with the kernel being limited by memory traffic at large batch sizes under
+round-robin assignment, an inference from the throughput numbers above, not something confirmed
+with a profiler.
 
-With one framework, every work-item reads the same host and Ewald tables. With many
-frameworks, each work-item reads a different framework's tables, assigned round-robin
-(`sys_of[i] = mod1(i, nsys)` in `random_poses!`, `src/widom.jl`). A screening run over distinct
-frameworks is the many-framework case, so it operates at the large-batch figures above, not the
-one-framework figures.
+A screening run over distinct frameworks assigns insertions close to round-robin (many systems,
+few insertions per system), so it operates near these figures rather than the run-length-256
+figures above, unless it overrides `run` to a longer value itself.
 
-No batch size in this sweep failed to allocate; 98,304 frameworks (Float64, 30.3 GiB) and
+No batch size in either sweep failed to allocate; 98,304 frameworks (Float64, 30.3 GiB) and
 196,608 frameworks (Float32, 31.4 GiB) are the largest sizes tested on this card, not a
 measured failure point.
 
@@ -240,9 +294,14 @@ PA_BACKEND=cuda PA_GRID=4:1000000 PA_REPS=5 julia --project=bench/gpu bench/wido
 # kUPS + PureAdsorb interleaved head-to-head (needs a kUPS checkout outside this repo)
 bench/run_headtohead.sh
 
-# Kernel throughput vs number of frameworks in a batch
+# Kernel throughput vs number of frameworks in a batch, round-robin (run length 1, the default
+# of widom_scaling.jl's own PA_RUN)
 PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_scaling.jl
 PA_BACKEND=rocm PA_PRECISION=f32 julia --project=bench/gpu bench/widom_scaling.jl
+
+# Same sweep at run length 256, the default widom itself uses at these batch sizes
+PA_BACKEND=rocm PA_PRECISION=f64 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
+PA_BACKEND=rocm PA_PRECISION=f32 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
 
 # Near device capacity, one process per batch size: memory freed by a smaller batch is not
 # returned to the device within the process, so the next large allocation would otherwise stall
@@ -260,5 +319,6 @@ PA_PLOT_OUT=docs/src/assets/widom_scaling.png julia --project=bench bench/plot_s
 `PA_BACKEND` selects `cpu` (default), `cuda` or `rocm`; `PA_PRECISION` selects `f64` (default)
 or `f32`; `PA_GRID` restricts a `widom_bench.jl` sweep to one `nsys:ninsert` point and `PA_REPS`
 sets its sample count; `PA_NSYS` restricts a `widom_scaling.jl` sweep to the given batch sizes
-(space-separated, increasing). No plot is ever regenerated by re-running a benchmark —
-`plot_widom.jl` and `plot_scaling.jl` only read `bench/results/*.json`.
+(space-separated, increasing); `PA_RUN` sets `widom_scaling.jl`'s insertion run length (default
+1, round-robin). No plot is ever regenerated by re-running a benchmark — `plot_widom.jl` and
+`plot_scaling.jl` only read `bench/results/*.json`.

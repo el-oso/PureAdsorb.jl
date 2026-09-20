@@ -15,14 +15,18 @@ ax = Axis(
 )
 palette = Makie.wong_colors()
 
-for (i, p) in enumerate(sort(paths))
-    d = JSON.parsefile(p)
-    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$(d["meta"]["precision"])"
-    samples = sort(d["samples"]; by = s -> s["nsys"])
-    nsys = Float64[s["nsys"] for s in samples]
-    ips = Float64[s["chunk"] / median(Float64.(s["times_s"])) for s in samples]
-    color = palette[mod1(i, length(palette))]
-    lines!(ax, nsys, ips; color, label)
+docs = [(p, JSON.parsefile(p)) for p in sort(paths)]
+precisions = sort(unique(d["meta"]["precision"] for (_, d) in docs))
+for (p, d) in docs
+    precision = d["meta"]["precision"]
+    run_length = get(d["meta"], "run_length", 1)
+    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$precision, run=$run_length"
+    points = sort(d["samples"]; by = s -> s["nsys"])
+    nsys = Float64[s["nsys"] for s in points]
+    ips = Float64[s["chunk"] / median(Float64.(s["times_s"])) for s in points]
+    color = palette[mod1(findfirst(==(precision), precisions), length(palette))]
+    linestyle = run_length == 1 ? :dash : :solid
+    lines!(ax, nsys, ips; color, label, linestyle)
     scatter!(ax, nsys, ips; color, markersize = 10)
 end
 axislegend(ax; position = :rb)

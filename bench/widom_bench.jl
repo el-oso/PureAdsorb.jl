@@ -60,6 +60,16 @@ kernel_chunk = 2^16
 batches = Dict{Int, Any}()
 get_batch!(nsys) = get!(() -> FrameworkBatch(fill(sc, nsys), ff, g, ewald; cellwidth), batches, nsys)
 
+# FrameworkBatch construction time per framework, RUBTAK 3x3x3 (one system, so this call's own
+# time already is the per-framework cost): compiled once via `get_batch!(1)`'s cache miss above
+# would confound compile time with the measurement, so this benchmarks a fresh call directly,
+# with its own warm-up.
+FrameworkBatch([sc], ff, g, ewald; cellwidth)   # warm-up: compile
+batch_bm = @be FrameworkBatch([$sc], $ff, $g, $ewald; cellwidth = $cellwidth) seconds = 10 samples = 5 evals = 1
+batch_construction_s = median([s.time for s in batch_bm.samples])
+println("FrameworkBatch construction (RUBTAK 3x3x3, 1 framework): $(batch_construction_s) s")
+flush(stdout)
+
 samples = []
 for nsys in nsys_grid
     b = get_batch!(nsys)
@@ -86,7 +96,9 @@ for nsys in (isempty(pa_grid) ? (1, 64) : ())
     N = length(g.sites)
     g_compact = PureAdsorb.Guest{F, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
     kT = F(PureAdsorb.KB * 298.15)
-    rho2, reach0, ntypes = PureAdsorb.build_rejection_tables(b, g_compact, kT)
+    rho2, reach0, ntypes = PureAdsorb.build_rejection_tables(b, g_compact, kT)   # warm-up: compile
+    rb_bm = @be PureAdsorb.build_rejection_tables($b, $g_compact, $kT) seconds = bench_seconds samples = bench_samples evals = 1
+    rejection_tables_s = median([s.time for s in rb_bm.samples])
     rng = Xoshiro(0)
     sys_of = Vector{Int32}(undef, kernel_chunk)
     rpos = Vector{SVector{3, F}}(undef, kernel_chunk)
@@ -133,7 +145,7 @@ for nsys in (isempty(pa_grid) ? (1, 64) : ())
         kernel_only_s,
         (;
             nsys, chunk = kernel_chunk, nsurvivors = nsurv, run_length, backend = backend_name,
-            phase0_times_s = times0, phase1_times_s = times1,
+            phase0_times_s = times0, phase1_times_s = times1, rejection_tables_s,
         )
     )
     rejected_frac = 1 - nsurv / kernel_chunk
@@ -158,6 +170,7 @@ meta = (;
     host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
     precision = precision_name, nthreads = Threads.nthreads(), nsys_grid = collect(nsys_grid),
     ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk, cellwidth, commit,
+    batch_construction_s,
 )
 mkpath(joinpath(@__DIR__, "results"))
 outpath = if isempty(pa_grid)

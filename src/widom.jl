@@ -183,7 +183,15 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
     θ = theta_F(F)
     rho2 = zeros(F, batch.nsys * N * ntypes)
     reach0 = Vector{SVector{3, Int32}}(undef, batch.nsys)
-    for s in 1:batch.nsys
+    # One memo `Dict` per thread, keyed on `find_rho2`'s own arguments `(σ, ε, kmin_at, margin)`:
+    # a batch of many identical tiled systems (`bench/widom_scaling.jl`) shares the same margin
+    # and per-type σ/ε/kmin across systems, so a system already seen by the same thread costs one
+    # lookup instead of a fresh bisection. Per-thread, not shared, since `Dict` is not safe for
+    # concurrent writes from `Threads.@threads` below; each iteration writes only its own system's
+    # slots of `rho2`/`reach0`, so the threaded loop itself needs no other synchronization.
+    memos = [Dict{NTuple{4, F}, F}() for _ in 1:Threads.maxthreadid()]
+    Threads.@threads for s in 1:batch.nsys
+        memo = memos[Threads.threadid()]
         Bs = batch.bs[s]
         cs = batch.constant_offset[s]
         natoms_s = batch.atom_offsets[s + 1] - batch.atom_offsets[s]
@@ -204,7 +212,9 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
             σ = batch.sigma[gt, t]
             ε = batch.epsilon[gt, t]
             kmin_at = batch.kmin[base + (a - 1) * ntypes + t]
-            r2 = find_rho2(σ, ε, kmin_at, margin, batch.cutoff)
+            r2 = get!(memo, (σ, ε, kmin_at, margin)) do
+                find_rho2(σ, ε, kmin_at, margin, batch.cutoff)
+            end
             rho2[base + (a - 1) * ntypes + t] = r2
             rmax = max(rmax, r2)
         end

@@ -117,16 +117,23 @@ for nsys in nsys_grid
     g_compact = PureAdsorb.Guest{F, Nsites}(g.sites, SVector{Nsites, Int}(b1.guest_types), g.charges, g.tc, g.pc, g.omega)
     # `bs`/`constant_offset` tile identically across every copy of the same framework, so the
     # rejection tables built from the tiled batch equal `b1`'s own tables tiled the same way.
-    rho2, reach0, ntypes_ = PureAdsorb.build_rejection_tables(
-        FrameworkBatch(
-            b1.positions, b1.types, b1.charges, b1.atom_offsets, fill(b1.cells[1], nsys), fill(b1.invcells[1], nsys),
-            fill(b1.volumes[1], nsys), fill(b1.alphas[1], nsys), b1.ks, b1.kprefactor, b1.Shost, b1.k_offsets,
-            fill(b1.constant_offset[1], nsys), fill(b1.self_term_halfrange[1], nsys),
-            fill(b1.ncells[1], nsys), b1.cell_offsets, b1.cellgrid_offsets, b1.sigma, b1.epsilon,
-            b1.compact_to_orig, b1.guest_types, b1.guest_types_orig, b1.guest_sites_orig, b1.guest_charges_orig,
-            fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, nsys,
-        ), g_compact, kT
+    # `build_rejection_tables` only reads per-system scalars (`cells`, `ncells`, `bs`,
+    # `constant_offset`, `kmin`) and atom/k-vector COUNTS via `atom_offsets`/`k_offsets`, never
+    # `positions`/`types`/`charges`/`ks`/`kprefactor`/`Shost` themselves, so those stay
+    # single-copy here; only the (cheap, `Int32`) offset arrays need every system's own entry.
+    rb_batch = FrameworkBatch(
+        b1.positions, b1.types, b1.charges, Int32[Int32(i * natoms) for i in 0:nsys],
+        fill(b1.cells[1], nsys), fill(b1.invcells[1], nsys),
+        fill(b1.volumes[1], nsys), fill(b1.alphas[1], nsys), b1.ks, b1.kprefactor, b1.Shost,
+        Int32[Int32(i * nk) for i in 0:nsys],
+        fill(b1.constant_offset[1], nsys), fill(b1.self_term_halfrange[1], nsys),
+        fill(b1.ncells[1], nsys), b1.cell_offsets, b1.cellgrid_offsets, b1.sigma, b1.epsilon,
+        b1.compact_to_orig, b1.guest_types, b1.guest_types_orig, b1.guest_sites_orig, b1.guest_charges_orig,
+        fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, nsys,
     )
+    rho2, reach0, ntypes_ = PureAdsorb.build_rejection_tables(rb_batch, g_compact, kT)   # warm-up: compile
+    rb_bm = @be PureAdsorb.build_rejection_tables($rb_batch, $g_compact, $kT) seconds = 10 samples = 5 evals = 1
+    rejection_tables_s = median([s.time for s in rb_bm.samples])
     drho2, dreach0 = adapt(backend, rho2), adapt(backend, reach0)
     rng = Xoshiro(0)
     sys_of = Vector{Int32}(undef, chunk)
@@ -161,10 +168,11 @@ for nsys in nsys_grid
     bm = @be kernel_path!() seconds = 20 samples = 10 evals = 1
     times = [s.time for s in bm.samples]
     rejected_frac = 1 - nsurv / chunk
-    push!(samples, (; nsys, chunk, bytes = nsys * bytes_per_system, rejected_frac, times_s = times))
+    push!(samples, (; nsys, chunk, bytes = nsys * bytes_per_system, rejected_frac, times_s = times, rejection_tables_s))
     println(
         "run=$run_length nsys=$nsys chunk=$chunk batch=$(round(nsys * bytes_per_system / 2^30; digits = 2)) GiB " *
-            "rejected=$(round(100 * rejected_frac; digits = 1))% median=$(median(times)) s ips=$(chunk / median(times))"
+            "rejected=$(round(100 * rejected_frac; digits = 1))% median=$(median(times)) s ips=$(chunk / median(times)) " *
+            "rejection_tables_s=$rejection_tables_s"
     )
     flush(stdout)
     dbatch = nothing

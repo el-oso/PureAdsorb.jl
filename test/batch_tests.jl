@@ -229,3 +229,32 @@ end
     @test b.self_term_halfrange[1] ≈ (maximum(samples) - minimum(samples)) / 2
     @test b.constant_offset[1] ≈ self + excl + tail + self_mean     # CO2 is neutral: no net-charge term
 end
+
+@testitem "hardcore_bound's threaded per-framework pass matches a serial recomputation" begin
+    # Mixes repeated copies of RUBTAK (exercising cross-framework memo reuse) with a distinct
+    # empty framework, several systems deep, independent of how many threads this process runs
+    # with: `bs` must not depend on Threads.@threads's scheduling order.
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    empty_A = PureAdsorb.SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    empty_fw = Framework{Float64}(empty_A, PureAdsorb.SVector{3, Float64}[], String[], String[], Float64[])
+    fws = [sc, sc, empty_fw, sc, empty_fw, sc, sc, sc]
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch(fws, ff, g, ewald)
+
+    N = length(g.sites)
+    guest_compact = PureAdsorb.Guest{Float64, N}(g.sites, PureAdsorb.SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
+    α = only(unique(b.alphas))
+    bs_serial = Vector{Float64}(undef, length(fws))
+    for n in eachindex(fws)
+        atoms_n = (b.atom_offsets[n] + 1):b.atom_offsets[n + 1]
+        k_n = (b.k_offsets[n] + 1):b.k_offsets[n + 1]
+        bs_serial[n] = PureAdsorb.hardcore_bound(
+            guest_compact, b.sigma, b.epsilon, b.positions, b.types, b.charges, atoms_n, ff.cutoff, α,
+            view(b.kprefactor, k_n), view(b.Shost, k_n)
+        )
+    end
+    @test b.bs == bs_serial
+end

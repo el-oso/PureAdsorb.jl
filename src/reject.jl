@@ -57,15 +57,20 @@ function find_r0(σ::T, ε::T, K::T, alpha::T, r_lj::T) where {T}
             ArgumentError("find_r0: lower bracket search exceeded $MAX_BISECT_ITERS halvings for σ=$σ, ε=$ε, K=$K, alpha=$alpha")
         )
     end
-    for _ in 1:100
+    iters = 0
+    while hi - lo > 4 * eps(T) * hi
         mid = (lo + hi) / 2
         pair_energy(mid, σ, ε, K, alpha) > zero(T) ? (lo = mid) : (hi = mid)
+        (iters += 1) > MAX_BISECT_ITERS && throw(
+            ArgumentError("find_r0: bisection exceeded $MAX_BISECT_ITERS iterations for σ=$σ, ε=$ε, K=$K, alpha=$alpha")
+        )
     end
     return min((lo + hi) / 2, r_lj)
 end
 
 """
-    hardcore_bound(guest, sigma, epsilon, positions, types, charges, atoms, r_lj, alpha, kprefactor, Shost) -> B_s
+    hardcore_bound(guest, sigma, epsilon, positions, types, charges, atoms, r_lj, alpha, kprefactor, Shost;
+                   memo = Dict{NTuple{3,T},T}()) -> B_s
 
 Rigorous lower-magnitude bound on everything `insertion_energy` sums except one designated
 "trigger" pair: for every other guest-site/host-atom pair in `atoms`, the most negative value
@@ -78,9 +83,18 @@ Lennard-Jones cutoff): `find_r0`'s zero of the untruncated pair energy can lie b
 past which the true `u_ah` no longer includes the Lennard-Jones term at all. Returns `Inf` when
 any pair combines an attractive Coulomb term with no Lennard-Jones repulsion at all (ε zero, K
 negative): the pair energy is then unbounded below as `r → 0` and no finite bound exists.
+
+`memo` caches `find_r0`'s result per `(σ, ε, K)` triple: many atoms in `atoms` typically repeat
+the same compact type and charge, so this call's own default (a fresh `Dict`) already turns
+repeated triples within one call into a lookup; a caller building several bounds that can share
+triples (e.g. several frameworks built from the same force field) may pass its own `Dict` to
+extend the cache across calls. Not shared across threads: `Dict` is not safe for concurrent
+writes, so a caller running several `hardcore_bound` calls under `Threads.@threads` must give
+each thread its own `memo`.
 """
 function hardcore_bound(
-        guest::Guest{T, N}, sigma, epsilon, positions, types, charges, atoms, r_lj::T, alpha::T, kprefactor, Shost
+        guest::Guest{T, N}, sigma, epsilon, positions, types, charges, atoms, r_lj::T, alpha::T, kprefactor, Shost;
+        memo::Dict{NTuple{3, T}, T} = Dict{NTuple{3, T}, T}()
     ) where {T, N}
     acc = zero(T)
     for a in 1:N
@@ -95,7 +109,9 @@ function hardcore_bound(
                 acc += ε
             else
                 iszero(ε) && return T(Inf)
-                r0 = find_r0(σ, ε, K, alpha, r_lj)
+                r0 = get!(memo, (σ, ε, K)) do
+                    find_r0(σ, ε, K, alpha, r_lj)
+                end
                 acc += ε + abs(K) * pair_erfc_dev(alpha * r0) / r0
             end
         end
@@ -178,9 +194,16 @@ function find_rho2(sigma_at::T, epsilon_at::T, kmin_at::T, margin::T, r_lj::T) w
             )
         )
     end
-    for _ in 1:100
+    iters = 0
+    while hi - lo > 4 * eps(T) * hi
         mid = (lo + hi) / 2
         f(mid) > zero(T) ? (lo = mid) : (hi = mid)
+        (iters += 1) > MAX_BISECT_ITERS && throw(
+            ArgumentError(
+                "find_rho2: bisection exceeded $MAX_BISECT_ITERS iterations for " *
+                    "sigma=$sigma_at, epsilon=$epsilon_at, kmin=$kmin_at, margin=$margin"
+            )
+        )
     end
     return min((lo + hi) / 2, r_lj)^2
 end

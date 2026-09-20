@@ -282,6 +282,53 @@ end
     end
 end
 
+@testitem "build_rejection_tables's threaded per-system pass matches a serial recomputation" begin
+    using StaticArrays
+    # Many identical copies of RUBTAK (exercising the per-thread memo's cross-system reuse) plus
+    # an empty framework (B_s finite but trivial): `rho2`/`reach0` must not depend on
+    # Threads.@threads's scheduling order.
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    empty_A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    empty_fw = Framework{Float64}(empty_A, SVector{3, Float64}[], String[], String[], Float64[])
+    b = FrameworkBatch(fill(sc, 10), ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    N = length(g.sites)
+    g_compact = PureAdsorb.Guest{Float64, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
+    kT = PureAdsorb.KB * 298.15
+    rho2, reach0, ntypes = PureAdsorb.build_rejection_tables(b, g_compact, kT)
+
+    θ = PureAdsorb.theta_F(Float64)
+    ntypes_s = size(b.sigma, 1)
+    rho2_serial = zeros(Float64, b.nsys * N * ntypes_s)
+    reach0_serial = Vector{SVector{3, Int32}}(undef, b.nsys)
+    for s in 1:b.nsys
+        Bs = b.bs[s]
+        cs = b.constant_offset[s]
+        natoms_s = b.atom_offsets[s + 1] - b.atom_offsets[s]
+        nk_s = b.k_offsets[s + 1] - b.k_offsets[s]
+        n = N * natoms_s + nk_s + 8
+        safety = 2 * n * eps(Float64) * (Bs + abs(cs)) + 4.0e-6 * Bs
+        margin = isinf(Bs) ? Inf : (θ + 2) * kT + safety + Bs - cs
+        rmax = 0.0
+        base = (s - 1) * N * ntypes_s
+        for a in 1:N, t in 1:ntypes_s
+            gt = g_compact.types[a]
+            σ = b.sigma[gt, t]
+            ε = b.epsilon[gt, t]
+            kmin_at = b.kmin[base + (a - 1) * ntypes_s + t]
+            r2 = PureAdsorb.find_rho2(σ, ε, kmin_at, margin, b.cutoff)
+            rho2_serial[base + (a - 1) * ntypes_s + t] = r2
+            rmax = max(rmax, r2)
+        end
+        L = PureAdsorb.perpendicular_lengths(b.cells[s])
+        reach0_serial[s] = PureAdsorb.stencil_reaches(L, b.ncells[s], sqrt(rmax))
+    end
+    @test rho2 == rho2_serial
+    @test reach0 == reach0_serial
+end
+
 @testsnippet PhaseZeroBrute begin
     using StaticArrays, Random, KernelAbstractions
 

@@ -188,7 +188,9 @@ function FrameworkBatch(
     ncells = SVector{3, Int32}[]
     cell_offsets = Int32[]
     cellgrid_offsets = Int32[0]
-    bs = T[]
+    bs = Vector{T}(undef, length(fws))
+    atom_ranges = Vector{UnitRange{Int32}}(undef, length(fws))
+    k_ranges = Vector{UnitRange{Int32}}(undef, length(fws))
     kmin = T[]
     gcounts = [count(==(t), guest.types) for t in eachindex(ff.names)]
     α = ewald_alpha(ewald.cutoff, ewald.precision)
@@ -293,13 +295,8 @@ function FrameworkBatch(
         push!(k_offsets, Int32(length(ks)))
         atoms_n = (atom_offsets[end - 1] + 1):atom_offsets[end]
         k_n = (k_offsets[end - 1] + 1):k_offsets[end]
-        push!(
-            bs,
-            hardcore_bound(
-                guest_compact, sigma_c, epsilon_c, positions, types, charges, atoms_n, ff.cutoff, α,
-                view(kprefactor, k_n), view(Shost, k_n)
-            )
-        )
+        atom_ranges[n] = atoms_n
+        k_ranges[n] = k_n
         append!(kmin, vec(kmin_table(guest_compact, types, charges, atoms_n, ntypes)))
         counts = [count(==(t), ty_orig[n]) for t in eachindex(ff.names)]
         self = -α / sqrt(T(π)) * sum(abs2, guest.charges)
@@ -313,6 +310,19 @@ function FrameworkBatch(
         Qg = sum(guest.charges)
         net = -T(π) / (2 * V * α^2) * ((Qh + Qg)^2 - Qh^2)
         push!(constant_offset, tail_delta(ff, counts, gcounts, V) + KE * (self + excl + net) + self_mean)
+    end
+    # `hardcore_bound` for framework n only needs that framework's own final atom/k-vector
+    # ranges, which the loop above has already fixed by the time it moves to n+1, so this pass
+    # (unlike the loop above, which grows shared arrays and cannot be parallelized as written)
+    # can run each framework's bound independently. One memo `Dict` per thread (not shared: `Dict`
+    # is not safe for concurrent writes), reused across the frameworks that thread handles, since
+    # a batch of several frameworks sharing a force field often repeats the same (σ, ε, K) triple.
+    memos = [Dict{NTuple{3, T}, T}() for _ in 1:Threads.maxthreadid()]
+    Threads.@threads for n in eachindex(fws)
+        bs[n] = hardcore_bound(
+            guest_compact, sigma_c, epsilon_c, positions, types, charges, atom_ranges[n], ff.cutoff, α,
+            view(kprefactor, k_ranges[n]), view(Shost, k_ranges[n]); memo = memos[Threads.threadid()]
+        )
     end
     return FrameworkBatch(
         positions, types, charges, atom_offsets, cells, invcells, volumes, alphas,

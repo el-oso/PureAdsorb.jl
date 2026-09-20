@@ -87,7 +87,38 @@ times more atoms than the cutoff needs; most insertions are decided by one close
   Speedup against the E1 baseline (commit 9a0771f: Float32 77.2 ms, Float64 1621.9 ms,
   66,120 / 119,928 bytes/framework): at `cellwidth = 6`, Float32 1.07x, Float64 1.17x.
 
-### E3 — hard-core rejection before the energy (outline; its own design after E2 is measured)
+### Kernel time decomposition after E2 (RTX 3050, 65,536-insertion chunk, commit da327a6)
+
+Measured by running the production kernel on batches with parts disabled (empty reciprocal
+table; Ewald cutoff set to 1e-3 Å so no pair evaluates the screened Coulomb term; both cutoffs
+at 1e-3 Å so only the distance checks remain):
+
+| Part | Float32 | Float64 |
+|---|---|---|
+| Whole kernel | 70.2 ms | 1378 ms |
+| Reciprocal cross term (190 k-vectors) | 1.4 ms (2%) | 13 ms (1%) |
+| Screened Coulomb in real space: `sqrt`, `erfc_dev`, division, for the ~12% of pairs inside the cutoff | 29.3 ms (42%) | 1039 ms (75%) |
+| Lennard-Jones for the same pairs | 14.0 ms (20%) | 154 ms (11%) |
+| Minimum image and distance checks over all atoms | 25.5 ms (36%) | 173 ms (13%) |
+
+Float32 against Float64 on the same case (RTX 3050, seed 42): `μ_ex` −0.143435(100) eV from
+4·10⁶ Float32 insertions against −0.143647(219) eV from 10⁶ Float64 insertions, 0.9 combined
+standard errors apart; `K_H` and `q_st` within 0.9 and 0.5.
+
+Consequences. The pair arithmetic inside the cutoff, not the visit to far atoms, dominates: 62%
+of the Float32 kernel and 86% of the Float64 kernel. A stencil that skips far atoms can remove at
+most the 36% / 13% spent on distance checks, and the measured cell traversal overhead at narrow
+widths exceeds that saving for a 3078-atom framework. The gated pruning option is therefore not
+built. The cell list stays, because a short-reach test needs it (E3).
+
+### E2b — cheaper screened Coulomb pair term
+- ☐ `erfc_dev` is a 28-term Chebyshev series valid for every argument at 1e-12. The pair term only needs `x = α r ∈ [0, α·r_c]` (≈ [0, 3.6] here). Measure on the GPU, per precision, the candidates: a shorter Chebyshev/rational fit on the restricted range with a per-precision term count (Float32 at 1e-7 relative, Float64 at 1e-12), and a shared table of `erfc(α√s)/√s` against `s = r²` with cubic Hermite interpolation (one table per batch: α is one value per batch). Choose by measured kernel time at equal or better accuracy than today.
+- ☐ The accuracy of the chosen form is a tested bound against `SpecialFunctions.erfc` over the used range in both precisions; the Madelung and α-independence tests keep their tolerances; the kUPS cross-code test passes unchanged.
+- ☐ Kernel code stays allocation-free, branch-safe for GPU compilation and generic over the float type (per-precision constants selected by dispatch on `T`, one kernel source).
+- ☐ Measured and recorded: the decomposition table above, re-measured, on the RTX 3050 and the R9700.
+
+### E3 — hard-core rejection before the energy
+- ☐ The cell list serves this test only. Its reach is the largest core radius (about 1.5 Å), so with cells of about 3 Å a site checks 27 cells instead of every atom; the full energy keeps a plain loop over the system's atoms with one minimum image per atom. `cellwidth` and the full-energy path change accordingly (the full-energy stencil walk of E2 is replaced by the linear loop, which the width table above shows is the fastest form for this system size).
 - ☐ Phase 0 tests, through the cell list, whether any site lies inside a per-type-pair core radius `ρ_ab` of a host atom. `ρ_ab` is the radius at which the pair's own energy (LJ repulsion minus the largest possible Coulomb attraction of that pair) exceeds the underflow threshold of the working float type plus a per-framework bound `B_s` on every other term, so a rejected insertion has weight exactly 0.0 and the statistics are unchanged. Pairs with `ε_ab = 0` never reject.
 - ☐ Survivors are compacted (host-side at first: the chunk's flags are already copied per chunk; a device-side scan only if the copy is measured to matter) and phase 1 runs with the survivor count as its launch size.
 - ☐ `B_s` is rigorous (pair-minimum and absolute-charge bounds); its looseness costs rejection fraction, not correctness. Expected rejection with the crude bound: about 55–60% of insertions for CO2 in RUBTAK.
@@ -109,8 +140,13 @@ reciprocal loop for every insertion, after which there is nothing left to skip.
 |---|---|---|
 | today | 1.00 | 172 KB |
 | E1 | about 0.79 | about 66 KB |
-| E2 (stencil visits ~30% of atoms) | about 0.25 | about 73 KB |
-| E3 (57% rejected in phase 0) | about 0.11 | same |
+| E2 (measured, RTX 3050: one minimum image per atom; the stencil visits every atom) | 0.73 Float32, 0.66 Float64 | 67 KB |
+| E2b (screened Coulomb pair term 3–4× cheaper; arithmetic) | about 0.5 Float32, about 0.25 Float64 | same, plus one shared table if a table is chosen |
+| E3 (57% rejected in phase 0 at a few percent of the kernel's cost; arithmetic) | about 0.25 Float32, about 0.12 Float64 | same |
+
+The first version of this table expected 0.25 from the cell list alone. That estimate assumed the
+visit to far atoms dominated the kernel; the decomposition above shows it is 36% (Float32) and 13%
+(Float64).
 
 ## Interfaces that change
 

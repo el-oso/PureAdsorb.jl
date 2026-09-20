@@ -154,15 +154,23 @@ end
 
 # Rejection radii ρ_at² and phase-0 stencil half-widths for one `widom` call at temperature
 # `kT`: both depend on temperature through the underflow margin
-# `(θ_F+2)·kT + 1e-5·B_s + B_s − c_s`, even though `batch.bs` and `batch.kmin` themselves do
-# not, so both are rebuilt fresh here on every call rather than stored in `FrameworkBatch`. The
-# `1e-5·B_s` term covers `pair_erfc_dev`'s approximation error and floating-point summation
-# error in the actual computed `ΔU`, both proportional to the magnitude of the summed terms —
-# the same margin the rejection rule itself requires, so a rejected insertion's ideal (bound)
-# energy clears `(θ_F+2)·kT` even after that error is subtracted back out. `guest` must already
-# carry compact type indices (`batch.guest_types`). A system whose `bs` is `Inf` gets an
-# infinite margin, and `find_rho2` returns `0` for every one of its entries, disabling rejection
-# for that system.
+# `(θ_F+2)·kT + safety + B_s − c_s`, even though `batch.bs` and `batch.kmin` themselves do not,
+# so both are rebuilt fresh here on every call rather than stored in `FrameworkBatch`.
+#
+# `safety = 2·n·eps(F)·(B_s + |c_s|) + 4e-6·B_s` bounds the gap between the ideal, exact-formula
+# `ΔU` the rejection rule reasons about and the actual floating-point value `insertion_energy`
+# computes: recursive summation of `n` terms of magnitude at most `B_s + |c_s|` (every pair term
+# and the reciprocal sum are bounded by `B_s`, plus the pose-independent `c_s`) has rounding
+# error at most `(n-1)·u·Σ|x_i|` with unit roundoff `u = eps(F)/2`, so `2·n·eps(F)·(B_s+|c_s|)`
+# covers it with margin; `n = N_sites·natoms_s + nk_s + 8` counts the real-space pair terms, the
+# reciprocal-space terms, and a handful of pose-independent additions. The `4e-6·B_s` term
+# additionally covers `pair_erfc_dev`'s own approximation error relative to the true `erfc`
+# (measured up to `1.51e-6` in Float32 over `[0, PAIR_ERFC_XMAX]`; `4e-6` leaves margin), applied
+# once per Coulomb term and so also proportional to the sum's magnitude. Both terms are added so
+# that a rejected insertion's ideal (bound) energy clears `(θ_F+2)·kT` even after this error is
+# subtracted back out. `guest` must already carry compact type indices (`batch.guest_types`). A
+# system whose `bs` is `Inf` gets an infinite margin, and `find_rho2` returns `0` for every one
+# of its entries, disabling rejection for that system.
 function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT::F) where {F, N}
     ntypes = size(batch.sigma, 1)
     θ = theta_F(F)
@@ -170,11 +178,16 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
     reach0 = Vector{SVector{3, Int32}}(undef, batch.nsys)
     for s in 1:batch.nsys
         Bs = batch.bs[s]
-        margin = isinf(Bs) ? F(Inf) : (θ + 2) * kT + F(1.0e-5) * Bs + Bs - batch.constant_offset[s]
+        cs = batch.constant_offset[s]
+        natoms_s = batch.atom_offsets[s + 1] - batch.atom_offsets[s]
+        nk_s = batch.k_offsets[s + 1] - batch.k_offsets[s]
+        n = N * natoms_s + nk_s + 8
+        safety = 2 * n * eps(F) * (Bs + abs(cs)) + F(4.0e-6) * Bs
+        margin = isinf(Bs) ? F(Inf) : (θ + 2) * kT + safety + Bs - cs
         margin > zero(F) || throw(
             ArgumentError(
-                "build_rejection_tables: system $s has margin=$margin <= 0 (Bs=$Bs, " *
-                    "constant_offset=$(batch.constant_offset[s]), kT=$kT, theta_F=$θ); no valid rejection radius exists"
+                "build_rejection_tables: system $s has margin=$margin <= 0 (Bs=$Bs, safety=$safety, " *
+                    "constant_offset=$cs, kT=$kT, theta_F=$θ); no valid rejection radius exists"
             )
         )
         rmax = zero(F)

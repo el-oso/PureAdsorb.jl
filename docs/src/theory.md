@@ -266,22 +266,32 @@ exists, and rejection is disabled for that system.
 **Rejection radius.** For one guest site `a` and host type `t`, `K_min(a,t)` is the most negative
 ``K_{ah}`` over that system's atoms of type `t` (zero if none is negative) — temperature
 independent, so it is also computed once at construction. `widom` combines it with the
-temperature-dependent margin `(θ_F + 2)·k_B T + 1e-5·B_s + B_s - c_s` into a rejection radius
-``\rho_{at}``: the first root, scanning up from ``r \to 0``, of
+temperature-dependent margin `(θ_F + 2)·k_B T + \mathrm{safety} + B_s - c_s` into a rejection
+radius ``\rho_{at}``: the first root, scanning up from ``r \to 0``, of
 
 ```math
-\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + 10^{-5} B_s + B_s - c_s.
+\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s,
 ```
 
-The ``10^{-5} B_s`` term covers `pair_erfc_dev`'s approximation error and floating-point
-summation error in the actually-computed ``\Delta U`` (both proportional to the magnitude of the
-summed terms), so that a rejected insertion's true (bound) energy still clears
-``(\theta_F+2)\,k_B T`` once that error is subtracted back out. Every separation under
-``\rho_{at}`` then satisfies the rejection condition for any atom of type `t`, since the
-left-hand side lower bounds that atom's true pair energy at distance `r`. For CO2 in RUBTAK
-3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the system's compact types — a
-small fraction of the Lennard-Jones ``\sigma``, consistent with these radii marking the steep
-repulsive wall rather than the interaction range itself.
+clamped to the Lennard-Jones cutoff ``r_{\mathrm{lj}}`` (the equation assumes the Lennard-Jones
+term is present at the root, which only holds for ``r < r_{\mathrm{lj}}``).
+
+The safety term ``\mathrm{safety} = 2 n \,\mathrm{eps}(F) (B_s + |c_s|) + 4\times10^{-6} B_s``
+bounds the gap between this ideal, exact-formula ``\Delta U`` and the actual floating-point value
+`insertion_energy` computes. Recursive summation of ``n`` terms of magnitude at most
+``B_s + |c_s|`` has rounding error at most ``(n-1)\,u\,\Sigma|x_i|`` with unit roundoff
+``u = \mathrm{eps}(F)/2``, so ``2 n\,\mathrm{eps}(F)(B_s+|c_s|)`` covers it with margin;
+``n = N_{\mathrm{sites}}\cdot\mathrm{natoms}_s + nk_s + 8`` counts the real-space pair terms, the
+reciprocal-space terms, and a handful of pose-independent additions. The ``4\times10^{-6} B_s``
+term additionally covers `pair_erfc_dev`'s own approximation error relative to the true
+``\operatorname{erfc}`` (measured up to `1.51e-6` in Float32 over `[0, PAIR_ERFC_XMAX]`), applied
+once per Coulomb term and so likewise proportional to the sum's magnitude. Both terms ensure that
+a rejected insertion's true (bound) energy still clears ``(\theta_F+2)\,k_B T`` once this error is
+subtracted back out. Every separation under ``\rho_{at}`` then satisfies the rejection condition
+for any atom of type `t`, since the left-hand side lower bounds that atom's true pair energy at
+distance `r`. For CO2 in RUBTAK 3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the
+system's compact types — a small fraction of the Lennard-Jones ``\sigma``, consistent with these
+radii marking the steep repulsive wall rather than the interaction range itself.
 
 **Two-phase evaluation.** `widom` launches a phase-0 kernel that flags every insertion whose
 guest sites all stay outside ``\rho_{at}`` of every host atom of the matching type, scanning a

@@ -1,3 +1,172 @@
+@testsnippet CellListOracle begin
+    using StaticArrays, LinearAlgebra, Random
+
+    # Brute-force stand-in for `insertion_energy`'s real-space sum (loop over every host atom, no
+    # cell list) plus the same reciprocal cross term over the SAME (already coupled) k-table, so
+    # a comparison against `insertion_energy` isolates the cell list's correctness from E1's
+    # k-vector truncation: both sides then agree to floating-point roundoff alone.
+    function brute_insertion_energy(
+            pos::SVector{3, T}, q::SVector{4, T}, guest::PureAdsorb.Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
+            hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost
+        ) where {T, N}
+        rc_lj2 = cutoff * cutoff; rc_ew2 = ewald_cutoff * ewald_cutoff
+        gsites = map(s -> PureAdsorb.rotate(q, s), guest.sites)
+        E_lj = zero(T); E_sr = zero(T)
+        for j in eachindex(hpos)
+            Δ0 = PureAdsorb.minimum_image(A, invA, pos - hpos[j])
+            for s in 1:N
+                Δ = Δ0 + gsites[s]
+                r2 = dot(Δ, Δ)
+                (r2 < rc_lj2 || r2 < rc_ew2) || continue
+                gt = guest.types[s]; gq = guest.charges[s]
+                if r2 < rc_lj2
+                    σ = sigma[gt, htype[j]]; ε = epsilon[gt, htype[j]]
+                    x = (σ * σ / r2)^3
+                    E_lj += 4 * ε * (x * x - x)
+                end
+                if r2 < rc_ew2
+                    r = sqrt(r2)
+                    E_sr += gq * hq[j] * PureAdsorb.erfc_dev(alpha * r) / r
+                end
+            end
+        end
+        E_lr = zero(T)
+        for i in eachindex(ks)
+            k = ks[i]
+            Sg = zero(Complex{T})
+            for s in 1:N
+                Sg += guest.charges[s] * cis(dot(k, pos + gsites[s]))
+            end
+            E_lr += kprefactor[i] * 2 * real(conj(Shost[i]) * Sg)
+        end
+        return E_lj + T(PureAdsorb.KE) * (E_sr + E_lr)
+    end
+
+    # Test-only mirror of `insertion_energy`'s stencil that returns the visited (global, 1-based)
+    # atom indices for one pose instead of an energy, for checking the visited set directly.
+    function visited_atoms(pos::SVector{3}, atom_base::Integer, ncells::SVector{3, Int32}, reach::SVector{3, Int32}, cell_offsets, invA)
+        f = invA * pos
+        n1, n2, n3 = ncells[1], ncells[2], ncells[3]
+        m1, m2, m3 = reach[1], reach[2], reach[3]
+        h1 = PureAdsorb.home_cell_dev(f[1], n1); h2 = PureAdsorb.home_cell_dev(f[2], n2); h3 = PureAdsorb.home_cell_dev(f[3], n3)
+        start1, count1 = PureAdsorb.stencil_start_count(h1, m1, n1)
+        start2, count2 = PureAdsorb.stencil_start_count(h2, m2, n2)
+        start3, count3 = PureAdsorb.stencil_start_count(h3, m3, n3)
+        visited = Int[]
+        for t3 in 0:(count3 - 1)
+            c3 = PureAdsorb.wrap_cell(start3 + Int32(t3), n3)
+            for t2 in 0:(count2 - 1)
+                c2 = PureAdsorb.wrap_cell(start2 + Int32(t2), n2)
+                for t1 in 0:(count1 - 1)
+                    c1 = PureAdsorb.wrap_cell(start1 + Int32(t1), n1)
+                    c = PureAdsorb.cell_linear(c1, c2, c3, n1, n2)
+                    a0 = atom_base + cell_offsets[c + 1] + 1
+                    a1 = atom_base + cell_offsets[c + 2]
+                    for j in a0:a1
+                        push!(visited, j)
+                    end
+                end
+            end
+        end
+        return visited
+    end
+end
+
+@testitem "insertion_energy's cell list matches a brute-force real-space sum" setup = [CellListOracle] begin
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    sc_tri = replicate(fw, (3, 3, 3))
+    L = 30.0   # small enough that some cellwidths give 2m+1 >= n on every axis
+    cubic = Framework{Float64}(SMatrix{3, 3}(L, 0, 0, 0, L, 0, 0, 0, L), [SVector(0.5, 0.5, 0.5)], ["Zr"], ["Zr"], [1.0])
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+
+    for (name, sc) in (("triclinic", sc_tri), ("cubic", cubic)), cellwidth in (2.0, 3.0, 4.0, 6.0, 100.0)
+        b = FrameworkBatch([sc], ff, g, ewald; cellwidth)
+        A = b.cells[1]; invA = b.invcells[1]; α = b.alphas[1]
+        rng = Xoshiro(hash((name, cellwidth)))
+        # A face pose (exactly on the x=0 cell boundary) picked away from (0.5,0.5,0.5), which is
+        # the cubic test framework's one host atom — a guest reference point exactly on top of a
+        # host atom gives an (expected) infinite LJ repulsion in both `insertion_energy` and the
+        # brute-force reference, which a NaN ≈ NaN test comparison would then wrongly fail.
+        poses = SVector{3, Float64}[
+            SVector(0.0, 0.0, 0.0), SVector(prevfloat(1.0), prevfloat(1.0), prevfloat(1.0)), SVector(0.0, 0.37, 0.61),
+        ]
+        for _ in 1:500
+            push!(poses, rand(rng, SVector{3, Float64}))
+        end
+        for fpos in poses
+            pos = A * fpos
+            q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
+            prod = PureAdsorb.insertion_energy(
+                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
+                b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+                A, invA, α, b.ks, b.kprefactor, b.Shost
+            )
+            ref = brute_insertion_energy(
+                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
+                b.positions, b.types, b.charges, A, invA, α, b.ks, b.kprefactor, b.Shost
+            )
+            @test prod ≈ ref rtol = 1.0e-12
+        end
+    end
+end
+
+@testitem "insertion_energy's cell list matches brute force in Float32" setup = [CellListOracle] begin
+    # An unreplicated (replication == (1,1,1)) framework, so this exercises the cell list in
+    # Float32 without going through `verify_replication`'s uncoupled-k-vector check, whose fixed
+    # 1e-8 absolute-charge threshold is calibrated for Float64 roundoff and is a separate,
+    # pre-existing issue from E1, not addressed here.
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = Float32)
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = Float32)
+    rng = Xoshiro(13)
+    L = 30.0f0
+    A0 = SMatrix{3, 3}(L, 0, 0, 0, L, 0, 0, 0, L)
+    natoms = 40
+    frac = [SVector{3, Float32}(rand(rng, Float32), rand(rng, Float32), rand(rng, Float32)) for _ in 1:natoms]
+    charges = Float32[isodd(i) ? 0.3f0 : -0.3f0 for i in 1:natoms]
+    fw = Framework{Float32}(A0, frac, fill("Zr", natoms), fill("Zr", natoms), charges)
+    ewald = EwaldParams(cutoff = 12.0f0, precision = 1.0f-6)
+    for cellwidth in (3.0f0, 6.0f0)
+        b = FrameworkBatch([fw], ff, g, ewald; cellwidth)
+        A = b.cells[1]; invA = b.invcells[1]; α = b.alphas[1]
+        for _ in 1:200
+            pos = A * rand(rng, SVector{3, Float32})
+            q = normalize(rand(rng, SVector{4, Float32}) .- 0.5f0)
+            prod = PureAdsorb.insertion_energy(
+                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
+                b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+                A, invA, α, b.ks, b.kprefactor, b.Shost
+            )
+            ref = brute_insertion_energy(
+                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
+                b.positions, b.types, b.charges, A, invA, α, b.ks, b.kprefactor, b.Shost
+            )
+            @test prod ≈ ref rtol = 1.0f-4
+        end
+    end
+end
+
+@testitem "the cell-list stencil visits every atom within reach exactly once" setup = [CellListOracle] begin
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald; cellwidth = 3.0)
+    r_guest = maximum(norm, g.sites)
+    reach_dist = max(ff.cutoff, ewald.cutoff) + r_guest
+    A = b.cells[1]; invA = b.invcells[1]
+    rng = Xoshiro(99)
+    for _ in 1:2000
+        pos = A * rand(rng, SVector{3, Float64})
+        visited = visited_atoms(pos, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets, invA)
+        @test length(unique(visited)) == length(visited)
+        expected = Set(j for j in eachindex(b.positions) if norm(PureAdsorb.minimum_image(A, invA, pos - b.positions[j])) <= reach_dist)
+        @test expected ⊆ Set(visited)
+    end
+end
+
 @testitem "rotation preserves length and the unit quaternion is the identity" begin
     using StaticArrays, LinearAlgebra
     v = SVector(1.16, 0.0, 0.0)

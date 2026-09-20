@@ -15,52 +15,89 @@ function rotate(q::SVector{4}, v::SVector{3})
     return v + 2 * cross(u, cross(u, v) + w * v)
 end
 
-# Energy of inserting one guest molecule at pose (pos, q) into a fixed host: LJ against every
-# host site within the LJ cutoff, the real-space Ewald cross term (screened by erfc_dev,
-# GPU-safe) against every host site within the (generally larger) Ewald cutoff, and the
-# reciprocal cross term against the host's precomputed structure factor Shost, over only the
-# k-vectors coupled to this framework's replication (`FrameworkBatch` keeps no others). The
-# guest self term `Σ_k pref_k |S_g(k)|²` is orientation-dependent but pose-otherwise-fixed, so
-# its orientation average over the full k set is folded into `constant_offset` instead of
-# recomputed here (see `FrameworkBatch`'s docstring). `kprefactor[i]` is `w_k · pk(|k|², α, V)`,
-# precomputed once per batch since it does not depend on the insertion pose. All arguments are
-# isbits scalars, SVectors or plain array reads, so this runs unchanged inside a GPU kernel.
+# Energy of inserting one guest molecule at pose (pos, q) into a fixed host, visiting only the
+# host atoms that can be within `cutoff`/`ewald_cutoff` of some guest site via a cell-list
+# stencil around `pos`'s home cell, plus the reciprocal cross term against the host's
+# precomputed structure factor Shost over only the k-vectors coupled to this framework's
+# replication (`FrameworkBatch` keeps no others). The guest self term `Σ_k pref_k |S_g(k)|²` is
+# orientation-dependent but pose-otherwise-fixed, so its orientation average over the full k set
+# is folded into `constant_offset` instead of recomputed here (see `FrameworkBatch`'s
+# docstring). `kprefactor[i]` is `w_k · pk(|k|², α, V)`, precomputed once per batch since it does
+# not depend on the insertion pose.
+#
+# `positions`/`types`/`charges` are the WHOLE batch's arrays; `atom_base` is this system's
+# `atom_offsets` entry (0-based) and `cell_offsets` is this system's own
+# `prod(ncells) + 1`-entry slice of the batch's `cell_offsets` (local offset `c`'s atoms are
+# `cell_offsets[c+1]+1:cell_offsets[c+2]`, shifted by `atom_base`, matching `FrameworkBatch`'s
+# cell-sort order). `ncells`/`reach` are this system's own grid dimensions and stencil
+# half-widths. Every host atom within `cutoff + r_guest`/`ewald_cutoff + r_guest` of `pos` lies
+# in a visited cell (`FrameworkBatch`'s construction guard: the framework's minimum image
+# exceeds `2*(max(cutoff, ewald_cutoff) + r_guest)`), so one minimum image of `pos - positions[j]`
+# per host atom, plus each guest site's own (already rotated) offset added without a further
+# minimum image, is exact.
+#
+# All arguments are isbits scalars, SVectors, or plain/view array reads with no throwing
+# branches, so this runs unchanged inside a GPU kernel: home-cell and wrap arithmetic uses
+# `unsafe_trunc`/branch-free wrapping (`home_cell_dev`, `wrap_cell`) rather than `floor`/`mod`
+# by a runtime value.
 function insertion_energy(
         pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
-        hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost
+        positions, types, charges, atom_base::Integer, ncells::SVector{3, Int32}, reach::SVector{3, Int32},
+        cell_offsets, A, invA, alpha, ks, kprefactor, Shost
     ) where {T, N}
     rc_lj2 = cutoff * cutoff
     rc_ew2 = ewald_cutoff * ewald_cutoff
-    gpos = map(s -> pos + rotate(q, s), guest.sites)
+    gsites = map(s -> rotate(q, s), guest.sites)
     E_lj = zero(T); E_sr = zero(T)
-    for s in 1:N
-        gp = gpos[s]
-        gt = guest.types[s]; gq = guest.charges[s]
-        # `hpos`, `htype` and `hq` are always index-matched slices of the same
-        # `FrameworkBatch` arrays: a multi-array `eachindex` would additionally check that here,
-        # but its mismatch branch builds an error string, which GPUCompiler cannot compile.
-        for j in eachindex(hpos)
-            Δ = minimum_image(A, invA, gp - hpos[j])
-            r2 = dot(Δ, Δ)
-            (r2 < rc_lj2 || r2 < rc_ew2) || continue
-            if r2 < rc_lj2
-                σ = sigma[gt, htype[j]]; ε = epsilon[gt, htype[j]]
-                x = (σ * σ / r2)^3
-                E_lj += 4 * ε * (x * x - x)
-            end
-            if r2 < rc_ew2
-                r = sqrt(r2)
-                E_sr += gq * hq[j] * erfc_dev(alpha * r) / r
+
+    f = invA * pos
+    n1 = ncells[1]; n2 = ncells[2]; n3 = ncells[3]
+    m1 = reach[1]; m2 = reach[2]; m3 = reach[3]
+    h1 = home_cell_dev(f[1], n1); h2 = home_cell_dev(f[2], n2); h3 = home_cell_dev(f[3], n3)
+    start1, count1 = stencil_start_count(h1, m1, n1)
+    start2, count2 = stencil_start_count(h2, m2, n2)
+    start3, count3 = stencil_start_count(h3, m3, n3)
+
+    for t3 in zero(Int32):(count3 - one(Int32))
+        c3 = wrap_cell(start3 + t3, n3)
+        for t2 in zero(Int32):(count2 - one(Int32))
+            c2 = wrap_cell(start2 + t2, n2)
+            for t1 in zero(Int32):(count1 - one(Int32))
+                c1 = wrap_cell(start1 + t1, n1)
+                c = cell_linear(c1, c2, c3, n1, n2)
+                a0 = atom_base + cell_offsets[c + 1] + 1
+                a1 = atom_base + cell_offsets[c + 2]
+                for j in a0:a1
+                    Δ0 = minimum_image(A, invA, pos - positions[j])
+                    ht = types[j]; hqj = charges[j]
+                    for s in 1:N
+                        Δ = Δ0 + gsites[s]
+                        r2 = dot(Δ, Δ)
+                        (r2 < rc_lj2 || r2 < rc_ew2) || continue
+                        gt = guest.types[s]; gq = guest.charges[s]
+                        if r2 < rc_lj2
+                            σ = sigma[gt, ht]; ε = epsilon[gt, ht]
+                            x = (σ * σ / r2)^3
+                            E_lj += 4 * ε * (x * x - x)
+                        end
+                        if r2 < rc_ew2
+                            r = sqrt(r2)
+                            E_sr += gq * hqj * erfc_dev(alpha * r) / r
+                        end
+                    end
+                end
             end
         end
     end
     E_lr = zero(T)
-    # Same reasoning as above: `ks`, `kprefactor` and `Shost` are index-matched by construction.
+    # `ks`, `kprefactor` and `Shost` are index-matched by construction; a multi-array `eachindex`
+    # would additionally check that here, but its mismatch branch builds an error string, which
+    # GPUCompiler cannot compile.
     for i in eachindex(ks)
         k = ks[i]
         Sg = zero(Complex{T})
         for s in 1:N
-            Sg += guest.charges[s] * cis(dot(k, gpos[s]))
+            Sg += guest.charges[s] * cis(dot(k, pos + gsites[s]))
         end
         E_lr += kprefactor[i] * 2 * real(conj(Shost[i]) * Sg)
     end

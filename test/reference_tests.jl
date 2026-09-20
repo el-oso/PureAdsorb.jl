@@ -38,8 +38,9 @@
             pos = A * rand(rng, SVector{3, Float64})
             q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
             prod = PureAdsorb.insertion_energy(
-                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff, hpos, htype, hq, A, invA, α,
-                b.ks, b.kprefactor, b.Shost
+                pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
+                b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+                A, invA, α, b.ks, b.kprefactor, b.Shost
             ) + b.constant_offset[1]
             ref = PureAdsorb.insertion_energy_reference(
                 pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff, hpos, htype, hq, A, invA, α,

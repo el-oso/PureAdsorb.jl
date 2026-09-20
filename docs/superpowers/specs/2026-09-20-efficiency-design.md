@@ -54,14 +54,38 @@ times more atoms than the cutoff needs; most insertions are decided by one close
   | Float64 | 32,768 | 169k | 234k |
 
 ### E2 — cell list for the real-space loop
-- ☐ Per framework, a grid in fractional coordinates of the stored cell with `n_i = max(1, floor(L_i / w))` cells along axis i (`L_i` perpendicular lengths, `w` the target width, default chosen by benchmark among 2, 3, 4, 6 Å and recorded).
-- ☐ Atoms are stored sorted by cell, so a cell is a contiguous range of `positions`/`types`/`charges`; the batch gains `cell_offsets` (concatenated, ragged), `cellgrid_offsets` (where each system's cells start) and `ncells::SVector{3,Int32}` per system. No per-atom index indirection.
-- ☐ One stencil per insertion, centered on the guest's reference point, with reach `m_i = ceil((r_c + r_guest) · n_i / L_i)` cells, `r_c = max(cutoff, ewald_cutoff)`, `r_guest` the largest site distance from the reference point. Along an axis with `2m_i + 1 > n_i` every cell is visited exactly once. Each atom is read once and evaluated against all guest sites; the minimum image is taken once per atom for the reference point and the site offsets are added, which is valid because construction requires `min_multiplicity(cell, r_c + r_guest) == (1,1,1)`.
-- ☐ Cell index wrapping is branch-free integer arithmetic (no `mod`/`div` by a runtime value in kernel code; no throwing branches).
-- ☐ Oracle: agrees with `insertion_energy_reference` to 1e-12 relative over random poses, for the triclinic RUBTAK cell, a cubic cell, a cell where `2m_i + 1 > n_i` on some axis, sites on cell faces, and every tested `w`.
-- ☐ Generic over `Float32`/`Float64`; allocation-free and type-stable under the StrictMode audit; compiles on CUDA and ROCm.
-- ☐ Measured and recorded: kernel time against `w`, both GPUs, both precisions; fraction of atoms visited; bytes per framework.
-- ☐ Gated option, built only if the measurement shows the cubic stencil visits more than twice the atoms inside the cutoff sphere: prune stencil cells whose nearest point is farther than `r_c + r_guest` from the home cell (a per-framework list of cell offsets).
+- ☑ Per framework, a grid in fractional coordinates of the stored cell with `n_i = max(1, floor(L_i / w))` cells along axis i (`L_i` perpendicular lengths, `w` the target width, default chosen by benchmark among 2, 3, 4, 6 Å and recorded).
+- ☑ Atoms are stored sorted by cell, so a cell is a contiguous range of `positions`/`types`/`charges`; the batch gains `cell_offsets` (concatenated, ragged), `cellgrid_offsets` (where each system's cells start) and `ncells::SVector{3,Int32}` per system. No per-atom index indirection.
+- ☑ One stencil per insertion, centered on the guest's reference point, with reach `m_i = ceil((r_c + r_guest) · n_i / L_i)` cells, `r_c = max(cutoff, ewald_cutoff)`, `r_guest` the largest site distance from the reference point. Along an axis with `2m_i + 1 > n_i` every cell is visited exactly once. Each atom is read once and evaluated against all guest sites; the minimum image is taken once per atom for the reference point and the site offsets are added, which is valid because construction requires `min_multiplicity(cell, r_c + r_guest) == (1,1,1)`.
+- ☑ Cell index wrapping is branch-free integer arithmetic (no `mod`/`div` by a runtime value in kernel code; no throwing branches).
+- ☑ Oracle: agrees with `insertion_energy_reference` to 1e-12 relative over random poses, for the triclinic RUBTAK cell, a cubic cell, a cell where `2m_i + 1 > n_i` on some axis, sites on cell faces, and every tested `w`.
+- ☐ Generic over `Float32`/`Float64` (done — oracle tests pass at both precisions); allocation-free and type-stable under the StrictMode audit (done — `bench/audit.jl` full mode, AllocCheck+JET, 0 failures for `insertion_energy` at both precisions); compiles on CUDA (done — `:gpu` test item passes on this machine's RTX 3050); ROCm compilation is NOT verified — galen was not touched, per this task's instructions, so this box stays open for the controller.
+- ☐ Measured and recorded: kernel time against `w` on the RTX 3050, both precisions; fraction of atoms visited; bytes per framework — table below. The R9700 measurement stays open for the controller (galen not touched).
+- ☐ Gated option NOT built. The measurement below shows its gate condition IS met at the fastest tested width: the stencil visits 100% of atoms against 15.5% inside the cutoff-plus-guest-reach sphere, a 6.4x overshoot, well past the 2x trigger. Reported per the design's instruction ("do not build it without reporting first"), left for a future stage.
+
+  RUBTAK 3×3×3 + CO2, kernel-only time for a 65,536-insertion chunk on an RTX 3050 (`bench/gpu`,
+  Julia 1.13.0), measured with a one-off script mirroring `bench/widom_bench.jl`'s kernel-only
+  path (same `@be` harness, same warm-up), since the full `widom_bench.jl` grid sweep is not
+  needed for this table:
+
+  | cellwidth (Å) | Kernel F32 | Kernel F64 | Mean atoms visited | Fraction inside r_c+r_guest sphere | Bytes/framework F32 | Bytes/framework F64 |
+  |---|---|---|---|---|---|---|
+  | 2 | 190.2 ms | 1318.8 ms | 58.0% | 15.5% | 89,476 | 143,284 |
+  | 3 | 130.2 ms | 1024.1 ms | 77.1% | 15.5% | 73,060 | 126,868 |
+  | 4 | 74.1 ms | 1396.2 ms | 100% | 15.5% | 69,064 | 122,872 |
+  | 6 (chosen default) | 72.0 ms | 1383.2 ms | 100% | 15.5% | 67,012 | 120,820 |
+
+  At 4 and 6 Å the stencil's reach already spans the whole grid on every axis for this system
+  (`2m_i+1 >= n_i`), so those two widths visit every atom — the same set brute force would — yet
+  both are still faster than the E1 baseline below, from evaluating all `N` guest sites against
+  one `minimum_image` per host atom instead of one per site per atom. The narrower widths (2, 3
+  Å) visit measurably fewer atoms but are markedly slower: with `natoms/n_i^3` this low, most
+  cells hold very few atoms, so the added cost of iterating many near-empty cells outweighs the
+  saved atom evaluations. `cellwidth = 6` is the fastest F32 measurement and within 5% of the
+  fastest F64 measurement (1318.8 ms at `cellwidth = 2`), so it is the default.
+
+  Speedup against the E1 baseline (commit 9a0771f: Float32 77.2 ms, Float64 1621.9 ms,
+  66,120 / 119,928 bytes/framework): at `cellwidth = 6`, Float32 1.07x, Float64 1.17x.
 
 ### E3 — hard-core rejection before the energy (outline; its own design after E2 is measured)
 - ☐ Phase 0 tests, through the cell list, whether any site lies inside a per-type-pair core radius `ρ_ab` of a host atom. `ρ_ab` is the radius at which the pair's own energy (LJ repulsion minus the largest possible Coulomb attraction of that pair) exceeds the underflow threshold of the working float type plus a per-framework bound `B_s` on every other term, so a rejected insertion has weight exactly 0.0 and the statistics are unchanged. Pairs with `ε_ab = 0` never reject.

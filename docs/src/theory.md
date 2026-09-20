@@ -44,6 +44,24 @@ Coulomb term, plus pose-independent constants collected once per framework:
 \Delta U = E_{\mathrm{LJ}} + E_{\mathrm{Coul}}
 ```
 
+### Cell list for the real-space sums
+
+Both the Lennard-Jones sum and the real-space Ewald sum below need every host atom within a
+cutoff of some guest site, not all of them. `FrameworkBatch` bins each system's host atoms into
+a grid of ``n_i = \max(1, \lfloor L_i / w \rfloor)`` cells along each of the stored cell's three
+perpendicular lengths ``L_i`` (target width ``w``, the `cellwidth` keyword), storing atoms
+sorted by cell so that a cell is a contiguous array range. For an insertion at ``\mathbf{r}``,
+`insertion_energy` visits one stencil of cells centered on ``\mathbf{r}``'s own cell, spanning
+``m_i = \lceil (r_c + r_{\mathrm{guest}})\, n_i / L_i \rceil`` cells either side (``r_c`` the
+larger of the LJ and Ewald cutoffs, ``r_{\mathrm{guest}}`` the guest's largest site distance
+from its reference point) — or, once ``2 m_i + 1 \geq n_i``, the whole axis once. Within a
+visited cell, one minimum image is taken of ``\mathbf{r}`` to each host atom, and every guest
+site's own (already rotated) offset is added to that single image directly, without a further
+minimum image. This is exact — every relevant pair's true separation stays under half the
+cell's perpendicular length — because `FrameworkBatch` requires
+`min_multiplicity(cell, r_c + r_guest) == (1,1,1)` at construction, one guest-reach wider than
+E1's plain-cutoff requirement.
+
 ### Lennard-Jones
 
 Every guest site interacts with every host atom within the LJ cutoff ``r_c``, under minimum

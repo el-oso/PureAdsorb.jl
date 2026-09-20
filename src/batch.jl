@@ -4,7 +4,8 @@
 Structure-of-arrays layout for a set of independent framework systems, so a single GPU kernel
 launch can evaluate an insertion in every system at once. Per-system slices are
 `atom_offsets[n]+1:atom_offsets[n+1]` into positions/types/charges and
-`k_offsets[n]+1:k_offsets[n+1]` into ks/kprefactor/Shost. `cutoff` (Å) truncates the LJ sum and
+`k_offsets[n]+1:k_offsets[n+1]` into ks/kprefactor/Shost. Within a system's slice, atoms are
+sorted by cell-list cell (see below), not CIF order. `cutoff` (Å) truncates the LJ sum and
 `ewald_cutoff` (Å) truncates the real- and reciprocal-space Ewald sums; they may differ.
 
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each system's replication: those
@@ -24,8 +25,18 @@ can reach roughly 1.3 times `self_term_halfrange` away from the mean.
 
 A sample of up to 32 k-vectors gives high probability, not certainty, that a false
 `replication` claim is caught (see `verify_replication`).
+
+Each system's atoms are stored sorted into a grid of `ncells[n]` cells along the stored cell's
+three axes (fractional coordinates, wrapped into [0,1)), so that a cell is a contiguous range of
+`positions`/`types`/`charges`. `cell_offsets` holds each system's `prod(ncells[n]) + 1` local
+offsets back to back (system `n`'s block starts at `cellgrid_offsets[n]+1`; local offset `c`'s
+atom range is `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c] + 1` through
+`atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c + 1]`, cell index `c` linear in
+`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). `reach[n]` is the stencil half-width (in
+cells) `insertion_energy` visits around an insertion's home cell, sized so that no atom pair
+within `cutoff`/`ewald_cutoff` of any guest site is missed.
 """
-struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
+struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     positions::VP
     types::VI
     charges::VT
@@ -40,6 +51,10 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
     k_offsets::VI
     constant_offset::VT
     self_term_halfrange::VT
+    ncells::VN
+    reach::VN
+    cell_offsets::VI
+    cellgrid_offsets::VI
     sigma::MT
     epsilon::MT
     cutoff::T
@@ -92,11 +107,19 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
 end
 
 """
-    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams) -> FrameworkBatch
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 6) -> FrameworkBatch
 
 Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
 parameters across all of them. Each framework must already be replicated large enough that its
-minimum image exceeds `2 * max(ff.cutoff, ewald.cutoff)`.
+minimum image exceeds `2 * (max(ff.cutoff, ewald.cutoff) + r_guest)`, `r_guest` the guest's
+largest site distance from its reference point, since `insertion_energy`'s cell-list stencil
+takes one minimum image per host atom and relies on every contributing pair falling inside that
+bound. `cellwidth` (Å) is the target cell-list grid spacing along each axis; each system gets
+`max(1, floor(L_i / cellwidth))` cells along its `i`-th perpendicular length `L_i`. The default,
+6 Å, is the fastest of `(2, 3, 4, 6)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the
+efficiency design spec's E2 measurements): at 4 and 6 Å the stencil already spans the whole grid
+on every axis for that system's cutoff-plus-guest-reach, so the narrower widths (2, 3 Å) only
+add cell-traversal overhead without visiting fewer atoms than 4 or 6 Å already do.
 
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
@@ -110,8 +133,14 @@ offending value. Throws if `$(SELF_TERM_GUARD_FACTOR)·self_term_halfrange` exce
 estimate and the guard factor: that combination (a strongly polar guest in a small periodic
 cell) needs the per-insertion sum, which this batch does not provide.
 """
-function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T}, ewald::EwaldParams{T}) where {T}
+function FrameworkBatch(
+        fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T}, ewald::EwaldParams{T};
+        cellwidth = 6
+    ) where {T}
     rc = max(ff.cutoff, ewald.cutoff)
+    r_guest = maximum(norm, guest.sites)
+    rc_stencil = rc + r_guest
+    w = T(cellwidth)
     positions = SVector{3, T}[]
     types = Int32[]
     charges = T[]
@@ -126,6 +155,10 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     k_offsets = Int32[0]
     constant_offset = T[]
     self_term_halfrange = T[]
+    ncells = SVector{3, Int32}[]
+    reach = SVector{3, Int32}[]
+    cell_offsets = Int32[]
+    cellgrid_offsets = Int32[0]
     gcounts = [count(==(t), guest.types) for t in eachindex(ff.names)]
     α = ewald_alpha(ewald.cutoff, ewald.precision)
     kmax = ewald_kmax(α, ewald.precision)
@@ -136,17 +169,30 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     rng_self = Xoshiro(0x5e1f)
     self_quats = [shoemake_quaternion(rng_self, T) for _ in 1:64]
     for (n, fw) in pairs(fws)
-        m = min_multiplicity(fw.cell, rc)
-        m == (1, 1, 1) || throw(ArgumentError("framework $n is too small for cutoff $rc; replicate it by $m first"))
+        m = min_multiplicity(fw.cell, rc_stencil)
+        m == (1, 1, 1) || throw(
+            ArgumentError(
+                "framework $n is too small for cutoff $rc plus guest reach $r_guest = $rc_stencil; " *
+                    "replicate it by $m first"
+            )
+        )
+        A = fw.cell
+        L = perpendicular_lengths(A)
+        n_grid = grid_dims(L, w)
+        reach_n = stencil_reaches(L, n_grid, rc_stencil)
         pos = cartesian(fw)
         # kUPS UFF-style LJ type names carry a trailing underscore (e.g. "Zr_"); CIF element
         # symbols don't, so the lookup appends it.
         ty = Int32[typeindex(ff, s * "_") for s in fw.symbols]
-        append!(positions, pos)
-        append!(types, ty)
-        append!(charges, fw.charges)
+        perm, local_offsets = cell_sort(fw.frac, n_grid)
+        append!(positions, pos[perm])
+        append!(types, ty[perm])
+        append!(charges, fw.charges[perm])
         push!(atom_offsets, Int32(length(positions)))
-        A = fw.cell
+        append!(cell_offsets, local_offsets)
+        push!(cellgrid_offsets, Int32(length(cell_offsets)))
+        push!(ncells, n_grid)
+        push!(reach, reach_n)
         V = volume(A)
         push!(cells, A)
         push!(invcells, inv(A))
@@ -213,6 +259,7 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
     return FrameworkBatch(
         positions, types, charges, atom_offsets, cells, invcells, volumes, alphas,
         ks, kprefactor, Shost, k_offsets, constant_offset, self_term_halfrange,
+        ncells, reach, cell_offsets, cellgrid_offsets,
         ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff, length(fws)
     )
 end

@@ -68,8 +68,9 @@ end
 @kernel function widom_kernel!(ΔU, @Const(sys_of), @Const(rpos), @Const(quat), batch, guest)
     i = @index(Global)
     s = sys_of[i]
-    a0 = batch.atom_offsets[s] + 1
-    a1 = batch.atom_offsets[s + 1]
+    a0 = batch.atom_offsets[s]
+    g0 = batch.cellgrid_offsets[s] + 1
+    g1 = batch.cellgrid_offsets[s + 1]
     k0 = batch.k_offsets[s] + 1
     k1 = batch.k_offsets[s + 1]
     A = batch.cells[s]
@@ -77,7 +78,8 @@ end
     pos = A * rpos[i]
     e = insertion_energy(
         pos, quat[i], guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
-        view(batch.positions, a0:a1), view(batch.types, a0:a1), view(batch.charges, a0:a1),
+        batch.positions, batch.types, batch.charges, a0, batch.ncells[s], batch.reach[s],
+        view(batch.cell_offsets, g0:g1),
         A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1)
     )
     ΔU[i] = e + batch.constant_offset[s]
@@ -133,6 +135,32 @@ function widom(
             "batch ks/kprefactor/Shost must share axes: $(axes(batch.ks)) vs $(axes(batch.kprefactor)) vs $(axes(batch.Shost))"
         )
     )
+    length(batch.ncells) == length(batch.reach) == nsys || throw(
+        DimensionMismatch(
+            "batch ncells/reach must have one entry per system (nsys=$nsys): " *
+                "$(length(batch.ncells)) / $(length(batch.reach))"
+        )
+    )
+    length(batch.cellgrid_offsets) == nsys + 1 || throw(
+        DimensionMismatch(
+            "batch cellgrid_offsets must have nsys+1=$(nsys + 1) entries, got $(length(batch.cellgrid_offsets))"
+        )
+    )
+    batch.cellgrid_offsets[end] == length(batch.cell_offsets) || throw(
+        DimensionMismatch(
+            "batch cellgrid_offsets[end]=$(batch.cellgrid_offsets[end]) must equal " *
+                "length(cell_offsets)=$(length(batch.cell_offsets))"
+        )
+    )
+    for s in 1:nsys
+        g1 = batch.cellgrid_offsets[s + 1]
+        natoms_s = batch.atom_offsets[s + 1] - batch.atom_offsets[s]
+        batch.cell_offsets[g1] == natoms_s || throw(
+            DimensionMismatch(
+                "system $s: last cell_offsets entry $(batch.cell_offsets[g1]) must equal its atom count $natoms_s"
+            )
+        )
+    end
     kT = F(KB * T)
     dbatch = adapt(backend, batch)
     rng = Xoshiro(seed)

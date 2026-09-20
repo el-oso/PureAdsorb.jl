@@ -21,8 +21,8 @@ signature_findings(f, types; guarantees) = MODE === :full ?
 
 insertion_energy_types(::Type{T}) where {T} = (
     SVector{3, T}, SVector{4, T}, PureAdsorb.Guest{T, 3}, Matrix{T}, Matrix{T}, T, T,
-    Vector{SVector{3, T}}, Vector{Int32}, Vector{T}, SMatrix{3, 3, T, 9}, SMatrix{3, 3, T, 9},
-    T, Vector{SVector{3, T}}, Vector{T}, Vector{Complex{T}},
+    Vector{SVector{3, T}}, Vector{Int32}, Vector{T}, Int, SVector{3, Int32}, SVector{3, Int32}, Vector{Int32},
+    SMatrix{3, 3, T, 9}, SMatrix{3, 3, T, 9}, T, Vector{SVector{3, T}}, Vector{T}, Vector{Complex{T}},
 )
 const M3 = SMatrix{3, 3, Float64, 9}
 

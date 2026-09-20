@@ -32,6 +32,8 @@ else
 end
 is_gpu = backend_name in ("cuda", "rocm")
 
+cellwidth = parse(Float64, get(ENV, "PA_CELLWIDTH", "6"))
+
 fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T = F)
 ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = F)
 g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = F)
@@ -56,7 +58,7 @@ kernel_chunk = 2^16
 # Batch assembly (Ewald k-vector tables in particular) is expensive at nsys=64, so each nsys
 # is built once and reused across every ninsert and by the kernel-only measurement below.
 batches = Dict{Int, Any}()
-get_batch!(nsys) = get!(() -> FrameworkBatch(fill(sc, nsys), ff, g, ewald), batches, nsys)
+get_batch!(nsys) = get!(() -> FrameworkBatch(fill(sc, nsys), ff, g, ewald; cellwidth), batches, nsys)
 
 samples = []
 for nsys in nsys_grid
@@ -104,21 +106,27 @@ for nsys in (isempty(pa_grid) ? (1, 64) : ())
     flush(stdout)
 end
 
+commit = try
+    readchomp(`git -C $(pkgdir(PureAdsorb)) rev-parse --short HEAD`)
+catch
+    "unknown"
+end
+
 meta = (;
     host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
     precision = precision_name, nthreads = Threads.nthreads(), nsys_grid = collect(nsys_grid),
-    ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk,
+    ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk, cellwidth, commit,
 )
 mkpath(joinpath(@__DIR__, "results"))
 outpath = if isempty(pa_grid)
     joinpath(
         @__DIR__, "results",
-        "pureadsorb_widom_$(meta.host)_$(backend_name)_$(precision_name)_$(Dates.format(now(), "yyyymmdd")).json"
+        "pureadsorb_widom_$(meta.host)_$(backend_name)_$(precision_name)_$(Dates.format(now(), "yyyymmdd"))_$(commit).json"
     )
 else
     joinpath(
         @__DIR__, "results",
-        "pureadsorb_widom_headtohead_$(meta.host)_$(precision_name)_nsys$(point_nsys)_ninsert$(point_ninsert)_$(Dates.format(now(), "yyyymmdd")).json"
+        "pureadsorb_widom_headtohead_$(meta.host)_$(precision_name)_nsys$(point_nsys)_ninsert$(point_ninsert)_$(Dates.format(now(), "yyyymmdd"))_$(commit).json"
     )
 end
 open(outpath, "w") do io

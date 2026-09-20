@@ -42,12 +42,15 @@ min_chunk = 2^18
 run_length = parse(Int, get(ENV, "PA_RUN", "1"))
 run_length >= 1 || throw(ArgumentError("PA_RUN must be ≥ 1, got $run_length"))
 
+cellwidth = parse(Float64, get(ENV, "PA_CELLWIDTH", "6"))
+
 data = joinpath(pkgdir(PureAdsorb), "data")
 fw = read_cif(joinpath(data, "RUBTAK.cif"); T = F)
 ff = read_forcefield(joinpath(data, "trappe.yaml"); T = F)
 g = read_guest(joinpath(data, "co2.yaml"), ff; T = F)
-b1 = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = F(12), precision = F(1.0e-6)))
+b1 = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = F(12), precision = F(1.0e-6)); cellwidth)
 natoms, nk = length(b1.positions), length(b1.ks)
+ncellgrid = length(b1.cell_offsets)   # one system's prod(ncells) + 1 local cell offsets
 
 # `n` consecutive copies of `v` in one device array. Each pass copies the filled prefix onto the
 # next free range, so the number of device-to-device copies grows as log2(n).
@@ -66,21 +69,24 @@ function tile(backend, v::AbstractVector, n::Integer)
 end
 
 function tiled_batch(backend, b::FrameworkBatch{T}, n::Integer) where {T}
-    na, nkv = length(b.positions), length(b.ks)
-    Int64(n) * max(na, nkv) <= typemax(Int32) || throw(ArgumentError("nsys=$n overflows the Int32 offsets"))
+    na, nkv, ncg = length(b.positions), length(b.ks), length(b.cell_offsets)
+    Int64(n) * max(na, nkv, ncg) <= typemax(Int32) || throw(ArgumentError("nsys=$n overflows the Int32 offsets"))
     offsets(len) = adapt(backend, Int32[Int32(i * len) for i in 0:n])
     rep(v) = adapt(backend, repeat(collect(v), n))
     return FrameworkBatch(
         tile(backend, b.positions, n), tile(backend, b.types, n), tile(backend, b.charges, n), offsets(na),
         rep(b.cells), rep(b.invcells), rep(b.volumes), rep(b.alphas),
         tile(backend, b.ks, n), tile(backend, b.kprefactor, n), tile(backend, b.Shost, n), offsets(nkv),
-        rep(b.constant_offset), rep(b.self_term_halfrange), adapt(backend, b.sigma), adapt(backend, b.epsilon),
+        rep(b.constant_offset), rep(b.self_term_halfrange),
+        rep(b.ncells), rep(b.reach), tile(backend, b.cell_offsets, n), offsets(ncg),
+        adapt(backend, b.sigma), adapt(backend, b.epsilon),
         b.cutoff, b.ewald_cutoff, Int(n),
     )
 end
 
 bytes_per_system = natoms * (sizeof(eltype(b1.positions)) + sizeof(Int32) + sizeof(F)) +
-    nk * (sizeof(eltype(b1.ks)) + sizeof(F) + sizeof(Complex{F}))
+    nk * (sizeof(eltype(b1.ks)) + sizeof(F) + sizeof(Complex{F})) +
+    ncellgrid * sizeof(Int32) + 2 * sizeof(eltype(b1.ncells))
 
 samples = []
 failed = nothing
@@ -119,15 +125,24 @@ for nsys in nsys_grid
     GC.gc(true)
 end
 
+commit = try
+    readchomp(`git -C $(pkgdir(PureAdsorb)) rev-parse --short HEAD`)
+catch
+    "unknown"
+end
+
 meta = (;
     host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
     precision, nthreads = Threads.nthreads(), natoms_per_system = natoms, nk_per_system = nk,
-    bytes_per_system, nsys_grid, min_chunk, run_length,
+    bytes_per_system, nsys_grid, min_chunk, run_length, cellwidth, commit,
 )
 # A single-size run (one process per batch size, so each size starts from an empty device memory
 # pool) writes its own file; `nsys` is part of the name.
 tag = (length(nsys_grid) == 1 ? "_nsys$(only(nsys_grid))" : "") * (run_length == 1 ? "" : "_run$(run_length)")
-out = joinpath(@__DIR__, "results", "pureadsorb_widom_scaling_$(meta.host)_$(backend_name)_$(precision)$(tag)_$(Dates.format(now(), "yyyymmdd")).json")
+out = joinpath(
+    @__DIR__, "results",
+    "pureadsorb_widom_scaling_$(meta.host)_$(backend_name)_$(precision)$(tag)_$(Dates.format(now(), "yyyymmdd"))_$(commit).json"
+)
 open(out, "w") do io
     JSON.print(io, (; meta, samples, failed), 2)
 end

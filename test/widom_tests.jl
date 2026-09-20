@@ -91,6 +91,7 @@ end
     bad = PureAdsorb.FrameworkBatch(
         b.positions, push!(copy(b.types), Int32(1)), b.charges, b.atom_offsets, b.cells, b.invcells,
         b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset, b.self_term_halfrange,
+        b.ncells, b.reach, b.cell_offsets, b.cellgrid_offsets,
         b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff, b.nsys
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)

@@ -22,9 +22,16 @@ docs = [(p, JSON.parsefile(p)) for p in sort(paths)]
 if get(ENV, "PA_PLOT_ALL", "0") != "1"
     series_key(d) = (d["meta"]["host"], d["meta"]["backend"], d["meta"]["precision"], get(d["meta"], "run_length", 1))
     latest = Dict{Any, Tuple{String, Any}}()
+    # More samples wins first, so a full sweep is not displaced by a spot check at a later
+    # commit that covers only a couple of batch sizes; the latest date is the tiebreak among
+    # files with the same sample count.
     for (p, d) in docs
         key = series_key(d)
-        (!haskey(latest, key) || d["meta"]["date"] > latest[key][2]["meta"]["date"]) && (latest[key] = (p, d))
+        cur = get(latest, key, nothing)
+        better = isnothing(cur) ||
+            length(d["samples"]) > length(cur[2]["samples"]) ||
+            (length(d["samples"]) == length(cur[2]["samples"]) && d["meta"]["date"] > cur[2]["meta"]["date"])
+        better && (latest[key] = (p, d))
     end
     docs = collect(values(latest))
 end

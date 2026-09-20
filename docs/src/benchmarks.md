@@ -15,6 +15,12 @@ every timing in `bench/widom_bench.jl`.
 ## PureAdsorb throughput
 
 RUBTAK 3×3×3 + CO2, 12 Å cutoffs, Ewald precision 1e-6. `insertions/s = ninsert / median(times_s)`.
+Each `widom` call runs two kernels per chunk: a hard-core rejection test flags every insertion
+whose guest sites all stay outside a rigorous rejection radius of every host atom, then the
+energy kernel computes `ΔU` for the survivors only. The host reads the flags, builds the
+survivor index list, and uploads it between the two kernel launches (the "kernel path" numbers
+below cover both kernels but not this host-side compaction step; "end-to-end" covers the whole
+`widom` call, including it, plus pose generation, transfers and block accumulation).
 
 ### CPU (Float64, neuromancer)
 
@@ -23,77 +29,120 @@ RUBTAK 3×3×3 + CO2, 12 Å cutoffs, Ewald precision 1e-6. `insertions/s = ninse
 | 1 | 10,000 | 0.7476 | 13,376 | 5 |
 | 1 | 100,000 | 6.0817 | 16,443 | 2 |
 
-Kernel-only (one launch of `widom_kernel!` + synchronize on a 2¹⁶-pose chunk):
+Kernel path (one launch of each kernel + synchronize, on a 2¹⁶-pose chunk):
 
 | nsys | median (s) | insertions/s |
 |---|---|---|
 | 1 | 3.9427 | 16,622 |
 | 64 | 4.2583 | 15,390 |
 
-### AMD Radeon AI PRO R9700 (Float64, galen, ROCm)
+### AMD Radeon AI PRO R9700 (galen, ROCm), commit a4c86a7
+
+`bench/results/pureadsorb_widom_galen_rocm_{f64,f32}_20260920_a4c86a7.json`.
+
+End-to-end, Float64:
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.2047 | 48,848 | 10 |
-| 1 | 100,000 | 0.7877 | 126,959 | 10 |
-| 1 | 1,000,000 | 6.164 | 162,242 | 5 |
-| 64 | 10,000 | 0.2089 | 47,869 | 10 |
-| 64 | 100,000 | 0.795 | 125,792 | 10 |
-| 64 | 1,000,000 | 6.18 | 161,804 | 5 |
+| 1 | 10,000 | 0.1290 | 77,525 | 10 |
+| 1 | 100,000 | 0.3679 | 271,823 | 10 |
+| 1 | 1,000,000 | 3.748 | 266,793 | 9 |
+| 64 | 10,000 | 0.1292 | 77,392 | 10 |
+| 64 | 100,000 | 0.3681 | 271,666 | 10 |
+| 64 | 1,000,000 | 3.762 | 265,825 | 8 |
 
-Kernel-only (run length 256): nsys=1, 0.3917 s (167,322 ins/s); nsys=64, 0.3919 s (167,207 ins/s).
-
-### AMD Radeon AI PRO R9700 (Float32, galen, ROCm)
+End-to-end, Float32:
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.01517 | 659,241 | 10 |
-| 1 | 100,000 | 0.05317 | 1,880,730 | 10 |
-| 1 | 1,000,000 | 0.4254 | 2,350,478 | 10 |
-| 64 | 10,000 | 0.01554 | 643,392 | 10 |
-| 64 | 100,000 | 0.05499 | 1,818,359 | 10 |
-| 64 | 1,000,000 | 0.4306 | 2,322,542 | 10 |
+| 1 | 10,000 | 0.02019 | 495,322 | 10 |
+| 1 | 100,000 | 0.04668 | 2,142,125 | 10 |
+| 1 | 1,000,000 | 0.4037 | 2,476,918 | 10 |
+| 64 | 10,000 | 0.009633 | 1,038,059 | 10 |
+| 64 | 100,000 | 0.02965 | 3,373,028 | 10 |
+| 64 | 1,000,000 | 0.2742 | 3,647,215 | 10 |
 
-Kernel-only (run length 256): nsys=1, 0.02161 s (3,032,082 ins/s); nsys=64, 0.02231 s
-(2,937,811 ins/s).
+Kernel path (chunk 65,536, run length 256; rejected fraction 40.5% at both precisions):
 
-### NVIDIA RTX 3050 (Float64, neuromancer, CUDA)
+| Precision | nsys | rejection test (ms) | energy (ms) | total (ms) | insertions/s |
+|---|---|---|---|---|---|
+| Float64 | 1 | 1.450 | 232.407 | 233.856 | 280,241 |
+| Float64 | 64 | 1.278 | 232.384 | 233.662 | 280,474 |
+| Float32 | 1 | 0.351 | 18.490 | 18.841 | 3,478,392 |
+| Float32 | 64 | 0.354 | 9.408 | 9.761 | 6,713,723 |
 
-| nsys | ninsert | median (s) | insertions/s | samples |
-|---|---|---|---|---|
-| 1 | 10,000 | 0.5275 | 18,957 | 10 |
-| 1 | 100,000 | 3.185 | 31,398 | 10 |
-| 1 | 1,000,000 | 32.48 | 30,792 | 1 |
-| 64 | 10,000 | 0.5423 | 18,441 | 10 |
-| 64 | 100,000 | 3.181 | 31,437 | 10 |
-| 64 | 1,000,000 | 32.24 | 31,021 | 1 |
+### NVIDIA RTX 3050 (neuromancer, CUDA), commit e903fac
 
-Kernel-only (run length 256): nsys=1, 2.108 s (31,091 ins/s); nsys=64, 2.115 s (30,990 ins/s).
+`bench/results/pureadsorb_widom_neuromancer_cuda_{f64,f32}_20260920_e903fac.json`.
 
-### NVIDIA RTX 3050 (Float32, neuromancer, CUDA)
+End-to-end, Float64:
 
 | nsys | ninsert | median (s) | insertions/s | samples |
 |---|---|---|---|---|
-| 1 | 10,000 | 0.03157 | 316,790 | 10 |
-| 1 | 100,000 | 0.1551 | 644,708 | 10 |
-| 1 | 1,000,000 | 1.575 | 634,888 | 10 |
-| 64 | 10,000 | 0.034 | 294,157 | 10 |
-| 64 | 100,000 | 0.1669 | 599,135 | 10 |
-| 64 | 1,000,000 | 1.651 | 605,675 | 10 |
+| 1 | 10,000 | 0.1726 | 57,922 | 10 |
+| 1 | 100,000 | 1.352 | 73,962 | 10 |
+| 1 | 1,000,000 | 12.97 | 77,121 | 3 |
+| 64 | 10,000 | 0.1776 | 56,306 | 10 |
+| 64 | 100,000 | 1.359 | 73,574 | 10 |
+| 64 | 1,000,000 | 13.09 | 76,414 | 3 |
 
-Kernel-only (run length 256): nsys=1, 0.09944 s (659,081 ins/s); nsys=64, 0.1041 s
-(629,587 ins/s).
+The `ninsert = 1,000,000` points collect only 3 Chairmarks samples: each run takes about 13 s,
+so the 30 s time budget for this grid point fits few repeats.
 
-Consumer GeForce cards throttle double-precision throughput relative to a datacenter part:
-the Float64/Float32 gap on the RTX 3050 (roughly 20× at nsys=1) is far larger than the
+End-to-end, Float32:
+
+| nsys | ninsert | median (s) | insertions/s | samples |
+|---|---|---|---|---|
+| 1 | 10,000 | 0.01411 | 708,541 | 10 |
+| 1 | 100,000 | 0.07301 | 1,369,644 | 10 |
+| 1 | 1,000,000 | 0.6784 | 1,474,150 | 10 |
+| 64 | 10,000 | 0.01770 | 564,987 | 10 |
+| 64 | 100,000 | 0.08184 | 1,221,941 | 10 |
+| 64 | 1,000,000 | 0.7452 | 1,341,972 | 10 |
+
+Kernel path (chunk 65,536, run length 256; rejected fraction 40.5% at both precisions):
+
+| Precision | nsys | rejection test (ms) | energy (ms) | total (ms) | insertions/s |
+|---|---|---|---|---|---|
+| Float64 | 1 | 7.295 | 838.481 | 845.775 | 77,486 |
+| Float64 | 64 | 10.281 | 838.471 | 848.752 | 77,215 |
+| Float32 | 1 | 1.191 | 38.599 | 39.791 | 1,647,021 |
+| Float32 | 64 | 3.568 | 40.664 | 44.233 | 1,481,621 |
+
+Consumer GeForce cards throttle double-precision throughput relative to a datacenter part: the
+Float64/Float32 gap on the RTX 3050 (about 19× at nsys=1, kernel path) is far larger than the
 Float64-only R9700 numbers above would suggest by themselves.
+
+### Host-side share (Float32, R9700)
+
+At nsys=1, Float32, the kernel path (3,478,392 insertions/s) runs faster than the end-to-end
+call at 1,000,000 insertions (2,476,918 insertions/s). Pose generation, host↔device transfers,
+the phase-0/phase-1 host-side compaction step, and block accumulation all run on the host and
+account for the remaining time; end-to-end is not just the two kernels back to back.
+
+### Kernel-path throughput on the R9700 by configuration
+
+Each row is a distinct measured configuration at its own commit; only the last two rows include
+Float32. The first six rows use `widom_bench.jl`'s kernel-only measurement (chunk 65,536); "Cell-
+sorted atoms" instead uses `widom_scaling.jl`'s one-framework point (chunk 262,144), the only R9700
+data recorded for that configuration.
+
+| Configuration | Commit | Result file | Float64 (ins/s) | Float32 (ins/s) |
+|---|---|---|---|---|
+| Full reciprocal table, round-robin assignment | `91966c7` | `pureadsorb_widom_galen_rocm_20260917.json` | 155,142 | not measured (no Float32 support yet) |
+| Runs of 256 | `c910867` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920.json` | 167,322 | 3,032,082 |
+| Sparse reciprocal table | `584b806` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_584b806.json` | 230,728 | 3,975,541 |
+| Cell-sorted atoms | `da327a6` | `pureadsorb_widom_scaling_galen_rocm_{f64,f32}_run256_20260920_da327a6.json` | 253,496 | 4,826,870 |
+| Restricted-range pair term | `082c656` | RTX-3050-only measurement; not recorded on the R9700 | — | — |
+| Core rejection | `3653c6f` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_3653c6f.json` | 280,754 | 3,503,406 |
+| Current | `a4c86a7` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_a4c86a7.json` | 280,241 | 3,478,392 |
 
 ![Widom throughput per backend](assets/widom_throughput.png)
 
 ## Throughput against batch size
 
-`bench/widom_scaling.jl` measures kernel throughput — one `widom_kernel!` launch plus
-synchronization, on a chunk of 262,144 insertions — against the number of frameworks (`nsys`)
+`bench/widom_scaling.jl` measures kernel throughput — one hard-core rejection kernel launch plus
+the energy kernel, on a chunk of 262,144 insertions — against the number of frameworks (`nsys`)
 tiled into one batch, on the R9700 (galen, ROCm), at a given insertion run length. One
 framework's host and Ewald tables are computed on the CPU and tiled onto the device; the batch
 stays on the device for the whole sweep, and each batch size runs in its own process.
@@ -104,10 +153,12 @@ work-items adjacent in the insertion order read the same framework's tables. The
 length is `clamp((ninsert ÷ nsys) ÷ 4, 1, 256)`, reaching its ceiling of 256 once a system
 receives at least 1,024 insertions.
 
-### Run length 256
+### Run length 256, at commit c910867
 
 Run length 256 is what `default_run` gives at every batch size in this sweep (`ninsert = chunk =
-262,144`, so `ninsert ÷ nsys >= 1,024` for every `nsys` tested).
+262,144`, so `ninsert ÷ nsys >= 1,024` for every `nsys` tested). This sweep, to the largest batch
+size tested at each precision (98,304 frameworks Float64, 196,608 frameworks Float32), is
+measured at commit `c910867`, before the hard-core rejection stage existed.
 
 | frameworks | batch size (GiB) | median kernel insertions/s (Float64) |
 |---|---|---|
@@ -134,6 +185,23 @@ Throughput under run length 256 is flat within a few percent across the whole sw
 precisions: Float64 stays within 0.4% (169,292 to 168,596 insertions/s), Float32 within 3.2%
 (3,315,371 to 3,211,654 insertions/s, with a modest recovery to 3,226,734 at the largest batch).
 
+### Run length 256, at the current commit (a4c86a7)
+
+`bench/results/pureadsorb_widom_scaling_galen_rocm_{f64,f32}_run256_20260920_a4c86a7.json` cover
+two batch sizes at the current commit, each also giving bytes/framework and the rejected
+fraction (see [Memory](#memory)):
+
+| Precision | frameworks | batch size (GiB) | rejected fraction | insertions/s |
+|---|---|---|---|---|
+| Float64 | 1 | 0.0001336 | 40.79% | 443,248 |
+| Float64 | 32,768 | 4.377 | 40.79% | 436,939 |
+| Float32 | 1 | 0.0000834 | 40.81% | 6,970,887 |
+| Float32 | 32,768 | 2.733 | 40.81% | 8,911,287 |
+
+In Float32, the kernel path runs faster with 32,768 frameworks (8,911,287 insertions/s) than
+with one (6,970,887 insertions/s); this is measured, not explained here. Float64 does not show
+the same effect (436,939 against 443,248 insertions/s).
+
 ### Run length sweep at 32,768 frameworks
 
 `pureadsorb_widom_runlength_galen_rocm_20260920.json` fixes the batch at 32,768 frameworks and
@@ -151,7 +219,7 @@ Float64 throughput is close to its plateau already at run length 16 and does not
 out to a run spanning the whole chunk. Float32 keeps rising past run length 256, reaching its
 highest measured value at run length 4,096 (3,344,249 insertions/s) before leveling off.
 
-### Run length 1 (round-robin)
+### Run length 1 (round-robin), at commit c910867
 
 | frameworks | batch size (GiB) | median kernel insertions/s |
 |---|---|---|
@@ -193,7 +261,9 @@ insertions/s gives an effective data rate: 330,984 B × 161,019 ins/s ≈ 53.3 G
 The two rates are close despite the precisions differing by 2× in bytes per element; this is
 consistent with the kernel being limited by memory traffic at large batch sizes under
 round-robin assignment, an inference from the throughput numbers above, not something confirmed
-with a profiler.
+with a profiler. `bytes_per_system` at commit c910867 predates the hard-core rejection stage's
+cell list and rejection tables, so it differs from the current commit's figures in
+[Memory](#memory) below.
 
 A screening run over distinct frameworks assigns insertions close to round-robin (many systems,
 few insertions per system), so it operates near these figures rather than the run-length-256
@@ -205,7 +275,7 @@ measured failure point.
 
 ![Widom kernel throughput vs batch size](assets/widom_scaling.png)
 
-## kUPS head-to-head (RTX 3050, Float64)
+## kUPS head-to-head (RTX 3050, Float64, commit 695f083)
 
 `bench/run_headtohead.sh` alternates kUPS and PureAdsorb blocks for each `(nsys, ninsert)`
 point on the same GPU, same cutoffs (LJ 12 Å, Ewald 12 Å, precision 1e-6), same force field,
@@ -214,7 +284,8 @@ host CIF and guest files (byte-identical to kUPS's own examples). kUPS times its
 `Chairmarks` samples of `widom(...)` warm, in-process. Comparing `ninsert / t` directly would
 put a per-process cost against a per-call one on the same footing, so instead: for each `nsys`,
 fit `t = intercept + ninsert / rate` by ordinary least squares over the median time at each
-`ninsert`, and compare the fitted `rate`.
+`ninsert`, and compare the fitted `rate`. This comparison is recorded at PureAdsorb commit
+`695f083`, before the hard-core rejection stage existed.
 
 | Code | nsys | Fitted intercept (s) | Marginal rate (insertions/s) |
 |---|---|---|---|
@@ -226,6 +297,12 @@ fit `t = intercept + ninsert / rate` by ordinary least squares over the median t
 Ratio (PureAdsorb marginal rate / kUPS marginal rate): **13.6×** at nsys=1, **7.4×** at nsys=4
 — kUPS batches insertions across systems more efficiently at nsys=4, while PureAdsorb was
 already close to its per-call floor at nsys=1.
+
+PureAdsorb's Float64 kernel path on the same RTX 3050, at the current commit (`e903fac`), runs
+at 77,486 insertions/s (nsys=1, chunk 65,536) — see the throughput tables above for the full
+current-commit measurement; no new ratio against the `695f083` kUPS timings is computed here,
+since the two were measured by different methods (whole-process wall time against a warm,
+in-process kernel-only launch).
 
 ### Fixed cost per process
 
@@ -259,11 +336,11 @@ above). kUPS is also Float64-only for this workload — `jax_enable_x64` is forc
 PureAdsorb's Float32 numbers are reported above for reference.
 
 The kUPS figures above are on the 6 GB RTX 3050 (neuromancer); kUPS was not run on the R9700.
-For comparison, in the same units, PureAdsorb's own per-framework device footprint
-(`bytes_per_system` in `bench/widom_scaling.jl`) is 330,984 B ≈ 0.000308 GiB (Float64) and
-171,648 B ≈ 0.000160 GiB (Float32) — measured on the 32 GB R9700 (galen), where the "Throughput
-against batch size" section above runs batches up to 98,304 (Float64) and 196,608 (Float32)
-frameworks.
+For comparison, in the same units, PureAdsorb's own per-framework device footprint at the
+current commit is 143,436 B ≈ 0.000134 GiB (Float64) and 89,552 B ≈ 0.0000834 GiB (Float32) —
+computed from a `FrameworkBatch` for RUBTAK 3×3×3 + CO2 (default `cellwidth = 2`), the same
+configuration the "Throughput against batch size" section above runs at up to 98,304 (Float64)
+and 196,608 (Float32) frameworks on the 32 GB R9700 (galen).
 
 ## Caveats
 
@@ -275,6 +352,8 @@ frameworks.
 - `bench/run_headtohead.sh` sets the CPU governor to `performance` when writable; on
   neuromancer it was not (`powersave` throughout, recorded in each kUPS result's
   `meta.cpu_governor`).
+- The R9700 throughput tables above are all commit `a4c86a7`; galen is not touched to
+  re-measure them at a later commit.
 
 ## Reproducing
 
@@ -284,9 +363,12 @@ julia --project=bench bench/widom_bench.jl
 
 # GPU (separate environment — see bench/results/README.md for why)
 julia --project=bench/gpu -e 'using Pkg; Pkg.instantiate()'
-PA_BACKEND=cuda PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
-PA_BACKEND=cuda PA_PRECISION=f32 julia --project=bench/gpu bench/widom_bench.jl
-PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=cuda PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=cuda PA_PRECISION=f32 julia --project=bench/gpu bench/widom_bench.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
+
+# A different phase-0 cell width (Å); default is 2
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f32 PA_CELLWIDTH=3 julia --project=bench/gpu bench/widom_bench.jl
 
 # One (nsys, ninsert) grid point only, for a head-to-head run against kUPS
 PA_BACKEND=cuda PA_GRID=4:1000000 PA_REPS=5 julia --project=bench/gpu bench/widom_bench.jl
@@ -296,12 +378,12 @@ bench/run_headtohead.sh
 
 # Kernel throughput vs number of frameworks in a batch, round-robin (run length 1, the default
 # of widom_scaling.jl's own PA_RUN)
-PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_scaling.jl
-PA_BACKEND=rocm PA_PRECISION=f32 julia --project=bench/gpu bench/widom_scaling.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_scaling.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f32 julia --project=bench/gpu bench/widom_scaling.jl
 
 # Same sweep at run length 256, the default widom itself uses at these batch sizes
-PA_BACKEND=rocm PA_PRECISION=f64 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
-PA_BACKEND=rocm PA_PRECISION=f32 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f64 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f32 PA_RUN=256 julia --project=bench/gpu bench/widom_scaling.jl
 
 # Near device capacity, one process per batch size: memory freed by a smaller batch is not
 # returned to the device within the process, so the next large allocation would otherwise stall
@@ -317,8 +399,11 @@ PA_PLOT_OUT=docs/src/assets/widom_scaling.png julia --project=bench bench/plot_s
 ```
 
 `PA_BACKEND` selects `cpu` (default), `cuda` or `rocm`; `PA_PRECISION` selects `f64` (default)
-or `f32`; `PA_GRID` restricts a `widom_bench.jl` sweep to one `nsys:ninsert` point and `PA_REPS`
-sets its sample count; `PA_NSYS` restricts a `widom_scaling.jl` sweep to the given batch sizes
-(space-separated, increasing); `PA_RUN` sets `widom_scaling.jl`'s insertion run length (default
-1, round-robin). No plot is ever regenerated by re-running a benchmark — `plot_widom.jl` and
-`plot_scaling.jl` only read `bench/results/*.json`.
+or `f32`; `PA_COMMIT` records the commit a result file is attributed to (defaults to
+`git rev-parse --short HEAD` at run time) and drives the `_<commit>.json` suffix on the output
+file; `PA_CELLWIDTH` sets the phase-0 cell list's target width in Å (default 2); `PA_GRID`
+restricts a `widom_bench.jl` sweep to one `nsys:ninsert` point and `PA_REPS` sets its sample
+count; `PA_NSYS` restricts a `widom_scaling.jl` sweep to the given batch sizes (space-separated,
+increasing); `PA_RUN` sets `widom_scaling.jl`'s insertion run length (default 1, round-robin).
+No plot is ever regenerated by re-running a benchmark — `plot_widom.jl` and `plot_scaling.jl`
+only read `bench/results/*.json`.

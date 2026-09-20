@@ -4,8 +4,9 @@ PureAdsorb computes gas adsorption properties of porous crystals by batched Wido
 test-particle insertion, on CPU or GPU through KernelAbstractions.jl, in pure Julia. Given a
 batch of host frameworks, a rigid guest molecule and a Lennard-Jones + Ewald force field, it
 reports the excess chemical potential, Henry coefficient and zero-loading isosteric heat of
-adsorption, each with a standard error. One [`KernelAbstractions`](https://github.com/JuliaGPU/KernelAbstractions.jl)
-kernel runs unchanged on the CPU, on NVIDIA GPUs (CUDA.jl) and on AMD GPUs (AMDGPU.jl).
+adsorption, each with a standard error. Two [`KernelAbstractions`](https://github.com/JuliaGPU/KernelAbstractions.jl)
+kernels — a hard-core rejection test, then the energy on the survivors — run unchanged on the
+CPU, on NVIDIA GPUs (CUDA.jl) and on AMD GPUs (AMDGPU.jl).
 
 PureAdsorb reproduces the conventions of [kUPS](https://github.com/cusp-ai-oss/kups)
 (commit `e183c9a`), CuspAI's Widom/Monte Carlo engine, so results from the two codes compare

@@ -107,7 +107,10 @@ for (row, nsys) in enumerate(nsys_values)
             append!(ys, vals)
         end
         isempty(xs) && continue
-        violin!(ax, xs, ys; width = width * 0.9, color, label)
+        # `datalimits = extrema` clips the KDE to the sample range: without it, a group with few
+        # samples (a slow GPU config that fits fewer Chairmarks reps in its time budget) can get
+        # a density estimate that dips below zero, which errors on this log-scaled axis.
+        violin!(ax, xs, ys; width = width * 0.9, color, label, datalimits = extrema)
     end
     axislegend(ax; position = :rt, unique = true, merge = true)
 end

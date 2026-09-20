@@ -38,7 +38,7 @@ nsys_grid = parse.(Int, split(get(ENV, "PA_NSYS", default_nsys)))
 issorted(nsys_grid) || throw(ArgumentError("PA_NSYS must be increasing, got $nsys_grid"))
 min_chunk = 2^18
 # `PA_RUN` consecutive insertions go to the same framework before the assignment moves to the next
-# one; 1 is the round-robin assignment `widom` uses.
+# one; 1 gives the same insertion-to-insertion interleaving `widom`'s default run length avoids.
 run_length = parse(Int, get(ENV, "PA_RUN", "1"))
 run_length >= 1 || throw(ArgumentError("PA_RUN must be ≥ 1, got $run_length"))
 
@@ -101,10 +101,7 @@ for nsys in nsys_grid
     sys_of = Vector{Int32}(undef, chunk)
     rpos = Vector{SVector{3, F}}(undef, chunk)
     quat = Vector{SVector{4, F}}(undef, chunk)
-    PureAdsorb.random_poses!(rng, sys_of, rpos, quat, nsys)
-    for i in eachindex(sys_of)
-        sys_of[i] = Int32(mod1((i - 1) ÷ run_length + 1, nsys))
-    end
+    PureAdsorb.random_poses!(rng, sys_of, rpos, quat, 1, run_length, nsys)
     dsys, drpos, dquat = adapt(backend, sys_of), adapt(backend, rpos), adapt(backend, quat)
     dΔU = KernelAbstractions.allocate(backend, F, chunk)
     kern(dΔU, dsys, drpos, dquat, dbatch, g; ndrange = chunk)      # warm-up: compile

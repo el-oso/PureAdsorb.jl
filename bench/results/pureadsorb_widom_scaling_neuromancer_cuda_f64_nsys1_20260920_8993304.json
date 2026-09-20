@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-20T15:29:51.460",
+    "gpu": "NVIDIA GeForce RTX 3050",
+    "backend": "cuda",
+    "precision": "f64",
+    "nthreads": 16,
+    "natoms_per_system": 3078,
+    "nk_per_system": 190,
+    "bytes_per_system": 127020,
+    "nsys_grid": [
+      1
+    ],
+    "min_chunk": 262144,
+    "run_length": 1,
+    "cellwidth": 3.0,
+    "commit": "8993304"
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "chunk": 262144,
+      "bytes": 127020,
+      "rejected_frac": 0.40793609619140625,
+      "times_s": [
+        2.858084975,
+        2.8793269130000003,
+        2.88039448,
+        2.8798382620000003,
+        2.882080467,
+        2.8801406590000003,
+        2.879362104
+      ]
+    }
+  ],
+  "failed": null
+}

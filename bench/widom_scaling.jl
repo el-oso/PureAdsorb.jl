@@ -42,7 +42,7 @@ min_chunk = 2^18
 run_length = parse(Int, get(ENV, "PA_RUN", "1"))
 run_length >= 1 || throw(ArgumentError("PA_RUN must be ≥ 1, got $run_length"))
 
-cellwidth = parse(Float64, get(ENV, "PA_CELLWIDTH", "6"))
+cellwidth = parse(Float64, get(ENV, "PA_CELLWIDTH", "2"))
 
 data = joinpath(pkgdir(PureAdsorb), "data")
 fw = read_cif(joinpath(data, "RUBTAK.cif"); T = F)
@@ -51,6 +51,8 @@ g = read_guest(joinpath(data, "co2.yaml"), ff; T = F)
 b1 = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = F(12), precision = F(1.0e-6)); cellwidth)
 natoms, nk = length(b1.positions), length(b1.ks)
 ncellgrid = length(b1.cell_offsets)   # one system's prod(ncells) + 1 local cell offsets
+Nsites = length(g.sites)
+ntypes = size(b1.sigma, 1)
 
 # `n` consecutive copies of `v` in one device array. Each pass copies the filled prefix onto the
 # next free range, so the number of device-to-device copies grows as log2(n).
@@ -78,19 +80,28 @@ function tiled_batch(backend, b::FrameworkBatch{T}, n::Integer) where {T}
         rep(b.cells), rep(b.invcells), rep(b.volumes), rep(b.alphas),
         tile(backend, b.ks, n), tile(backend, b.kprefactor, n), tile(backend, b.Shost, n), offsets(nkv),
         rep(b.constant_offset), rep(b.self_term_halfrange),
-        rep(b.ncells), rep(b.reach), tile(backend, b.cell_offsets, n), offsets(ncg),
+        rep(b.ncells), tile(backend, b.cell_offsets, n), offsets(ncg),
         adapt(backend, b.sigma), adapt(backend, b.epsilon),
+        # compact_to_orig/guest_types/guest_types_orig/guest_sites_orig/guest_charges_orig are
+        # batch-wide (sized by the number of compact types or guest sites, not per system), so
+        # they are shared unchanged across every tiled copy rather than repeated.
+        adapt(backend, b.compact_to_orig), adapt(backend, b.guest_types), adapt(backend, b.guest_types_orig),
+        adapt(backend, b.guest_sites_orig), adapt(backend, b.guest_charges_orig),
+        rep(b.bs), tile(backend, b.kmin, n),
         b.cutoff, b.ewald_cutoff, Int(n),
     )
 end
 
 bytes_per_system = natoms * (sizeof(eltype(b1.positions)) + sizeof(Int32) + sizeof(F)) +
     nk * (sizeof(eltype(b1.ks)) + sizeof(F) + sizeof(Complex{F})) +
-    ncellgrid * sizeof(Int32) + 2 * sizeof(eltype(b1.ncells))
+    ncellgrid * sizeof(Int32) + 2 * sizeof(eltype(b1.ncells)) +
+    sizeof(F) + Nsites * ntypes * sizeof(F)   # bs + kmin
 
 samples = []
 failed = nothing
-kern = PureAdsorb.widom_kernel!(backend)
+kern0 = PureAdsorb.hardcore_kernel!(backend)
+kern1 = PureAdsorb.widom_kernel!(backend)
+kT = F(PureAdsorb.KB * 298.15)
 for nsys in nsys_grid
     chunk = max(min_chunk, nsys)
     local dbatch
@@ -103,32 +114,71 @@ for nsys in nsys_grid
         flush(stdout)
         break
     end
+    g_compact = PureAdsorb.Guest{F, Nsites}(g.sites, SVector{Nsites, Int}(b1.guest_types), g.charges, g.tc, g.pc, g.omega)
+    # `bs`/`constant_offset` tile identically across every copy of the same framework, so the
+    # rejection tables built from the tiled batch equal `b1`'s own tables tiled the same way.
+    rho2, reach0, ntypes_ = PureAdsorb.build_rejection_tables(
+        FrameworkBatch(
+            b1.positions, b1.types, b1.charges, b1.atom_offsets, fill(b1.cells[1], nsys), fill(b1.invcells[1], nsys),
+            fill(b1.volumes[1], nsys), fill(b1.alphas[1], nsys), b1.ks, b1.kprefactor, b1.Shost, b1.k_offsets,
+            fill(b1.constant_offset[1], nsys), fill(b1.self_term_halfrange[1], nsys),
+            fill(b1.ncells[1], nsys), b1.cell_offsets, b1.cellgrid_offsets, b1.sigma, b1.epsilon,
+            b1.compact_to_orig, b1.guest_types, b1.guest_types_orig, b1.guest_sites_orig, b1.guest_charges_orig,
+            fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, nsys,
+        ), g_compact, kT
+    )
+    drho2, dreach0 = adapt(backend, rho2), adapt(backend, reach0)
     rng = Xoshiro(0)
     sys_of = Vector{Int32}(undef, chunk)
     rpos = Vector{SVector{3, F}}(undef, chunk)
     quat = Vector{SVector{4, F}}(undef, chunk)
+    flags = Vector{UInt8}(undef, chunk)
+    survivor = Vector{Int32}(undef, chunk)
     PureAdsorb.random_poses!(rng, sys_of, rpos, quat, 1, run_length, nsys)
     dsys, drpos, dquat = adapt(backend, sys_of), adapt(backend, rpos), adapt(backend, quat)
     dΔU = KernelAbstractions.allocate(backend, F, chunk)
-    kern(dΔU, dsys, drpos, dquat, dbatch, g; ndrange = chunk)      # warm-up: compile
-    KernelAbstractions.synchronize(backend)
-    all(isfinite, Array(dΔU)) || error("non-finite insertion energy at nsys=$nsys")
-    bm = @be (
-        kern($dΔU, $dsys, $drpos, $dquat, $dbatch, $g; ndrange = $chunk);
-        KernelAbstractions.synchronize($backend)
-    ) seconds = 20 samples = 10 evals = 1
+    dflags, dsurvivor = adapt(backend, flags), adapt(backend, survivor)
+
+    function kernel_path!()
+        kern0(dflags, dsys, drpos, dquat, dbatch, g_compact, drho2, dreach0, Int32(ntypes_); ndrange = chunk)
+        KernelAbstractions.synchronize(backend)
+        copyto!(flags, dflags)
+        nsurv = 0
+        for i in 1:chunk
+            iszero(flags[i]) && (nsurv += 1; survivor[nsurv] = i)
+        end
+        copyto!(dsurvivor, survivor)
+        if nsurv > 0
+            kern1(dΔU, dsys, drpos, dquat, view(dsurvivor, 1:nsurv), dbatch, g_compact; ndrange = nsurv)
+            KernelAbstractions.synchronize(backend)
+        end
+        return nsurv
+    end
+    kernel_path!()   # warm-up: compile
+    nsurv = kernel_path!()
+    all(iszero, view(flags, 1:chunk)) || all(isfinite, view(Array(dΔU), view(survivor, 1:nsurv))) ||
+        error("non-finite insertion energy at nsys=$nsys")
+    bm = @be kernel_path!() seconds = 20 samples = 10 evals = 1
     times = [s.time for s in bm.samples]
-    push!(samples, (; nsys, chunk, bytes = nsys * bytes_per_system, times_s = times))
-    println("run=$run_length nsys=$nsys chunk=$chunk batch=$(round(nsys * bytes_per_system / 2^30; digits = 2)) GiB median=$(median(times)) s ips=$(chunk / median(times))")
+    rejected_frac = 1 - nsurv / chunk
+    push!(samples, (; nsys, chunk, bytes = nsys * bytes_per_system, rejected_frac, times_s = times))
+    println(
+        "run=$run_length nsys=$nsys chunk=$chunk batch=$(round(nsys * bytes_per_system / 2^30; digits = 2)) GiB " *
+            "rejected=$(round(100 * rejected_frac; digits = 1))% median=$(median(times)) s ips=$(chunk / median(times))"
+    )
     flush(stdout)
     dbatch = nothing
     GC.gc(true)
 end
 
-commit = try
-    readchomp(`git -C $(pkgdir(PureAdsorb)) rev-parse --short HEAD`)
-catch
-    "unknown"
+# Remote hosts are synced without `.git`, so `git rev-parse` cannot find the commit there;
+# `PA_COMMIT` lets the caller pass it in explicitly instead of falling back to "unknown".
+commit = get(ENV, "PA_COMMIT") do
+    try
+        readchomp(`git -C $(pkgdir(PureAdsorb)) rev-parse --short HEAD`)
+    catch
+        "unknown"
+    end
 end
 
 meta = (;

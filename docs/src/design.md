@@ -5,13 +5,15 @@
     CIF, YAML  ──►  Framework / ForceField / Guest        (CPU structs, src/structure.jl,
                                                              src/forcefield.jl)
                ──►  FrameworkBatch                          (structure-of-arrays + offsets +
-                                                             precomputed Ewald tables, CPU,
-                                                             src/batch.jl)
+                                                             precomputed Ewald tables + hard-core
+                                                             rejection bounds, CPU, src/batch.jl)
                ──►  adapt(backend, batch)                   one upload per widom() call
                ──►  for each chunk of insertions:
                        host RNG ─► positions, quaternions ─► upload
-                       widom_kernel!(ΔU, batch, guest)       one KernelAbstractions kernel
-                       download ΔU ─► accumulate per-system block sums
+                       hardcore_kernel!(flags, batch, guest, ρ², reach)   phase 0: flag rejects
+                       download flags ─► build survivor index ─► upload
+                       widom_kernel!(ΔU, batch, guest, survivor)         phase 1: energy, survivors only
+                       download ΔU ─► accumulate per-system block sums (rejected: weight 0)
                ──►  WidomResult per system                  (host-side reduction, src/widom.jl)
 
 Four units, each testable alone:
@@ -33,6 +35,16 @@ one precomputed scalar per insertion instead of recomputing these every time.
 `Adapt.@adapt_structure` makes the whole batch backend-portable: `adapt(backend, batch)`
 produces a `FrameworkBatch` whose array fields are of `backend`'s array type, with the
 structure unchanged.
+
+Lennard-Jones types are remapped to a compact index covering only the types actually present
+(any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` all use this
+index instead of the full force field's, and `compact_to_orig` maps back to the force field's
+own index for error messages built at construction. The guest's site types are remapped the
+same way (`guest_types`); `guest_types_orig`, `guest_sites_orig` and `guest_charges_orig` record
+the guest exactly as passed in, so `widom` can verify a later call passes the same guest the
+batch was built for and throw a clear error otherwise (every precomputed quantity below depends
+on the guest's sites and charges, not only its types, so a mismatch would otherwise give silently
+wrong physics rather than an error).
 
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each framework's replication (see
 `docs/src/theory.md`): for CO2 in RUBTAK 3×3×3 that is 190 of the unreplicated cell's 4587
@@ -58,41 +70,58 @@ index `i + n1*(j + n2*k)`, 0-based, over the fractional coordinate wrapped into 
 cell's atoms are the contiguous range `cell_offsets[c+1]+1:cell_offsets[c+2]` (shifted by the
 system's `atom_offsets` entry). `cell_offsets` concatenates every system's `prod(ncells)+1` local
 offsets, ragged, with `cellgrid_offsets` marking where each system's block starts — the same
-pattern `atom_offsets`/`k_offsets` already use. `reach[n]` is the stencil half-width in cells,
-`m_i = ceil((cutoff+r_guest) * n_i / L_i)`, `r_guest` the guest's largest site distance from its
-reference point: large enough that `insertion_energy`'s stencil around an insertion's home cell
-visits every host atom within `cutoff`/`ewald_cutoff` of any guest site. The construction guard
-is `min_multiplicity(cell, max(ff.cutoff, ewald.cutoff) + r_guest) == (1,1,1)` — stricter than
-E1's guard by `r_guest`, since a single minimum image per host atom (see `insertion_energy`
-below) is only exact when every contributing pair's separation stays under half the cell's
-perpendicular length.
+pattern `atom_offsets`/`k_offsets` already use. This cell list now serves only the hard-core
+rejection stage's phase-0 kernel (below): the energy itself no longer walks a stencil. The
+construction guard is `min_multiplicity(cell, max(ff.cutoff, ewald.cutoff) + r_guest) == (1,1,1)`
+(`r_guest` the guest's largest site distance from its reference point), needed because a single
+minimum image per host atom (see `insertion_energy` below) is only exact when every contributing
+pair's separation stays under half the cell's perpendicular length.
 
 **Energy** (`src/energy.jl`, `src/ewald.jl`) — `insertion_energy` evaluates the Lennard-Jones
-and Ewald real/reciprocal terms of one guest pose against one system's cell-list slice of the
-batch arrays. Its real-space part visits a single stencil of cells around the pose's home cell
-(`home_cell_dev`, `stencil_start_count`, `wrap_cell`, `cell_linear`, all in `src/cell.jl`) instead
-of every host atom: for each visited cell's contiguous atom range, one `minimum_image` is taken
-of the pose-to-atom vector, and each guest site's own (already rotated) offset is added directly
-without a further minimum image — valid exactly when the construction guard above holds, so
-every contributing pair's true separation never exceeds half the cell's perpendicular length.
-Along an axis where the stencil's reach would exceed the grid (`2m_i+1 >= n_i`), every cell on
-that axis is visited once instead of wrapping. `insertion_energy` takes only isbits scalars,
-`SVector`s, and plain array/view arguments — home-cell and wrap arithmetic is branch-free
-(`unsafe_trunc`, not `floor`/`mod` by a runtime value) — so it runs identically whether called
-from Julia on the CPU or compiled into a GPU kernel.
+and Ewald real/reciprocal terms of one guest pose against one system's atoms, looping linearly
+over `positions[(atom_base+1):(atom_base+natoms)]`: one `minimum_image` per host atom, with each
+guest site's own (already rotated) offset added directly without a further minimum image — valid
+exactly when the construction guard above holds. This linear form replaced a cell-list stencil
+walk once measurement showed it was already the fastest form for a framework this size (the
+efficiency design's E2 cellwidth measurements). `insertion_energy` takes only isbits scalars,
+`SVector`s, and plain array/view arguments, so it runs identically whether called from Julia on
+the CPU or compiled into a GPU kernel.
 
-**Widom kernel and statistics** (`src/widom.jl`) — `widom_kernel!` is the single
-`@kernel function`: one work-item computes one insertion's `ΔU` by looking up its system from
-a per-insertion index, slicing that system's batch arrays, and calling `insertion_energy`.
-Insertion `g` of the global `1:ninsert` sequence is assigned to system
+**Hard-core rejection** (`src/reject.jl`) — before computing an insertion's energy, `widom`
+checks whether a rigorous lower bound on it already exceeds the point past which its Boltzmann
+weight underflows to exactly `0.0` in the working float type; if so, the weight is recorded as
+zero without ever calling `insertion_energy`. `theta_F(T)` is that underflow point, found by
+bisection on the float grid. `hardcore_bound` (`B_s`) sums, over every guest-site/host-atom pair
+in a system plus a reciprocal-space cross-term bound, the most negative energy that pair could
+possibly contribute anywhere in its domain; it is computed once per system at `FrameworkBatch`
+construction, alongside `kmin_table` (`K_min(a,t)`, the most negative Coulomb prefactor over a
+system's atoms of a given compact type, for a given guest site), since neither depends on
+temperature. `find_rho2` combines both with the temperature-dependent underflow margin into a
+squared rejection radius `ρ_at²`, on every `widom` call (`build_rejection_tables`): any guest
+site within `ρ_at` of any host atom of type `t` guarantees rejection is safe.
+
+**Widom kernel and statistics** (`src/widom.jl`) — each chunk runs two `@kernel function`s.
+`hardcore_kernel!` (phase 0) flags every insertion whose guest sites all stay outside the
+rejection radius of every nearby host atom, scanning the phase-0 cell list's stencil around the
+pose's home cell (reach sized from the call's largest `ρ_at`, typically 27 cells) rather than
+every atom. The host downloads the flags, builds the list of surviving insertion indices in
+order, and uploads it; `widom_kernel!` (phase 1) then computes `ΔU` for survivors only, reading
+each one's pose through the survivor index and writing back at that insertion's original
+position, so a rejected insertion's `ΔU` entry is simply never touched. A chunk with no survivors
+launches phase 1 at all. Insertion `g` of the global `1:ninsert` sequence is assigned to system
 `mod1((g - 1) ÷ run + 1, nsys)` (`sys_of_index`): `run` consecutive insertions share a system
 before the assignment cycles to the next one, so work-items adjacent in `g` — and so adjacent on
 the device — read the same framework's tables. Random poses (fractional position, Shoemake
 quaternion) are generated on the host with `Random.Xoshiro` in chunks (`random_poses!`) and
 uploaded before each kernel launch; results are downloaded and accumulated into per-system,
-per-block sums on the host, with each system's blocks drawn from that system's own sample order
-(`system_counts` gives the exact per-system count up front). `widom` drives this loop and
-reduces the accumulated sums into a `WidomResult` per system (`_reduce`).
+per-block sums on the host (`boltzmann_weight`, forcing the energy-weighted product to exactly
+zero whenever the weight itself is, rejected or not — a guest site within about 1e-3 Å of a host
+atom overflows the Lennard-Jones term to `Inf` in Float32, and `Inf * 0.0` is `NaN`), with each
+system's blocks drawn from that system's own sample order (`system_counts` gives the exact
+per-system count up front). `widom` drives this loop and reduces the accumulated sums into a
+`WidomResult` per system (`_reduce`). `widom_singlephase` (non-exported, test-only) runs every
+insertion through phase 1 directly, skipping phase 0 entirely, so its results can be checked for
+exact equality against `widom`'s.
 
 ## What runs where
 
@@ -132,10 +161,11 @@ its inputs:
 - `ewald_alpha`: raises if the requested precision is unreachable with the given cutoff.
 - `tail_delta`: the per-type count vectors must match the force field's number of LJ types
   (`DimensionMismatch`).
-- `widom`: `nblocks >= 2`, `chunk >= 1`, an explicit `run` keyword must lie in
-  `1:(ninsert ÷ nsys)`, every system's exact insertion count must be at least `2·nblocks`, the
+- `widom`: the passed `guest` must match the guest `batch` was built from in types, sites and
+  charges (naming the mismatch); `nblocks >= 2`, `chunk >= 1`, an explicit `run` keyword must lie
+  in `1:(ninsert ÷ nsys)`, every system's exact insertion count must be at least `2·nblocks`, the
   batch's index-matched array groups (`positions`/`types`/`charges` and
-  `ks`/`kprefactor`/`Shost`) must share axes, `ncells`/`reach` must have one entry per system,
+  `ks`/`kprefactor`/`Shost`) must share axes, `ncells` must have one entry per system,
   `cellgrid_offsets` must have `nsys+1` entries whose last equals `length(cell_offsets)`, and
   each system's last local `cell_offsets` entry must equal its atom count (all
   `DimensionMismatch`, naming the numbers).

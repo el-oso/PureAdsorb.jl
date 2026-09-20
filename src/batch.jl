@@ -132,7 +132,7 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
 end
 
 """
-    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 3) -> FrameworkBatch
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 2) -> FrameworkBatch
 
 Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
 parameters across all of them. Each framework must already be replicated large enough that its
@@ -141,9 +141,13 @@ largest site distance from its reference point: `insertion_energy` takes one min
 the pose itself and adds each guest site's own offset directly, without re-imaging, which is
 only exact within that bound. `cellwidth` (Å) is the target grid spacing of the cell list that
 serves the hard-core rejection stage's phase-0 kernel only; each system gets
-`max(1, floor(L_i / cellwidth))` cells along its `i`-th perpendicular length `L_i`. The default,
-3 Å, is chosen among `(2, 3, 4)` by the phase-0 kernel time and bytes-per-framework measurement
-in the efficiency design spec's E3 section.
+`max(1, floor(L_i / cellwidth))` cells along its `i`-th perpendicular length `L_i`. Phase 0's
+short reach (about 1.5 Å for CO2 in RUBTAK 3×3×3) makes a NARROWER cell width faster, the
+opposite of E2's full-cutoff finding: fewer, smaller cells around each pose's home cell mean
+fewer atoms scanned before a stencil that no longer spans the whole grid. The default, 2 Å, is
+the fastest of `(2, 3, 4)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the efficiency
+design spec's E3 measurements): 4.8 ms (Float64) / 0.8 ms (Float32) for a 65,536-insertion
+phase-0 launch, against 123–143 KB/framework across the swept widths.
 
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
@@ -161,7 +165,7 @@ screened-Coulomb pair term (`pair_erfc_dev`) is only fitted up to that bound.
 """
 function FrameworkBatch(
         fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T, N}, ewald::EwaldParams{T};
-        cellwidth = 3
+        cellwidth = 2
     ) where {T, N}
     rc = max(ff.cutoff, ewald.cutoff)
     r_guest = maximum(norm, guest.sites)

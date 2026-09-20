@@ -44,23 +44,24 @@ Coulomb term, plus pose-independent constants collected once per framework:
 \Delta U = E_{\mathrm{LJ}} + E_{\mathrm{Coul}}
 ```
 
-### Cell list for the real-space sums
+### Cell list for hard-core rejection
 
-Both the Lennard-Jones sum and the real-space Ewald sum below need every host atom within a
-cutoff of some guest site, not all of them. `FrameworkBatch` bins each system's host atoms into
-a grid of ``n_i = \max(1, \lfloor L_i / w \rfloor)`` cells along each of the stored cell's three
-perpendicular lengths ``L_i`` (target width ``w``, the `cellwidth` keyword), storing atoms
-sorted by cell so that a cell is a contiguous array range. For an insertion at ``\mathbf{r}``,
-`insertion_energy` visits one stencil of cells centered on ``\mathbf{r}``'s own cell, spanning
-``m_i = \lceil (r_c + r_{\mathrm{guest}})\, n_i / L_i \rceil`` cells either side (``r_c`` the
-larger of the LJ and Ewald cutoffs, ``r_{\mathrm{guest}}`` the guest's largest site distance
-from its reference point) — or, once ``2 m_i + 1 \geq n_i``, the whole axis once. Within a
-visited cell, one minimum image is taken of ``\mathbf{r}`` to each host atom, and every guest
-site's own (already rotated) offset is added to that single image directly, without a further
-minimum image. This is exact — every relevant pair's true separation stays under half the
-cell's perpendicular length — because `FrameworkBatch` requires
-`min_multiplicity(cell, r_c + r_guest) == (1,1,1)` at construction, one guest-reach wider than
-E1's plain-cutoff requirement.
+`insertion_energy` computes the Lennard-Jones and real-space Ewald sums below with a plain
+linear loop over every host atom in the system, the fastest form measured for a framework this
+size once the hard-core rejection stage (below) has already screened out most poses. The cell
+list `FrameworkBatch` builds — a grid of ``n_i = \max(1, \lfloor L_i / w \rfloor)`` cells along
+each of the stored cell's three perpendicular lengths ``L_i`` (target width ``w``, the
+`cellwidth` keyword), atoms sorted so a cell is a contiguous array range — now serves only the
+rejection stage's phase-0 kernel, which needs just the few atoms within its own much shorter
+reach.
+
+One minimum image of ``\mathbf{r}`` (an insertion's reference point) is taken to each host atom,
+and every guest site's own (already rotated) offset is added to that single image directly,
+without a further minimum image. This is exact — every relevant pair's true separation stays
+under half the cell's perpendicular length — because `FrameworkBatch` requires
+`min_multiplicity(cell, r_c + r_guest) == (1,1,1)` at construction (``r_c`` the larger of the LJ
+and Ewald cutoffs, ``r_{\mathrm{guest}}`` the guest's largest site distance from its reference
+point).
 
 ### Lennard-Jones
 
@@ -225,6 +226,67 @@ E_{\mathrm{excl}} = -k_e \sum_{\substack{i<j \\ \text{same molecule}}} q_i q_j\,
 
 For a rigid guest this term is pose-independent and is folded into the per-framework constant
 alongside the guest self-energy and the net-charge correction.
+
+## Hard-core rejection
+
+Most random insertions land too close to a host atom to matter: for CO2 in RUBTAK 3×3×3 at
+298.15 K, 68% (Float64) / 78% (Float32) of insertions have a Boltzmann weight that underflows to
+exactly `0.0`. `widom` decides this for a large fraction of insertions — 41.3% (Float64) / 41.4%
+(Float32), measured on this system — from a rigorous lower bound on the insertion energy, before
+ever evaluating `insertion_energy`.
+
+**Underflow point.** `theta_F(T)` is the smallest value ``\theta`` for which `exp(-θ)` underflows
+to exactly zero in float type ``T`` (about 745.13 for `Float64`, 103.97 for `Float32`, found by
+bisection on the float grid rather than assumed). Since `exp` is monotone non-increasing,
+``\Delta U / k_B T > \theta_F(T)`` guarantees `exp(-\Delta U/k_B T) == 0`.
+
+**Lower bound.** Write the insertion energy as a sum over guest-site/host-atom pairs plus the
+reciprocal-space cross term and the pose-independent constant ``c_s``:
+
+```math
+\Delta U = \sum_{a,h} u_{ah}(r_{ah}) + U_{\mathrm{recip}} + c_s, \qquad
+u_{ah}(r) = \mathrm{LJ}_{ah}(r) + K_{ah}\,\frac{\operatorname{pair\_erfc\_dev}(\alpha r)}{r},
+\qquad K_{ah} = k_e\, q_a q_h.
+```
+
+For every pair, the worst this term can be anywhere on its domain is bounded: `-\varepsilon_{ah}`
+when ``K_{ah} \geq 0`` (the Coulomb term is non-negative, the Lennard-Jones term is bounded below
+by ``-\varepsilon_{ah}``); when ``K_{ah} < 0``, at the radius ``r_0`` where ``u_{ah}`` crosses
+zero below its own minimum, ``-\varepsilon_{ah} - |K_{ah}|\operatorname{pair\_erfc\_dev}(\alpha
+r_0)/r_0`` (the Coulomb term's magnitude is largest, for ``r \geq r_0``, at ``r_0`` itself).
+Summing these per-pair magnitudes over every pair in a system, plus a reciprocal-space bound
+``R_s = k_e \sum_a |q_a| \sum_k 2\, \mathrm{kprefactor}_k\, |S_{\mathrm{host},k}|`` (from
+``|\mathrm{Re}(\overline{S_{\mathrm{host}}}\,S_g)| \leq |S_{\mathrm{host}}||S_g| \leq
+|S_{\mathrm{host}}|\sum_a|q_a|``), gives ``B_s``: for CO2 in RUBTAK 3×3×3, ``B_s \approx 127{,}118
+\, k_B T`` at 298.15 K, computed once per system at `FrameworkBatch` construction since it does
+not depend on temperature. `B_s = \infty` when some pair combines an attractive Coulomb term
+with no Lennard-Jones well at all (``\varepsilon_{ah} = 0``, ``K_{ah} < 0``): no finite bound
+exists, and rejection is disabled for that system.
+
+**Rejection radius.** For one guest site `a` and host type `t`, `K_min(a,t)` is the most negative
+``K_{ah}`` over that system's atoms of type `t` (zero if none is negative) — temperature
+independent, so it is also computed once at construction. `widom` combines it with the
+temperature-dependent margin `(θ_F + 2)·k_B T + B_s - c_s` into a rejection radius ``\rho_{at}``:
+the first root, scanning up from ``r \to 0``, of
+
+```math
+\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + B_s - c_s.
+```
+
+Every separation under ``\rho_{at}`` then satisfies the rejection condition for any atom of type
+`t`, since the left-hand side lower bounds that atom's true pair energy at distance `r`. For CO2
+in RUBTAK 3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the system's compact
+types — a small fraction of the Lennard-Jones ``\sigma``, consistent with these radii marking
+the steep repulsive wall rather than the interaction range itself.
+
+**Two-phase evaluation.** `widom` launches a phase-0 kernel that flags every insertion whose
+guest sites all stay outside ``\rho_{at}`` of every host atom of the matching type, scanning a
+short-reach cell-list stencil (typically 27 cells) rather than every atom. A rejected insertion's
+weight and energy-weighted product are recorded as exactly zero without ever calling
+`insertion_energy`; a phase-1 kernel computes the energy for every surviving insertion. Because
+the radius is constructed to guarantee `exp(-ΔU/k_B T) == 0.0` for every insertion phase 0 flags,
+this changes no result: `widom`'s output is identical to computing every insertion's energy
+directly.
 
 ## Pose sampling
 

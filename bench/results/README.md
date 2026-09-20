@@ -9,7 +9,11 @@ plus a kernel-only measurement that times one `widom_kernel!` launch (+
 throughput from the per-chunk RNG fill and host<->device copies that the end-to-end call also
 pays. `BLAS.set_num_threads(1)` runs before any timing, since idle OpenBLAS threads spin-wait
 and contend with the benchmarked code. Every sample's wall time is written to
-`bench/results/*.json`; nothing is derived by re-running a benchmark.
+`bench/results/*.json`; nothing is derived by re-running a benchmark. `insertions/s = ninsert /
+median(times_s)` for the end-to-end `samples`; the kernel-only `kernel_only_s` entries divide
+`chunk` by the median of `phase0_times_s` (hard-core rejection) plus `phase1_times_s` (energy)
+instead, since those two kernel launches plus a host-side compaction step between them are what
+the end-to-end call spends its time on beyond pose generation and transfers.
 
 The grid is smaller on CPU than on a GPU backend, because assembling an `nsys=64` batch (its
 Ewald k-vector tables in particular) costs ~9 s on the CPU host and `ninsert=10^6` would run
@@ -43,14 +47,27 @@ julia --project=bench bench/plot_widom.jl
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json` |
 
-The commit-suffixed files above are each the latest for their (host, backend, precision) series
-and are what `docs/src/benchmarks.md`'s throughput tables use; every earlier file for the same
-series stays committed but is not otherwise referenced (`plot_widom.jl` also keeps only the
-latest file per host/backend/precision). The galen ROCm files carry a commit suffix because they
-were re-measured at several points through the hard-core rejection work; `docs/src/benchmarks.md`
-also has a stage-by-stage table across those commits (`pureadsorb_widom_galen_rocm_{f64,f32}_
-20260920.json`, `..._584b806.json`, `..._3653c6f.json`, `..._a4c86a7.json`, plus the initial
-`pureadsorb_widom_galen_rocm_20260917.json`).
+The commit-suffixed files above are each the latest for their (host, backend, precision) series;
+every earlier file for the same series stays committed but is not otherwise referenced
+(`plot_widom.jl` also keeps only the latest file per host/backend/precision). The galen ROCm
+files carry a commit suffix because they were re-measured at several points through the
+hard-core rejection work — kernel-path insertions/s (`chunk / median(phase0_times_s +
+phase1_times_s)`, chunk 65,536) at each point:
+
+| Configuration | Commit | Result file | Float64 (ins/s) | Float32 (ins/s) |
+|---|---|---|---|---|
+| Full reciprocal table, round-robin assignment | `91966c7` | `pureadsorb_widom_galen_rocm_20260917.json` | 155,142 | not measured (no Float32 support yet) |
+| Runs of 256 | `c910867` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920.json` | 167,322 | 3,032,082 |
+| Sparse reciprocal table | `584b806` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_584b806.json` | 230,728 | 3,975,541 |
+| Cell-sorted atoms | `da327a6` | `pureadsorb_widom_scaling_galen_rocm_{f64,f32}_run256_20260920_da327a6.json` | 253,496 | 4,826,870 |
+| Restricted-range pair term | `082c656` | RTX-3050-only measurement; not recorded on the R9700 | — | — |
+| Core rejection | `3653c6f` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_3653c6f.json` | 280,754 | 3,503,406 |
+| Current | `a4c86a7` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_a4c86a7.json` | 280,241 | 3,478,392 |
+
+At nsys=1, Float32, `a4c86a7`, this kernel-path rate (3,478,392 insertions/s) runs faster than
+the end-to-end call at 1,000,000 insertions (`pureadsorb_widom_galen_rocm_f32_20260920_a4c86a7.json`,
+2,476,918 insertions/s): pose generation, host↔device transfers, the phase-0/phase-1 host-side
+compaction step, and block accumulation all run on the host and account for the remaining time.
 
 The RTX 3050 sits behind a Thunderbolt eGPU enclosure on neuromancer, and neuromancer's CPU
 clock is unpinned (see the top-level protocol note): its numbers are indicative only, never
@@ -77,8 +94,9 @@ run lengths:
   `pureadsorb_widom_scaling_galen_rocm_f32_20260920.json` (up to 196,608 frameworks).
 
 `pureadsorb_widom_runlength_galen_rocm_20260920.json` sweeps the run length itself, at a fixed
-32,768 frameworks, for both precisions. See `docs/src/benchmarks.md`, "Throughput against batch
-size".
+32,768 frameworks, for both precisions: Float64 throughput plateaus by run length 16 (164,029 to
+169,265 insertions/s from run length 1); Float32 keeps rising past run length 256, peaking at
+run length 4,096 (3,344,249 insertions/s) before leveling off.
 
 ## Precision
 
@@ -140,6 +158,12 @@ Results:
 | `kups_widom_timing_neuromancer_f64_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
 | `pureadsorb_widom_headtohead_neuromancer_f64_nsys{1,4}_ninsert{10000,100000,1000000}_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
 | `pureadsorb_widom_processcost_neuromancer_f64_20260919.json` | 1 | 10^4 (single point, whole-process cost only) |
+
+`docs/src/benchmarks.md`'s current comparison reuses `kups_widom_timing_neuromancer_f64_20260919.json`
+(kUPS does not change between the two) against a later, separately run PureAdsorb series —
+`pureadsorb_widom_neuromancer_cuda_{f64,f32}_20260920_e903fac.json` — rather than the interleaved
+`..._headtohead_..._20260919.json` files above. `bench/plot_headtohead.jl` draws its figure
+(`widom_vs_kups.png`) from those three files using the same OLS fit described below.
 
 ### nsys = 64 does not run
 

@@ -61,5 +61,4 @@ res[1].K_H, res[1].mu_ex, res[1].q_st, res[1].K_H_err
 
 See [Theory](theory.md) for the physics, [Design](design.md) for the architecture,
 [Validation](validation.md) for the test oracles and the kUPS comparison, and
-[Benchmarks](benchmarks.md) for throughput numbers, including kernel throughput against batch
-size on the R9700.
+[Benchmarks](benchmarks.md) for the Widom insertion rate against kUPS on the same GPU.

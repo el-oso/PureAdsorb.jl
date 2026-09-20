@@ -1,8 +1,8 @@
 # Benchmarks
 
-PureAdsorb against [kUPS](https://github.com/cusp-ai-oss/kups) on the same GPU. Numbers below
-are computed from the committed JSON files in `bench/results/`; nothing here is re-measured for
-this page.
+PureAdsorb against [kUPS](https://github.com/cusp-ai-oss/kups) on the same GPU, followed by
+PureAdsorb on a larger card. Numbers below are computed from the committed JSON files in
+`bench/results/`; nothing here is re-measured for this page.
 
 ## Widom insertion rate, RTX 3050 6 GB
 
@@ -25,6 +25,24 @@ counterpart; PureAdsorb's Float32 numbers are reported for reference only.
 
 ![Widom marginal insertion rate: PureAdsorb vs kUPS](assets/widom_vs_kups.png)
 
+## Widom insertion rate, Radeon AI PRO R9700 32 GB
+
+The same case and the same source revision on a larger card (host `galen`, ROCm). kUPS is not
+measured here, so the ratio column crosses two different GPUs and is not a like-for-like
+comparison of the two codes.
+
+| Code | Precision | Frameworks | Marginal rate (insertions/s) | Ratio to kUPS on the RTX 3050 (1 fw) |
+|---|---|---|---|---|
+| PureAdsorb | Float64 | 1 | 270,794 | 118.7× |
+| PureAdsorb | Float64 | 64 | 269,620 | 118.2× |
+| PureAdsorb | Float32 | 1 | 2,700,433 | 1,183.8× |
+| PureAdsorb | Float32 | 64 | 3,708,049 | 1,625.5× |
+
+Because PureAdsorb is measured on both cards at the same source revision, the card and the code
+separate: in Float64 at one framework the R9700 is 3.5× the RTX 3050, so the remaining factor
+against kUPS is the same 34× the single-card table shows. In Float32 the card is worth 1.8× at
+one framework and 2.7× at 64.
+
 ## Method
 
 Both codes run on the same RTX 3050 (host `neuromancer`), but kUPS times its whole process
@@ -34,7 +52,8 @@ between them directly. Instead, for each `nsys`, `t = intercept + ninsert / rate
 ordinary least squares over the median time at each `ninsert`, and the fitted `rate` is
 compared; the intercept absorbs kUPS's per-process startup cost, which PureAdsorb's warm
 in-process timing never pays. kUPS and PureAdsorb are timed in separate runs on this machine,
-kUPS at commit `e183c9a` and PureAdsorb at commit `e903fac`.
+kUPS at commit `e183c9a` and PureAdsorb at commit `e903fac`. The R9700 numbers use the same fit
+and the same grid, at that same PureAdsorb commit.
 
 ## Fixed cost per process
 
@@ -70,6 +89,9 @@ bench/run_headtohead.sh
 julia --project=bench/gpu -e 'using Pkg; Pkg.instantiate()'
 PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=cuda PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
 PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=cuda PA_PRECISION=f32 julia --project=bench/gpu bench/widom_bench.jl
+
+# R9700, on galen: same script, ROCm backend
+PA_COMMIT=$(git rev-parse --short HEAD) PA_BACKEND=rocm PA_PRECISION=f64 julia --project=bench/gpu bench/widom_bench.jl
 
 # Regenerate the figure above from the committed JSON only
 julia --project=bench bench/plot_headtohead.jl

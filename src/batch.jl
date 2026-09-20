@@ -40,8 +40,11 @@ Lennard-Jones types are remapped to a compact index covering only the types actu
 (any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` use this
 compact index, and `compact_to_orig` maps it back to the force field's own type index (kept for
 error messages). The guest's own site types are remapped the same way and stored as
-`guest_types` (compact) and `guest_types_orig` (the force field's index, as `widom` received
-it), so `widom` can verify a later call passes the same guest the batch was built for.
+`guest_types` (compact); `guest_types_orig`, `guest_sites_orig` and `guest_charges_orig` record
+the guest exactly as `widom` received it, so a later `widom` call can verify it was passed the
+same guest the batch was built for (every precomputed quantity below — `bs`, `kmin`,
+`constant_offset`, `self_term_halfrange` — depends on the guest's sites and charges, not only
+its types).
 
 `bs[n]` is the hard-core rejection bound `B_s` for system `n` (see the efficiency design's E3
 "Lower bound"): a rigorous lower-magnitude bound on the insertion energy's real- and
@@ -75,6 +78,8 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     compact_to_orig::VI
     guest_types::VI
     guest_types_orig::VI
+    guest_sites_orig::VP
+    guest_charges_orig::VT
     bs::VT
     kmin::VT
     cutoff::T
@@ -309,7 +314,8 @@ function FrameworkBatch(
         positions, types, charges, atom_offsets, cells, invcells, volumes, alphas,
         ks, kprefactor, Shost, k_offsets, constant_offset, self_term_halfrange,
         ncells, cell_offsets, cellgrid_offsets,
-        sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig, bs, kmin,
+        sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig,
+        Vector{SVector{3, T}}(guest.sites), Vector{T}(guest.charges), bs, kmin,
         ff.cutoff, ewald.cutoff, length(fws)
     )
 end

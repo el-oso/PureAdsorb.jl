@@ -223,10 +223,14 @@ function _widom(
     ) where {F}
     nblocks >= 2 || throw(ArgumentError("nblocks=$nblocks: at least two blocks are needed for a standard error"))
     chunk >= 1 || throw(ArgumentError("chunk=$chunk must be ≥ 1"))
-    guest.types == batch.guest_types_orig || throw(
+    (
+        guest.types == batch.guest_types_orig && guest.sites == batch.guest_sites_orig &&
+            guest.charges == batch.guest_charges_orig
+    ) || throw(
         ArgumentError(
-            "guest passed to widom (types=$(guest.types)) is not the guest FrameworkBatch was built with " *
-                "(types=$(batch.guest_types_orig)); build a new FrameworkBatch for a different guest"
+            "guest passed to widom does not match the guest FrameworkBatch was built with " *
+                "(types=$(batch.guest_types_orig), sites=$(batch.guest_sites_orig), charges=$(batch.guest_charges_orig)); " *
+                "build a new FrameworkBatch for a different guest"
         )
     )
     nsys = batch.nsys

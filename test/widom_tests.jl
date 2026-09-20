@@ -125,7 +125,8 @@ end
         b.positions, push!(copy(b.types), Int32(1)), b.charges, b.atom_offsets, b.cells, b.invcells,
         b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset, b.self_term_halfrange,
         b.ncells, b.cell_offsets, b.cellgrid_offsets,
-        b.sigma, b.epsilon, b.compact_to_orig, b.guest_types, b.guest_types_orig, b.bs, b.kmin,
+        b.sigma, b.epsilon, b.compact_to_orig, b.guest_types, b.guest_types_orig,
+        b.guest_sites_orig, b.guest_charges_orig, b.bs, b.kmin,
         b.cutoff, b.ewald_cutoff, b.nsys
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
@@ -243,6 +244,51 @@ end
     @test r.K_H ≈ 6.590899117050657e8 rtol = rtol
     @test r.K_H_err ≈ 1.0512729413942294e8 rtol = rtol
     @test r.q_st_err ≈ 0.0025536418864197745 rtol = rtol
+end
+
+@testitem "two-phase widom equals single-phase widom exactly" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    g0 = PureAdsorb.Guest(g.sites, g.types, SVector(0.0, 0.0, 0.0), g.tc, g.pc, g.omega)   # neutral guest
+
+    # A framework whose B_s is Inf: a host atom of a type with no Lennard-Jones well (ε = 0)
+    # carries a charge opposite in sign to a guest site, so no finite rejection bound exists.
+    A_inf = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw_inf = Framework{Float64}(A_inf, [SVector(0.5, 0.5, 0.5)], ["B"], ["B"], [1.0])
+    ff_inf = ForceField(["C_co2", "O_co2", "B_"], [2.8, 3.05, 3.0], [0.0023, 0.0068, 0.0]; cutoff = 12.0, tail = false)
+    ewald_inf = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    g_inf = PureAdsorb.Guest(g.sites, SVector(1, 2, 2), g.charges, g.tc, g.pc, g.omega)   # ff_inf's own type index
+
+    scenarios = [
+        ("one framework" => (FrameworkBatch([sc], ff, g, ewald), g)),
+        ("several frameworks" => (FrameworkBatch([sc, sc, sc], ff, g, ewald), g)),
+        ("neutral guest" => (FrameworkBatch([sc], ff, g0, ewald), g0)),
+        ("B_s = Inf" => (FrameworkBatch([fw_inf], ff_inf, g_inf, ewald_inf), g_inf)),
+    ]
+    for (name, (b, guest)) in scenarios
+        if name == "B_s = Inf"
+            @test isinf(only(b.bs))
+        end
+        # A small chunk relative to ninsert, with the ~41% measured rejection fraction for CO2 in
+        # RUBTAK, makes both an all-rejected and an all-surviving chunk overwhelmingly likely
+        # somewhere across the run, exercising both edges of the phase-0/phase-1 hand-off.
+        r2 = widom(b, guest; T = 298.15, ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
+        r1 = PureAdsorb.widom_singlephase(b, guest; T = 298.15, ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
+        @test r1 == r2
+    end
+end
+
+@testitem "widom rejects a guest different from the one FrameworkBatch was built with" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    other = PureAdsorb.Guest(g.sites, g.types, g.charges .* 2, g.tc, g.pc, g.omega)
+    @test_throws "does not match the guest" widom(b, other; T = 298.15, ninsert = 100)
 end
 
 @testitem "widom credits samples to the correct framework in a mixed batch" begin

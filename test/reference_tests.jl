@@ -20,6 +20,10 @@
 
     for g in (g_co2, g_polar)
         b = FrameworkBatch([sc], ff, g, ewald)
+        # `b.types` uses the batch's compact type index (E3); map back through `compact_to_orig`
+        # to index `ff.sigma`/`ff.epsilon` directly, as below.
+        btype = b.compact_to_orig[b.types]
+        natoms = b.atom_offsets[2] - b.atom_offsets[1]
         # `constant_offset` without the orientation-averaged guest self-term mean it folds in:
         # the same tail/self/exclusion/net terms `insertion_energy_reference` does not include
         # (its E_lr already carries the guest self term, computed per pose).
@@ -28,7 +32,7 @@
             g.charges[a] * g.charges[c] * (1 - PureAdsorb.erfc_dev(α * norm(g.sites[a] - g.sites[c]))) / norm(g.sites[a] - g.sites[c])
                 for a in 1:3 for c in (a + 1):3
         )
-        counts = [count(==(t), b.types) for t in eachindex(ff.names)]
+        counts = [count(==(t), btype) for t in eachindex(ff.names)]
         gcounts = [count(==(t), g.types) for t in eachindex(ff.names)]
         tail = PureAdsorb.tail_delta(ff, counts, gcounts, PureAdsorb.volume(A))
         old_offset = self + excl + tail   # CO2 and the polar guest are both neutral: no net-charge term
@@ -39,7 +43,7 @@
             q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
             prod = PureAdsorb.insertion_energy(
                 pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff,
-                b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+                b.positions, btype, b.charges, b.atom_offsets[1], natoms,
                 A, invA, α, b.ks, b.kprefactor, b.Shost
             ) + b.constant_offset[1]
             ref = PureAdsorb.insertion_energy_reference(

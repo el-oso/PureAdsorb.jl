@@ -11,7 +11,9 @@
     @test b.constant_offset[1] == b.constant_offset[2]
     # Atoms are stored sorted by cell (E2), not CIF order, so position 1 is no longer
     # necessarily the CIF's first atom (Zr) — only the per-system multiset of types survives.
-    @test sort(b.types[1:3078]) == sort(Int32[PureAdsorb.typeindex(ff, s * "_") for s in sc.symbols])
+    # `b.types` uses the batch's compact type index (E3); map back through `compact_to_orig` to
+    # compare against the force field's own type index.
+    @test sort(b.compact_to_orig[b.types[1:3078]]) == sort(Int32[PureAdsorb.typeindex(ff, s * "_") for s in sc.symbols])
     @test b.ewald_cutoff == 12.0
     i = 1
     k = b.ks[i]
@@ -152,7 +154,8 @@ end
     orig_type = Int32[PureAdsorb.typeindex(ff, s * "_") for s in sc.symbols]
     key(p, t, q) = (p[1], p[2], p[3], Int(t), q)
     orig_keys = sort([key(orig_pos[i], orig_type[i], sc.charges[i]) for i in eachindex(orig_pos)])
-    sorted_keys = sort([key(b.positions[i], b.types[i], b.charges[i]) for i in eachindex(b.positions)])
+    # `b.types` uses the batch's compact type index (E3); map back through `compact_to_orig`.
+    sorted_keys = sort([key(b.positions[i], b.compact_to_orig[b.types[i]], b.charges[i]) for i in eachindex(b.positions)])
     @test orig_keys == sorted_keys
 end
 
@@ -197,7 +200,10 @@ end
         g.charges[a] * g.charges[c] * (1 - PureAdsorb.erfc_dev(α * norm(g.sites[a] - g.sites[c]))) / norm(g.sites[a] - g.sites[c])
             for a in 1:3 for c in (a + 1):3
     )
-    counts = [count(==(t), b.types) for t in eachindex(ff.names)]
+    # `b.types` uses the batch's compact type index (E3); map back through `compact_to_orig` to
+    # count against the force field's own type index, which `tail_delta` expects.
+    orig_types = b.compact_to_orig[b.types]
+    counts = [count(==(t), orig_types) for t in eachindex(ff.names)]
     gcounts = [count(==(t), g.types) for t in eachindex(ff.names)]
     tail = PureAdsorb.tail_delta(ff, counts, gcounts, V)
 

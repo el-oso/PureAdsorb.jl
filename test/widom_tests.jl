@@ -20,9 +20,10 @@
     b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0f0, precision = 1.0f-6))
     q = SVector(0.0f0, 0.0f0, 0.0f0, 1.0f0)
     atom_pos = A * SVector(0.5f0, 0.5f0, 0.5f0)
+    natoms = b.atom_offsets[2] - b.atom_offsets[1]
     e = PureAdsorb.insertion_energy(
-        atom_pos + SVector(1.0f-4, 0.0f0, 0.0f0), q, g, ff.sigma, ff.epsilon, ff.cutoff, b.ewald_cutoff,
-        b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+        atom_pos + SVector(1.0f-4, 0.0f0, 0.0f0), q, g, b.sigma, b.epsilon, ff.cutoff, b.ewald_cutoff,
+        b.positions, b.types, b.charges, b.atom_offsets[1], natoms,
         b.cells[1], b.invcells[1], b.alphas[1], b.ks, b.kprefactor, b.Shost
     )
     @test isinf(e)
@@ -123,8 +124,9 @@ end
     bad = PureAdsorb.FrameworkBatch(
         b.positions, push!(copy(b.types), Int32(1)), b.charges, b.atom_offsets, b.cells, b.invcells,
         b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset, b.self_term_halfrange,
-        b.ncells, b.reach, b.cell_offsets, b.cellgrid_offsets,
-        b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff, b.nsys
+        b.ncells, b.cell_offsets, b.cellgrid_offsets,
+        b.sigma, b.epsilon, b.compact_to_orig, b.guest_types, b.guest_types_orig, b.bs, b.kmin,
+        b.cutoff, b.ewald_cutoff, b.nsys
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
 end

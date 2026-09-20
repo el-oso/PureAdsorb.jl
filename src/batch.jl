@@ -32,9 +32,25 @@ three axes (fractional coordinates, wrapped into [0,1)), so that a cell is a con
 offsets back to back (system `n`'s block starts at `cellgrid_offsets[n]+1`; local offset `c`'s
 atom range is `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c] + 1` through
 `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c + 1]`, cell index `c` linear in
-`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). `reach[n]` is the stencil half-width (in
-cells) `insertion_energy` visits around an insertion's home cell, sized so that no atom pair
-within `cutoff`/`ewald_cutoff` of any guest site is missed.
+`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). This cell list now serves only the hard-core
+rejection stage's phase-0 kernel (E3): the energy itself (`insertion_energy`) loops linearly
+over a system's atoms, the fastest form measured for a framework this size.
+
+Lennard-Jones types are remapped to a compact index covering only the types actually present
+(any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` use this
+compact index, and `compact_to_orig` maps it back to the force field's own type index (kept for
+error messages). The guest's own site types are remapped the same way and stored as
+`guest_types` (compact) and `guest_types_orig` (the force field's index, as `widom` received
+it), so `widom` can verify a later call passes the same guest the batch was built for.
+
+`bs[n]` is the hard-core rejection bound `B_s` for system `n` (see the efficiency design's E3
+"Lower bound"): a rigorous lower-magnitude bound on the insertion energy's real- and
+reciprocal-space terms, `Inf` when no finite bound exists (a pair combines an attractive
+Coulomb term with no Lennard-Jones repulsion at all). `kmin` is the flat, `nsys × N × ntypes`
+table of `K_min(a,t)` (`N` the guest's site count, `ntypes = size(sigma, 1)`), system `n`'s
+`(a, t)` entry at `kmin[(n-1)*N*ntypes + (a-1)*ntypes + t]`. Both depend only on charges and the
+guest, not on temperature, so both are computed once here; `widom` combines them with the
+temperature-dependent margin to build the rejection radii `ρ_at` on every call.
 """
 struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     positions::VP
@@ -52,11 +68,15 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     constant_offset::VT
     self_term_halfrange::VT
     ncells::VN
-    reach::VN
     cell_offsets::VI
     cellgrid_offsets::VI
     sigma::MT
     epsilon::MT
+    compact_to_orig::VI
+    guest_types::VI
+    guest_types_orig::VI
+    bs::VT
+    kmin::VT
     cutoff::T
     ewald_cutoff::T
     nsys::Int
@@ -107,19 +127,18 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
 end
 
 """
-    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 6) -> FrameworkBatch
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 3) -> FrameworkBatch
 
 Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
 parameters across all of them. Each framework must already be replicated large enough that its
 minimum image exceeds `2 * (max(ff.cutoff, ewald.cutoff) + r_guest)`, `r_guest` the guest's
-largest site distance from its reference point, since `insertion_energy`'s cell-list stencil
-takes one minimum image per host atom and relies on every contributing pair falling inside that
-bound. `cellwidth` (Å) is the target cell-list grid spacing along each axis; each system gets
+largest site distance from its reference point: `insertion_energy` takes one minimum image of
+the pose itself and adds each guest site's own offset directly, without re-imaging, which is
+only exact within that bound. `cellwidth` (Å) is the target grid spacing of the cell list that
+serves the hard-core rejection stage's phase-0 kernel only; each system gets
 `max(1, floor(L_i / cellwidth))` cells along its `i`-th perpendicular length `L_i`. The default,
-6 Å, is the fastest of `(2, 3, 4, 6)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the
-efficiency design spec's E2 measurements): at 4 and 6 Å the stencil already spans the whole grid
-on every axis for that system's cutoff-plus-guest-reach, so the narrower widths (2, 3 Å) only
-add cell-traversal overhead without visiting fewer atoms than 4 or 6 Å already do.
+3 Å, is chosen among `(2, 3, 4)` by the phase-0 kernel time and bytes-per-framework measurement
+in the efficiency design spec's E3 section.
 
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
@@ -136,12 +155,12 @@ cell) needs the per-insertion sum, which this batch does not provide. Throws if
 screened-Coulomb pair term (`pair_erfc_dev`) is only fitted up to that bound.
 """
 function FrameworkBatch(
-        fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T}, ewald::EwaldParams{T};
-        cellwidth = 6
-    ) where {T}
+        fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T, N}, ewald::EwaldParams{T};
+        cellwidth = 3
+    ) where {T, N}
     rc = max(ff.cutoff, ewald.cutoff)
     r_guest = maximum(norm, guest.sites)
-    rc_stencil = rc + r_guest
+    rc_guard = rc + r_guest
     w = T(cellwidth)
     positions = SVector{3, T}[]
     types = Int32[]
@@ -158,9 +177,10 @@ function FrameworkBatch(
     constant_offset = T[]
     self_term_halfrange = T[]
     ncells = SVector{3, Int32}[]
-    reach = SVector{3, Int32}[]
     cell_offsets = Int32[]
     cellgrid_offsets = Int32[0]
+    bs = T[]
+    kmin = T[]
     gcounts = [count(==(t), guest.types) for t in eachindex(ff.names)]
     α = ewald_alpha(ewald.cutoff, ewald.precision)
     α * ewald.cutoff <= PAIR_ERFC_XMAX || throw(
@@ -176,22 +196,34 @@ function FrameworkBatch(
     # guest must get the same self-term samples.
     rng_self = Xoshiro(0x5e1f)
     self_quats = [shoemake_quaternion(rng_self, T) for _ in 1:64]
+
+    # Lennard-Jones types are remapped to a compact index covering only the types present in
+    # any framework's atoms, union the guest's own sites: `ty_orig[n]` is framework `n`'s
+    # ORIGINAL (force-field) type per atom, computed once up front so the compact index set is
+    # known before any per-framework array is built.
+    ty_orig = [Int32[typeindex(ff, s * "_") for s in fw.symbols] for fw in fws]
+    guest_types_orig = Vector{Int32}(guest.types)
+    compact_to_orig = sort(unique(vcat(reduce(vcat, ty_orig; init = Int32[]), guest_types_orig)))
+    orig_to_compact = Dict(t => Int32(i) for (i, t) in enumerate(compact_to_orig))
+    ntypes = length(compact_to_orig)
+    sigma_c = ff.sigma[compact_to_orig, compact_to_orig]
+    epsilon_c = ff.epsilon[compact_to_orig, compact_to_orig]
+    guest_types = Int32[orig_to_compact[t] for t in guest_types_orig]
+    guest_compact = Guest{T, N}(guest.sites, SVector{N, Int}(guest_types), guest.charges, guest.tc, guest.pc, guest.omega)
+
     for (n, fw) in pairs(fws)
-        m = min_multiplicity(fw.cell, rc_stencil)
+        m = min_multiplicity(fw.cell, rc_guard)
         m == (1, 1, 1) || throw(
             ArgumentError(
-                "framework $n is too small for cutoff $rc plus guest reach $r_guest = $rc_stencil; " *
+                "framework $n is too small for cutoff $rc plus guest reach $r_guest = $rc_guard; " *
                     "replicate it by $m first"
             )
         )
         A = fw.cell
         L = perpendicular_lengths(A)
         n_grid = grid_dims(L, w)
-        reach_n = stencil_reaches(L, n_grid, rc_stencil)
         pos = cartesian(fw)
-        # kUPS UFF-style LJ type names carry a trailing underscore (e.g. "Zr_"); CIF element
-        # symbols don't, so the lookup appends it.
-        ty = Int32[typeindex(ff, s * "_") for s in fw.symbols]
+        ty = Int32[orig_to_compact[t] for t in ty_orig[n]]
         perm, local_offsets = cell_sort(fw.frac, n_grid)
         append!(positions, pos[perm])
         append!(types, ty[perm])
@@ -200,7 +232,6 @@ function FrameworkBatch(
         append!(cell_offsets, local_offsets)
         push!(cellgrid_offsets, Int32(length(cell_offsets)))
         push!(ncells, n_grid)
-        push!(reach, reach_n)
         V = volume(A)
         push!(cells, A)
         push!(invcells, inv(A))
@@ -251,7 +282,17 @@ function FrameworkBatch(
             push!(self_term_halfrange, zero(T))
         end
         push!(k_offsets, Int32(length(ks)))
-        counts = [count(==(t), ty) for t in eachindex(ff.names)]
+        atoms_n = (atom_offsets[end - 1] + 1):atom_offsets[end]
+        k_n = (k_offsets[end - 1] + 1):k_offsets[end]
+        push!(
+            bs,
+            hardcore_bound(
+                guest_compact, sigma_c, epsilon_c, positions, types, charges, atoms_n, α,
+                view(kprefactor, k_n), view(Shost, k_n)
+            )
+        )
+        append!(kmin, vec(kmin_table(guest_compact, types, charges, atoms_n, ntypes)))
+        counts = [count(==(t), ty_orig[n]) for t in eachindex(ff.names)]
         self = -α / sqrt(T(π)) * sum(abs2, guest.charges)
         excl = zero(T)
         for a in eachindex(guest.sites), c in eachindex(guest.sites)
@@ -267,7 +308,8 @@ function FrameworkBatch(
     return FrameworkBatch(
         positions, types, charges, atom_offsets, cells, invcells, volumes, alphas,
         ks, kprefactor, Shost, k_offsets, constant_offset, self_term_halfrange,
-        ncells, reach, cell_offsets, cellgrid_offsets,
-        ff.sigma, ff.epsilon, ff.cutoff, ewald.cutoff, length(fws)
+        ncells, cell_offsets, cellgrid_offsets,
+        sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig, bs, kmin,
+        ff.cutoff, ewald.cutoff, length(fws)
     )
 end

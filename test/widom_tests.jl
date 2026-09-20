@@ -107,3 +107,117 @@ end
     @test_throws "nblocks" widom(b, g; T = 300.0, ninsert = 100, nblocks = 1)
     @test_throws "chunk" widom(b, g; T = 300.0, ninsert = 100, chunk = 0)
 end
+
+@testitem "run keyword is validated against 1:per" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
+    @test_throws "run=0 must be ≥ 1" widom(b, g; T = 300.0, ninsert = 100, run = 0)
+    @test_throws "run=1000 must be ≤ per=100" widom(b, g; T = 300.0, ninsert = 100, run = 1000)
+end
+
+@testitem "sys_of_index matches a brute-force per-system count" begin
+    for (ninsert, nsys, run) in ((37, 4, 3), (100, 7, 5), (11, 3, 2), (1, 1, 1), (500, 13, 1), (45, 2, 5))
+        counts = zeros(Int, nsys)
+        for g in 1:ninsert
+            s = PureAdsorb.sys_of_index(g, run, nsys)
+            @test 1 <= s <= nsys
+            counts[s] += 1
+        end
+        @test counts == PureAdsorb.system_counts(ninsert, nsys, run)
+    end
+end
+
+@testitem "run-based assignment properties over a parameter grid" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    # Chunk sizes below are not multiples of run or nsys, ninsert values are prime or otherwise
+    # not evenly divisible by nblocks/nsys/run/chunk, and one case has nsys > chunk.
+    grid = (
+        (ninsert = 1009, nsys = 3, nblocks = 2, chunk = 37, run = nothing),
+        (ninsert = 770, nsys = 11, nblocks = 3, chunk = 23, run = 6),
+        (ninsert = 97, nsys = 5, nblocks = 2, chunk = 6, run = 4),
+        (ninsert = 53, nsys = 10, nblocks = 2, chunk = 3, run = 2),
+        (ninsert = 257, nsys = 7, nblocks = 3, chunk = 100, run = nothing),
+    )
+    for p in grid
+        b = FrameworkBatch(fill(fw, p.nsys), ff, g, EwaldParams(cutoff = 12.0))
+        runlen = isnothing(p.run) ? PureAdsorb.default_run(p.ninsert, p.nsys) : p.run
+        rs = isnothing(p.run) ?
+            widom(b, g; T = 300.0, ninsert = p.ninsert, nblocks = p.nblocks, chunk = p.chunk, seed = 7) :
+            widom(b, g; T = 300.0, ninsert = p.ninsert, nblocks = p.nblocks, chunk = p.chunk, seed = 7, run = p.run)
+        ns = [r.nsamples for r in rs]
+        @test sum(ns) == p.ninsert
+        @test maximum(ns) - minimum(ns) <= runlen
+        @test all(r -> isfinite(r.mu_ex) && isfinite(r.mu_ex_err) && isfinite(r.K_H_err), rs)
+    end
+end
+
+@testitem "widom results do not depend on the chunk size" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    fw = Framework{Float64}(A, SVector{3, Float64}[], String[], String[], Float64[])
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b = FrameworkBatch(fill(fw, 4), ff, g, EwaldParams(cutoff = 12.0))
+    # The pose RNG stream and the per-insertion system/block assignment are both functions of
+    # the global insertion index alone, so chunking cannot change the accumulated sums.
+    chunks = (7, 13, 64, 512, 1009)
+    ref = widom(b, g; T = 300.0, ninsert = 1009, nblocks = 3, run = 5, seed = 9, chunk = chunks[1])
+    for c in chunks[2:end]
+        rs = widom(b, g; T = 300.0, ninsert = 1009, nblocks = 3, run = 5, seed = 9, chunk = c)
+        for (r1, r2) in zip(ref, rs)
+            @test r1.mu_ex == r2.mu_ex
+            @test r1.mu_ex_err == r2.mu_ex_err
+            @test r1.K_H == r2.K_H
+            @test r1.K_H_err == r2.K_H_err
+            @test r1.q_st == r2.q_st
+            @test r1.q_st_err == r2.q_st_err
+            @test r1.nsamples == r2.nsamples
+        end
+    end
+end
+
+@testitem "widom results for a single system are exact for a fixed seed" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    r = widom(b, g; T = 298.15, ninsert = 2_000, seed = 3, nblocks = 4)[1]
+    @test r.mu_ex == -0.14435951741921793
+    @test r.mu_ex_err == 0.004098060610114027
+    @test r.K_H == 6.590899117050657e8
+    @test r.K_H_err == 1.0512729413942294e8
+    @test r.q_st == 0.2563139447257997
+    @test r.q_st_err == 0.0025536418864197745
+end
+
+@testitem "widom credits samples to the correct framework in a mixed batch" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    empty_A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    empty_fw = Framework{Float64}(empty_A, SVector{3, Float64}[], String[], String[], Float64[])
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+
+    r_full = widom(FrameworkBatch([sc], ff, g, ewald), g; T = 298.15, ninsert = 2_000, seed = 11, nblocks = 4)[1]
+    r_empty = widom(FrameworkBatch([empty_fw], ff, g, ewald), g; T = 298.15, ninsert = 2_000, seed = 12, nblocks = 4)[1]
+    r_mixed = widom(FrameworkBatch([sc, empty_fw], ff, g, ewald), g; T = 298.15, ninsert = 4_000, seed = 13, nblocks = 4)
+
+    se(a, b) = 3 * hypot(a, b)
+    @test abs(r_mixed[1].mu_ex - r_full.mu_ex) < se(r_mixed[1].mu_ex_err, r_full.mu_ex_err)
+    @test abs(r_mixed[1].K_H - r_full.K_H) < se(r_mixed[1].K_H_err, r_full.K_H_err)
+    @test abs(r_mixed[2].mu_ex - r_empty.mu_ex) < se(r_mixed[2].mu_ex_err, r_empty.mu_ex_err)
+    @test abs(r_mixed[2].K_H - r_empty.K_H) < se(r_mixed[2].K_H_err, r_empty.K_H_err)
+    # RUBTAK and the empty box give very different physics, so a system/sample mix-up would show
+    # up as a false pass above; this confirms the two references are actually distinguishable.
+    @test abs(r_full.mu_ex - r_empty.mu_ex) > se(r_full.mu_ex_err, r_empty.mu_ex_err)
+end

@@ -84,7 +84,8 @@ for nsys in (isempty(pa_grid) ? (1, 64) : ())
     rpos = Vector{SVector{3, F}}(undef, kernel_chunk)
     quat = Vector{SVector{4, F}}(undef, kernel_chunk)
     ΔU_h = Vector{F}(undef, kernel_chunk)
-    PureAdsorb.random_poses!(rng, sys_of, rpos, quat, nsys)
+    run_length = PureAdsorb.default_run(kernel_chunk, nsys)
+    PureAdsorb.random_poses!(rng, sys_of, rpos, quat, 1, run_length, nsys)
     dbatch = PureAdsorb.adapt(backend, b)
     dsys = PureAdsorb.adapt(backend, sys_of)
     drpos = PureAdsorb.adapt(backend, rpos)
@@ -98,7 +99,7 @@ for nsys in (isempty(pa_grid) ? (1, 64) : ())
         KernelAbstractions.synchronize($backend)
     ) seconds = bench_seconds samples = bench_samples evals = 1
     times = [s.time for s in bm.samples]
-    push!(kernel_only_s, (; nsys, chunk = kernel_chunk, backend = backend_name, times_s = times))
+    push!(kernel_only_s, (; nsys, chunk = kernel_chunk, run_length, backend = backend_name, times_s = times))
     println("kernel-only nsys=$nsys chunk=$kernel_chunk median=$(median(times)) s ips=$(kernel_chunk / median(times))")
     flush(stdout)
 end

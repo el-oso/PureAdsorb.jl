@@ -42,10 +42,15 @@ identically whether called from Julia on the CPU or compiled into a GPU kernel.
 **Widom kernel and statistics** (`src/widom.jl`) — `widom_kernel!` is the single
 `@kernel function`: one work-item computes one insertion's `ΔU` by looking up its system from
 a per-insertion index, slicing that system's batch arrays, and calling `insertion_energy`.
-Random poses (fractional position, Shoemake quaternion) are generated on the host with
-`Random.Xoshiro` in chunks (`random_poses!`) and uploaded before each kernel launch; results
-are downloaded and accumulated into per-system, per-block sums on the host. `widom` drives
-this loop and reduces the accumulated sums into a `WidomResult` per system (`_reduce`).
+Insertion `g` of the global `1:ninsert` sequence is assigned to system
+`mod1((g - 1) ÷ run + 1, nsys)` (`sys_of_index`): `run` consecutive insertions share a system
+before the assignment cycles to the next one, so work-items adjacent in `g` — and so adjacent on
+the device — read the same framework's tables. Random poses (fractional position, Shoemake
+quaternion) are generated on the host with `Random.Xoshiro` in chunks (`random_poses!`) and
+uploaded before each kernel launch; results are downloaded and accumulated into per-system,
+per-block sums on the host, with each system's blocks drawn from that system's own sample order
+(`system_counts` gives the exact per-system count up front). `widom` drives this loop and
+reduces the accumulated sums into a `WidomResult` per system (`_reduce`).
 
 ## What runs where
 
@@ -80,10 +85,10 @@ its inputs:
 - `ewald_alpha`: raises if the requested precision is unreachable with the given cutoff.
 - `tail_delta`: the per-type count vectors must match the force field's number of LJ types
   (`DimensionMismatch`).
-- `widom`: `nblocks >= 2`, `chunk >= 1`, `ninsert` large enough to guarantee at least two
-  samples per block per system, and the batch's index-matched array groups
-  (`positions`/`types`/`charges` and `ks`/`kprefactor`/`Shost`) must share axes
-  (`DimensionMismatch`).
+- `widom`: `nblocks >= 2`, `chunk >= 1`, an explicit `run` keyword must lie in
+  `1:(ninsert ÷ nsys)`, every system's exact insertion count must be at least `2·nblocks`, and
+  the batch's index-matched array groups (`positions`/`types`/`charges` and
+  `ks`/`kprefactor`/`Shost`) must share axes (`DimensionMismatch`).
 
 ## GPU-compile constraint
 

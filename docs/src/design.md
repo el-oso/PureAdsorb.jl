@@ -100,7 +100,7 @@ Setup (CIF/YAML parsing, `FrameworkBatch` construction, the Ewald parameter deri
 the final block-statistics reduction run on the CPU in plain Julia — none of it needs to run
 on a GPU, and all of it runs once per `widom` call rather than once per insertion. The kernel
 itself calls ordinary, generic Julia functions (`insertion_energy`, `minimum_image`, `rotate`,
-`erfc_dev`); `KernelAbstractions` compiles that same source per backend, so nothing in `src/`
+`pair_erfc_dev`); `KernelAbstractions` compiles that same source per backend, so nothing in `src/`
 branches on which backend is active. The package has no CUDA or AMDGPU dependency: a caller
 loads `CUDA.jl` or `AMDGPU.jl` themselves and passes `backend = CUDABackend()` or
 `ROCBackend()` to `widom`.

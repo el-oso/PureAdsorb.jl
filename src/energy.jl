@@ -82,7 +82,7 @@ function insertion_energy(
                         end
                         if r2 < rc_ew2
                             r = sqrt(r2)
-                            E_sr += gq * hqj * erfc_dev(alpha * r) / r
+                            E_sr += gq * hqj * pair_erfc_dev(alpha * r) / r
                         end
                     end
                 end

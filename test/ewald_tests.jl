@@ -14,6 +14,20 @@ end
     @test PureAdsorb.erfc_dev(8.0) ≈ erfc(8.0) rtol = 1.0e-9
 end
 
+@testitem "pair_erfc_dev matches SpecialFunctions over its fitted range" begin
+    using SpecialFunctions, Random
+    for x in range(0.0, PureAdsorb.PAIR_ERFC_XMAX, length = 4001)
+        @test PureAdsorb.pair_erfc_dev(x) ≈ erfc(x) rtol = 1.0e-12
+        @test PureAdsorb.pair_erfc_dev(Float32(x)) ≈ erfc(Float32(x)) rtol = 2.0e-6
+    end
+    rng = Xoshiro(2026)
+    for _ in 1:2000
+        x = PureAdsorb.PAIR_ERFC_XMAX * rand(rng)
+        @test PureAdsorb.pair_erfc_dev(x) ≈ erfc(x) rtol = 1.0e-12
+        @test PureAdsorb.pair_erfc_dev(Float32(x)) ≈ erfc(Float32(x)) rtol = 2.0e-6
+    end
+end
+
 @testitem "Madelung constant of NaCl" begin
     using StaticArrays, LinearAlgebra
     a = 5.64

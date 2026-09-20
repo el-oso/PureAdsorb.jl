@@ -112,10 +112,35 @@ widths exceeds that saving for a 3078-atom framework. The gated pruning option i
 built. The cell list stays, because a short-reach test needs it (E3).
 
 ### E2b — cheaper screened Coulomb pair term
-- ☐ `erfc_dev` is a 28-term Chebyshev series valid for every argument at 1e-12. The pair term only needs `x = α r ∈ [0, α·r_c]` (≈ [0, 3.6] here). Measure on the GPU, per precision, the candidates: a shorter Chebyshev/rational fit on the restricted range with a per-precision term count (Float32 at 1e-7 relative, Float64 at 1e-12), and a shared table of `erfc(α√s)/√s` against `s = r²` with cubic Hermite interpolation (one table per batch: α is one value per batch). Choose by measured kernel time at equal or better accuracy than today.
-- ☐ The accuracy of the chosen form is a tested bound against `SpecialFunctions.erfc` over the used range in both precisions; the Madelung and α-independence tests keep their tolerances; the kUPS cross-code test passes unchanged.
-- ☐ Kernel code stays allocation-free, branch-safe for GPU compilation and generic over the float type (per-precision constants selected by dispatch on `T`, one kernel source).
-- ☐ Measured and recorded: the decomposition table above, re-measured, on the RTX 3050 and the R9700.
+- ☑ `erfc_dev` is a 28-term Chebyshev series valid for every argument at 1e-12. The pair term only needs `x = α r < α·ewald_cutoff` (3.20 for RUBTAK 3×3×3 + CO2 at the default precision). Measured on the GPU (RTX 3050, `bench/gpu`, 65,536-insertion chunk, whole kernel time), against `SpecialFunctions.erfc`, max relative error over `[0, 4]` (dense grid plus random points):
+
+  | Candidate | Kernel F32 | Kernel F64 | Max rel. error F32 | Max rel. error F64 | Extra bytes/batch |
+  |---|---|---|---|---|---|
+  | today (`erfc_dev`, 28-term global series) | 69.8 ms | 1382.9 ms | 1.8e-6 | 3.7e-15 | 0 |
+  | A: restricted-range series (`pair_erfc_dev`, N=8 (F32) / N=17 (F64) terms, domain [0,4]) | 63.4 ms | 1210.9 ms | 1.4e-6 | 9.5e-15 | 0 |
+  | B: shared Hermite table (`erfc(α√s)/√s`, s_min=4 Å², rc²=144 Å², 900 (F32) / 16,000 (F64) nodes) | 77.8 ms | 638.2 ms | 1.8e-6 | 8.2e-13 | 7,200 B (F32) / 256,000 B (F64) |
+
+  A wins outright in Float32 (69.8 → 63.4 ms) and improves Float64 (1382.9 → 1210.9 ms, 12%). B is dramatically faster in Float64 (638.2 ms, 54% faster than today) because it removes the `exp`/`sqrt`/division this GPU's Float64 path pays for in software, but B is a *regression* in Float32 (69.8 → 77.8 ms, confirmed with an interleaved value/slope table layout too: 70.5 ms) — the table-lookup memory latency it adds costs more than the (already hardware-fast) transcendentals it removes. No single algorithm wins both precisions.
+
+  **Kept: A only, for both precisions.** The alternative — B for Float64, A for Float32, dispatched once per `T` inside one generic function — would capture B's larger Float64 win, but needs a per-batch table field threaded through `FrameworkBatch`, `widom_scaling.jl`'s tiling, and the docs, and stretches "one kernel source, per-precision constants selected by dispatch on `T`" (this design's literal wording) from selecting constants to selecting an entire algorithm. Given the added surface area for a Float64-only gain, A is kept as the simpler, literal-reading choice; B's numbers are recorded above as an open option if the controller wants the larger Float64 win built out.
+- ☑ `pair_erfc_dev`'s accuracy is a tested bound against `SpecialFunctions.erfc` over `[0, PAIR_ERFC_XMAX] = [0, 4]` in both precisions (`test/ewald_tests.jl`, dense grid plus random points): Float64 rtol 1e-12 (measured 9.5e-15), Float32 rtol 2e-6 (measured 1.4e-6; Float32 cannot reach a literal 1e-7 bound with this construction — rounding in the polynomial evaluation and the final `exp` floors the achievable error near 1.3e-6, already an improvement on `erfc_dev`'s own Float32 accuracy of 1.8e-6 on this range). The Madelung and α-independence tests are unaffected (they use `ewald_energy`/`erfc_dev`, unchanged). The kUPS `:slow` cross-code test passes unchanged (3σ criterion).
+- ☑ Kernel code stays allocation-free, branch-safe for GPU compilation and generic over the float type: `_pair_erfc_coef(::Type{T})` dispatches per-precision coefficient tuples, one `pair_erfc_dev(z::T)` source.
+- ☑ Measured and recorded: the decomposition table below, re-measured, on the RTX 3050. The R9700 measurement stays open for the controller (galen not touched).
+
+  RUBTAK 3×3×3 + CO2, kernel-only time for a 65,536-insertion chunk on an RTX 3050 (`bench/gpu`,
+  Julia 1.13.0), same decomposition method as after E2 (empty reciprocal table; Ewald cutoff at
+  1e-3 Å for the Coulomb-free runs; both cutoffs at 1e-3 Å for the distance-only run):
+
+  | Part | Float32 | Float64 |
+  |---|---|---|
+  | Whole kernel | 63.4 ms | 1245.9 ms |
+  | Reciprocal cross term (190 k-vectors) | 0.9 ms (1%) | 13.6 ms (1%) |
+  | Screened Coulomb in real space: `sqrt`, `pair_erfc_dev`, division | 22.9 ms (36%) | 903.0 ms (72%) |
+  | Lennard-Jones for the same pairs | 14.1 ms (22%) | 156.2 ms (13%) |
+  | Minimum image and distance checks over all atoms | 25.5 ms (40%) | 173.1 ms (14%) |
+
+  Speedup against the E2 baseline (commit da327a6: Float32 70.2 ms, Float64 1378 ms): Float32
+  1.11x, Float64 1.11x. Bytes/framework are unchanged from E2 (no new batch fields).
 
 ### E3 — hard-core rejection before the energy
 - ☐ The cell list serves this test only. Its reach is the largest core radius (about 1.5 Å), so with cells of about 3 Å a site checks 27 cells instead of every atom; the full energy keeps a plain loop over the system's atoms with one minimum image per atom. `cellwidth` and the full-energy path change accordingly (the full-energy stencil walk of E2 is replaced by the linear loop, which the width table above shows is the fastest form for this system size).

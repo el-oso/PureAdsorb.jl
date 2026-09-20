@@ -73,6 +73,62 @@ function _erfccheb(z)
 end
 erfc_dev(x) = x >= 0 ? _erfccheb(x) : 2 - _erfccheb(-x)
 
+# The screened-Coulomb pair term only ever calls erfc on x = α·r with r < ewald_cutoff, so a
+# series valid on the single interval [0, PAIR_ERFC_XMAX] replaces `erfc_dev`'s series (valid
+# for every x ≥ 0) there with far fewer terms. Construction: with t = 2/(2+x), h(x) =
+# log(erfc(x)/t) + x² is smooth and O(1) even as x → ∞ (erfc(x) ~ exp(-x²)/(x√π) cancels the
+# x² term), so it is the same substitution `_erfccheb` uses. Restricting to x ∈ [0, xmax] means
+# the substituted value x_sub = 2t-1 only ever reaches down to xlo = 2·(2/(2+xmax))-1 rather
+# than -1; re-fitting a Chebyshev series on ξ, the affine rescaling of x_sub from [xlo, 1] onto
+# [-1, 1], converges far faster over this narrower range than fitting on all of [-1,1] would.
+# Regenerate by evaluating the standard discrete cosine transform, c_j = (2/N) Σ_k h(x_k)
+# cos(jπ(k-1/2)/N), at Chebyshev nodes ξ_k = cos(π(k-1/2)/N) mapped back through
+# x_sub = xlo + (ξ_k+1)(1-xlo)/2 and x_k = 2/(x_sub+1) - 2, in BigFloat precision, against any
+# high-precision erfc.
+const PAIR_ERFC_XMAX = 4.0
+# x_sub at x = PAIR_ERFC_XMAX: t(xmax) = 2/(2+xmax), xlo = 2t(xmax) - 1.
+const PAIR_ERFC_XLO = 2 * (2 / (2 + PAIR_ERFC_XMAX)) - 1
+
+# N = 17 gives a max relative error of 9.5e-15 against SpecialFunctions.erfc over
+# [0, PAIR_ERFC_XMAX] in Float64 arithmetic (dense grid plus random points) — comfortably past
+# the 1e-12 target itself, which N = 15 (6.97e-13) already met; the extra margin matters because
+# `insertion_energy`'s total, a sum of terms with mixed signs, can amplify a per-call bias far
+# more than a per-call relative-error bound suggests (measured up to ~500x on RUBTAK 3×3×3 CO2
+# poses between N = 15, whose 1e-12-level bias left the total at 3e-10 relative to the oracle,
+# and N = 17, at 2e-13). Float32 cannot reach a literal 1e-7 relative bound with this
+# construction: rounding in the polynomial evaluation and the final `exp` floors the achievable
+# error near 1.3e-6 regardless of term count past N = 8 (measured plateau), which is still
+# better than `erfc_dev`'s own Float32 accuracy on this range (measured 1.8e-6); at Float32's
+# much coarser noise floor, term count beyond that plateau has no comparable effect on the total.
+_pair_erfc_coef(::Type{Float64}) = (
+    -0.888894912038317, 0.4479385778277769, -0.00021608983881297707, -0.003410058708799526,
+    8.555152981629436e-5, 5.532830637302869e-5, -5.2098383667087075e-6, -8.380063246741613e-7,
+    1.9764068422519322e-7, 1.7838566371819855e-9, -5.26989861621132e-9, 5.378177355603348e-10,
+    7.748359588558286e-11, -2.3770397709020423e-11, 8.934868696420547e-13, 5.207576546902621e-13,
+    -9.42604840757663e-14,
+)
+_pair_erfc_coef(::Type{Float32}) = (
+    -0.8888949f0, 0.4479386f0, -0.00021608984f0, -0.0034100588f0,
+    8.555145f-5, 5.5327768f-5, -5.2045684f-6, -8.397902f-7,
+)
+
+# erfc(z) for the screened-Coulomb pair term, z = α·r ∈ [0, PAIR_ERFC_XMAX]. `FrameworkBatch`
+# checks the batch's α·ewald_cutoff against this bound at construction, so z is in range by the
+# time a kernel calls this.
+function pair_erfc_dev(z::T) where {T}
+    cof = _pair_erfc_coef(T)
+    xlo = T(PAIR_ERFC_XLO)
+    t = 2 / (2 + z)
+    ξ = 2 * (2t - 1 - xlo) / (1 - xlo) - one(T)
+    d = zero(T); dd = zero(T)
+    for j in length(cof):-1:2
+        tmp = d
+        d = 2ξ * d - dd + cof[j]
+        dd = tmp
+    end
+    return t * exp(ξ * d - dd + cof[1] / 2 - z * z)
+end
+
 # Half-space enumeration with kUPS's weighting: n₁ ≥ 0, and every vector with n₁ > 0 stands
 # in for its mirror image with weight 2. Since aᵢ·bⱼ = 2π δᵢⱼ, nᵢ = k·aᵢ/2π, so any k with
 # |k| ≤ kmax has |nᵢ| ≤ kmax·|aᵢ|/2π, where |aᵢ| = norm(A[:,i]) is the lattice vector's own

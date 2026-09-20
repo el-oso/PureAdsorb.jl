@@ -184,7 +184,7 @@ end
     b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
     N = length(g.sites)
     g_compact = PureAdsorb.Guest{Float64, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
-    # A large negative kT drives margin negative through the (θ_F+2)*kT term; the guard must
+    # A large negative kT drives margin negative through the (θ+2)*kT term; the guard must
     # name the offending system rather than letting the search loop run unbounded.
     @test_throws "system 1" PureAdsorb.build_rejection_tables(b, g_compact, -1.0e30)
 end

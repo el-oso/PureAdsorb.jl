@@ -89,9 +89,10 @@ whether called from Julia on the CPU or compiled into a GPU kernel.
 
 **Hard-core rejection** (`src/reject.jl`) — before computing an insertion's energy, `widom`
 checks whether a rigorous lower bound on it already exceeds the point past which its Boltzmann
-weight underflows to exactly `0.0` in the working float type; if so, the weight is recorded as
-zero without ever calling `insertion_energy`. `theta_F(T)` is that underflow point, found by
-bisection on the float grid. `hardcore_bound` (`B_s`) sums, over every guest-site/host-atom pair
+weight underflows to exactly `0.0` in Float64, the type `widom` accumulates weights in
+regardless of `FrameworkBatch`'s own float type; if so, the weight is recorded as zero without
+ever calling `insertion_energy`. `theta_F(T)` is that underflow point for float type `T`, found
+by bisection on the float grid; `widom` always uses `theta_F(Float64)`. `hardcore_bound` (`B_s`) sums, over every guest-site/host-atom pair
 in a system plus a reciprocal-space cross-term bound, the most negative energy that pair could
 possibly contribute anywhere in its domain; it is computed once per system at `FrameworkBatch`
 construction, alongside `kmin_table` (`K_min(a,t)`, the most negative Coulomb prefactor over a
@@ -118,12 +119,13 @@ before the assignment cycles to the next one, so work-items adjacent in `g` — 
 the device — read the same framework's tables. Random poses (fractional position, Shoemake
 quaternion) are generated on the host with `Random.Xoshiro` in chunks (`random_poses!`) and
 uploaded before each kernel launch; results are downloaded and accumulated into per-system,
-per-block sums on the host (`boltzmann_weight`, forcing the energy-weighted product to exactly
-zero whenever the weight itself is, rejected or not — a guest site within about 1e-3 Å of a host
-atom overflows the Lennard-Jones term to `Inf` in Float32, and `Inf * 0.0` is `NaN`), with each
-system's blocks drawn from that system's own sample order (`system_counts` gives the exact
-per-system count up front). `widom` drives this loop and reduces the accumulated sums into a
-`WidomResult` per system (`_reduce`). `widom_singlephase` (non-exported, test-only) runs every
+per-block sums on the host in Float64 regardless of `FrameworkBatch`'s own float type
+(`boltzmann_weight`, forcing the energy-weighted product to exactly zero whenever the weight
+itself is, rejected or not — a guest site within about 1e-3 Å of a host atom overflows the
+Lennard-Jones term to `Inf`, and `Inf * 0.0` is `NaN`), with each system's blocks drawn from that
+system's own sample order (`system_counts` gives the exact per-system count up front). `widom`
+drives this loop and reduces the accumulated sums into a `WidomResult` per system (`_reduce`),
+converting to `FrameworkBatch`'s float type only at that point. `widom_singlephase` (non-exported, test-only) runs every
 insertion through phase 1 directly, skipping phase 0 entirely, so its results can be checked for
 exact equality against `widom`'s.
 

@@ -28,6 +28,12 @@ q_{\mathrm{st}} = k_B T - \frac{\langle \Delta U \, W \rangle}{\langle W \rangle
 ``q_{\mathrm{st}}`` is kUPS's `heat_of_adsorption` — the negative of the isosteric heat of
 adsorption at zero loading.
 
+`insertion_energy` computes ``\Delta U`` in `FrameworkBatch`'s own float type, but `widom`
+accumulates ``W`` and ``\Delta U\, W`` on the host in Float64 regardless of that type, since
+`exp(-\Delta U/k_B T)` overflows past a well only about 88.7 ``k_B T`` deep in Float32 — well
+within the depths a real binding site reaches. `widom` converts the four block-averaged
+quantities above to `FrameworkBatch`'s float type only at the end.
+
 ## Units
 
 Energies are in eV, lengths in Å, temperature in K, and charges in units of the elementary
@@ -238,7 +244,10 @@ ever evaluating `insertion_energy`.
 **Underflow point.** `theta_F(T)` is the smallest value ``\theta`` for which `exp(-θ)` underflows
 to exactly zero in float type ``T`` (about 745.13 for `Float64`, 103.97 for `Float32`, found by
 bisection on the float grid rather than assumed). Since `exp` is monotone non-increasing,
-``\Delta U / k_B T > \theta_F(T)`` guarantees `exp(-ΔU/kT) == 0`.
+``\Delta U / k_B T > \theta_F(T)`` guarantees `exp(-ΔU/kT) == 0`. `widom`'s rejection rule always
+uses ``\theta = \theta_F(\mathrm{Float64})``, regardless of `FrameworkBatch`'s own float type,
+since a flagged pose must be provably zero weight in the Float64 arithmetic `widom` actually
+accumulates weights in (see above), not in a possibly narrower `theta_F(F)`.
 
 **Lower bound.** Write the insertion energy as a sum over guest-site/host-atom pairs plus the
 reciprocal-space cross term and the pose-independent constant ``c_s``:
@@ -272,15 +281,17 @@ exists, and rejection is disabled for that system.
 **Rejection radius.** For one guest site `a` and host type `t`, `K_min(a,t)` is the most negative
 ``K_{ah}`` over that system's atoms of type `t` (zero if none is negative) — temperature
 independent, so it is also computed once at construction. `widom` combines it with the
-temperature-dependent margin ``(\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s`` into a
-rejection radius ``\rho_{at}``, clamped to ``r_{\mathrm{lj}}`` for the same reason as ``r_0``
-above: the first root, scanning up from ``r \to 0``, of
+temperature-dependent margin ``(\theta + 2)\,k_B T + \mathrm{safety} + B_s - c_s`` (``\theta =
+\theta_F(\mathrm{Float64})``, per "Underflow point" above) into a rejection radius ``\rho_{at}``,
+clamped to ``r_{\mathrm{lj}}`` for the same reason as ``r_0`` above: the first root, scanning up
+from ``r \to 0``, of
 
 ```math
-\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s.
+\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta + 2)\,k_B T + \mathrm{safety} + B_s - c_s.
 ```
 
 The safety term ``\mathrm{safety} = 2 n \,\mathrm{eps}(F) (B_s + |c_s|) + 4\times10^{-6} B_s``
+(``F`` `FrameworkBatch`'s own float type, since `insertion_energy` sums on the device in ``F``)
 bounds the gap between this ideal, exact-formula ``\Delta U`` and the actual floating-point value
 `insertion_energy` computes. Recursive summation of ``n`` terms of magnitude at most
 ``B_s + |c_s|`` has rounding error at most ``(n-1)\,u\,\Sigma|x_i|`` with unit roundoff
@@ -290,7 +301,7 @@ reciprocal-space terms, and a handful of pose-independent additions. The ``4\tim
 term additionally covers `pair_erfc_dev`'s own approximation error relative to the true
 ``\operatorname{erfc}`` (measured up to `1.51e-6` in Float32 over `[0, PAIR_ERFC_XMAX]`), applied
 once per Coulomb term and so likewise proportional to the sum's magnitude. Both terms ensure that
-a rejected insertion's true (bound) energy still clears ``(\theta_F+2)\,k_B T`` once this error is
+a rejected insertion's true (bound) energy still clears ``(\theta+2)\,k_B T`` once this error is
 subtracted back out. Every separation under ``\rho_{at}`` then satisfies the rejection condition
 for any atom of type `t`, since the left-hand side lower bounds that atom's true pair energy at
 distance `r`. For CO2 in RUBTAK 3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the

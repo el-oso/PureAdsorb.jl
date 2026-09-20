@@ -65,12 +65,17 @@ function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, first_g::Integer, r
     return nothing
 end
 
-# Boltzmann weight and its energy-weighted product, with `ΔU·W` forced to exactly zero whenever
-# `W` itself underflows to exactly zero: in Float32, a guest site within about 1e-3 Å of a host
-# atom overflows the Lennard-Jones term to `Inf`, and `Inf * 0.0` is `NaN`, not `0.0`.
+# Boltzmann weight and its energy-weighted product, computed in Float64 regardless of `ΔU`'s own
+# float type `F`: `exp(-ΔU/kT)` overflows in Float32 for a well only about 88.7 kT deep, well
+# within the range `widom` must report accurately, so `widom` accumulates both quantities in
+# Float64 and converts its final results to `F` only at the end. `ΔU·W` is forced to exactly zero
+# whenever `W` itself underflows to exactly zero: a guest site within about 1e-3 Å of a host atom
+# overflows the Lennard-Jones term to `Inf` (in `F`, hence also after conversion to Float64), and
+# `Inf * 0.0` is `NaN`, not `0.0`.
 function boltzmann_weight(ΔU::F, kT::F) where {F}
-    w = exp(-ΔU / kT)
-    return w, iszero(w) ? zero(F) : ΔU * w
+    ΔU64, kT64 = Float64(ΔU), Float64(kT)
+    w = exp(-ΔU64 / kT64)
+    return w, iszero(w) ? 0.0 : ΔU64 * w
 end
 
 # Phase 0 of the hard-core rejection stage (E3): one work-item per insertion, flagging (`0x01`)
@@ -161,8 +166,13 @@ end
 
 # Rejection radii ρ_at² and phase-0 stencil half-widths for one `widom` call at temperature
 # `kT`: both depend on temperature through the underflow margin
-# `(θ_F+2)·kT + safety + B_s − c_s`, even though `batch.bs` and `batch.kmin` themselves do not,
+# `(θ+2)·kT + safety + B_s − c_s`, even though `batch.bs` and `batch.kmin` themselves do not,
 # so both are rebuilt fresh here on every call rather than stored in `FrameworkBatch`.
+#
+# `θ` is `theta_F(Float64)`, regardless of `F`: `widom` accumulates every insertion's Boltzmann
+# weight in Float64 before converting its final results to `F`, so a pose flagged here must be
+# provably zero weight in that same Float64 arithmetic, not in `F`'s (a smaller `F`-only
+# threshold would flag poses whose Float64 weight is small but not zero).
 #
 # `safety = 2·n·eps(F)·(B_s + |c_s|) + 4e-6·B_s` bounds the gap between the ideal, exact-formula
 # `ΔU` the rejection rule reasons about and the actual floating-point value `insertion_energy`
@@ -173,14 +183,15 @@ end
 # reciprocal-space terms, and a handful of pose-independent additions. The `4e-6·B_s` term
 # additionally covers `pair_erfc_dev`'s own approximation error relative to the true `erfc`
 # (measured up to `1.51e-6` in Float32 over `[0, PAIR_ERFC_XMAX]`; `4e-6` leaves margin), applied
-# once per Coulomb term and so also proportional to the sum's magnitude. Both terms are added so
-# that a rejected insertion's ideal (bound) energy clears `(θ_F+2)·kT` even after this error is
-# subtracted back out. `guest` must already carry compact type indices (`batch.guest_types`). A
-# system whose `bs` is `Inf` gets an infinite margin, and `find_rho2` returns `0` for every one
-# of its entries, disabling rejection for that system.
+# once per Coulomb term and so also proportional to the sum's magnitude. Both terms use `eps(F)`
+# because `insertion_energy` sums them on the device in `F`. Both terms are added so that a
+# rejected insertion's ideal (bound) energy clears `(θ+2)·kT` even after this error is subtracted
+# back out. `guest` must already carry compact type indices (`batch.guest_types`). A system whose
+# `bs` is `Inf` gets an infinite margin, and `find_rho2` returns `0` for every one of its entries,
+# disabling rejection for that system.
 function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT::F) where {F, N}
     ntypes = size(batch.sigma, 1)
-    θ = theta_F(F)
+    θ = F(theta_F(Float64))
     rho2 = zeros(F, batch.nsys * N * ntypes)
     reach0 = Vector{SVector{3, Int32}}(undef, batch.nsys)
     # One memo `Dict` per thread, keyed on `find_rho2`'s own arguments `(σ, ε, kmin_at, margin)`:
@@ -235,15 +246,19 @@ the Boltzmann-weighted insertion average `W = ⟨exp(-ΔU/kT)⟩`, split into `n
 standard-error estimate, and reduced to a `WidomResult` per system in `batch`. Insertions are
 generated and evaluated in chunks of `chunk` poses per `backend` kernel launch. `seed` sets the
 random-pose generator. `guest` must be the same guest (by value) that `batch` was built from.
+Each insertion's energy is computed on the device in `batch`'s float type, but its Boltzmann
+weight accumulates on the host in Float64 regardless (`boltzmann_weight`), so a well far deeper
+than Float32's overflow point (about 88.7 kT) is still reported correctly; `WidomResult`'s fields
+carry `batch`'s own float type, and a result that does not fit in it throws naming the system.
 
 Each chunk runs two kernels: a phase-0 kernel flags every insertion whose guest sites all come
 no closer than a rigorous rejection radius to every host atom of the matching type (E3's
 hard-core rejection — see the efficiency design spec), and a phase-1 kernel computes the actual
 energy for only the survivors. A rejected insertion's Boltzmann weight and energy-weighted
 product are recorded as exactly `0.0` without computing its energy at all; since the rejection
-radius is constructed so that `exp(-ΔU/kT)` is provably `0.0` in the working float type for
-every insertion it flags, `widom`'s results are identical to computing every insertion's energy
-directly.
+radius is constructed so that `exp(-ΔU/kT)` is provably `0.0` in Float64 (the type `widom`
+accumulates weights in) for every insertion it flags, `widom`'s results are identical to
+computing every insertion's energy directly.
 
 Insertion `g` of `1:ninsert` goes to system `mod1((g - 1) ÷ run + 1, nsys)`: `run` consecutive
 insertions share a system before the assignment cycles to the next one, so device work-items
@@ -347,8 +362,10 @@ function _widom(
     rho2, reach0, ntypes = reject ? build_rejection_tables(batch, guest_compact, kT) : (F[], SVector{3, Int32}[], 0)
     drho2 = adapt(backend, rho2)
     dreach0 = adapt(backend, reach0)
-    sW = zeros(F, nsys, nblocks)
-    sUW = zeros(F, nsys, nblocks)
+    # Boltzmann weights accumulate in Float64 regardless of `F` (see `boltzmann_weight`); `_reduce`
+    # converts the final per-system results to `F`.
+    sW = zeros(Float64, nsys, nblocks)
+    sUW = zeros(Float64, nsys, nblocks)
     n = zeros(Int, nsys, nblocks)
     kern0 = hardcore_kernel!(backend)
     kern1 = widom_kernel!(backend)
@@ -394,37 +411,62 @@ function _widom(
             s = sys_of[i]
             seen[s] += 1
             blk = min(nblocks, (seen[s] - 1) ÷ block_len[s] + 1)
-            w, uw = iszero(flags[i]) ? boltzmann_weight(ΔU_h[i], kT) : (zero(F), zero(F))
+            w, uw = iszero(flags[i]) ? boltzmann_weight(ΔU_h[i], kT) : (0.0, 0.0)
             sW[s, blk] += w
             sUW[s, blk] += uw
             n[s, blk] += 1
         end
         done += m
     end
-    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[s]) for s in 1:nsys]
+    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[s], s, F) for s in 1:nsys]
 end
 
 # Block-averaged mean and standard error of the Widom weight W and the energy-weighted
 # average UW = ⟨ΔU·exp(-ΔU/kT)⟩, propagated through μ_ex = -kT log W, K_H = V·W/kT and
 # q_st = kT - UW/W via the delta method (first-order error propagation of a ratio of means).
-function _reduce(sW, sUW, n, kT, V)
-    T = eltype(sW)
+# `sW`/`sUW` accumulate in Float64 (see `boltzmann_weight`); this runs the whole reduction in
+# Float64 and converts every field to `F` only at the end. `kT`/`V` arrive in `F` (from
+# `FrameworkBatch`/`widom`'s own `kT`), so they are converted here too.
+function _reduce(sW, sUW, n, kT, V, s::Integer, ::Type{F}) where {F}
     nb = length(sW)
     all(>(0), n) || throw(ArgumentError("block $(findfirst(iszero, n)) of $nb has zero samples"))
+    kT64, V64 = Float64(kT), Float64(V)
     mW = sW ./ n
     mUW = sUW ./ n
     W = sum(sW) / sum(n)
     UW = sum(sUW) / sum(n)
+    isfinite(W) && isfinite(UW) || throw(
+        ArgumentError(
+            "system $s: Boltzmann accumulation overflowed Float64 (W=$W, UW=$UW); an insertion " *
+                "energy below about -709·kT was sampled"
+        )
+    )
     varW = sum(abs2, mW .- W) / (nb - 1)
     varUW = sum(abs2, mUW .- UW) / (nb - 1)
     cov = sum((mW .- W) .* (mUW .- UW)) / (nb - 1)
     semW = sqrt(varW / nb)
     ratio = UW / W
-    var_ratio = iszero(UW) ? zero(T) : ratio^2 * (varUW / UW^2 + varW / W^2 - 2cov / (UW * W)) / nb
+    var_ratio = iszero(UW) ? 0.0 : ratio^2 * (varUW / UW^2 + varW / W^2 - 2cov / (UW * W)) / nb
     # The first-order delta method can return a negative variance when the block covariance
     # term dominates; the true variance is non-negative, so clamp at zero.
-    return WidomResult{T}(
-        -kT * log(W), kT * semW / W, V * W / kT, V * semW / kT,
-        kT - ratio, sqrt(max(var_ratio, zero(T))), sum(n), nb
+    #
+    # mu_ex and q_st scale with the well depth itself (order a few eV even for a very favorable
+    # site), so a value that does not fit `F` indicates a genuine problem and throws rather than
+    # silently narrowing to `±Inf`. The other four fields are not held to the same standard:
+    # K_H/K_H_err scale with W itself, i.e. with exp(well depth/kT), and so can legitimately
+    # exceed any finite float type's range for a strongly binding site (an infinite Henry's
+    # constant in `F` represents an insertion probability too large to distinguish from certainty
+    # in that type, not a computation error); mu_ex_err/q_st_err are a delta-method error
+    # propagation through a ratio of block means, which can diverge to `Inf`/`NaN` in Float64
+    # itself when a system's samples are too few or too skewed to bound its own uncertainty, a
+    # property of the estimator rather than of the float type.
+    mu_ex = -kT64 * log(W)
+    q_st = kT64 - ratio
+    for (name, v) in ((:mu_ex, mu_ex), (:q_st, q_st))
+        isfinite(F(v)) || throw(ArgumentError("system $s: $name = $v does not fit in $F"))
+    end
+    return WidomResult{F}(
+        F(mu_ex), F(kT64 * semW / W), F(V64 * W / kT64), F(V64 * semW / kT64),
+        F(q_st), F(sqrt(max(var_ratio, 0.0))), sum(n), nb
     )
 end

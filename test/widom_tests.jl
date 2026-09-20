@@ -1,10 +1,10 @@
 @testitem "boltzmann_weight forces zero energy-weight product when the weight underflows" begin
-    # Ordinary underflow (large finite ΔU): unaffected by the fix, the weight is zero either way.
+    # Ordinary underflow (large finite ΔU): the weight is zero either way.
     w, uw = PureAdsorb.boltzmann_weight(1000.0, 0.0257)
     @test iszero(w) && iszero(uw)
 
     # A guest site within about 1e-3 Å of a host atom overflows the Lennard-Jones term to `Inf`
-    # in Float32; without the fix, `Inf * 0.0f0` is `NaN32`, not `0.0f0`.
+    # in Float32; `Inf * 0.0` is `NaN`, not `0.0`, in Float64 just as in Float32.
     w32, uw32 = PureAdsorb.boltzmann_weight(Inf32, 0.0257f0)
     @test iszero(w32)
     @test iszero(uw32)
@@ -29,6 +29,15 @@
     @test isinf(e)
     w_atom, uw_atom = PureAdsorb.boltzmann_weight(e + b.constant_offset[1], Float32(PureAdsorb.KB) * 300.0f0)
     @test iszero(w_atom) && iszero(uw_atom)
+end
+
+@testitem "boltzmann_weight accumulates in Float64 regardless of the input float type" begin
+    # ΔU = -100·kT: exp(100) overflows nothing in Float64 (it overflows only past exp(709.78)),
+    # so the weight is finite even though its input arrives in Float32.
+    w, uw = PureAdsorb.boltzmann_weight(-100.0f0, 1.0f0)
+    @test w isa Float64
+    @test w == exp(100.0)
+    @test uw == -100.0 * exp(100.0)
 end
 
 @testitem "empty box gives ideal-gas statistics" begin
@@ -102,6 +111,47 @@ end
     meanW = r.K_H * PureAdsorb.KB * Tk / L^3
     errW = r.K_H_err * PureAdsorb.KB * Tk / L^3
     @test abs(meanW - expected) < 4 * errW
+end
+
+@testitem "a deep well stays finite in Float32" begin
+    using StaticArrays
+    # Single LJ atom, ε = 0.2 eV at T = 20 K: well depth ε/kT ≈ 116, well past Float32's
+    # exp() overflow point (about 88.7): a Boltzmann weight accumulated in Float32 would overflow
+    # to Inf32, giving mu_ex = -Inf32.
+    σ, ε, rc, Tk = 3.4, 0.2, 12.0, 20.0
+    L32 = 40.0f0
+    A32 = SMatrix{3, 3}(L32, 0, 0, 0, L32, 0, 0, 0, L32)
+    fw32 = Framework{Float32}(A32, [SVector(0.5f0, 0.5f0, 0.5f0)], ["X"], ["X"], [0.0f0])
+    ff32 = ForceField(["X_"], Float32[σ], Float32[ε]; cutoff = Float32(rc), tail = false)
+    g32 = PureAdsorb.Guest(SVector{1}(SVector(0.0f0, 0.0f0, 0.0f0)), SVector(1), SVector(0.0f0), 1.0f0, 1.0f0, 0.0f0)
+    b32 = FrameworkBatch([fw32], ff32, g32, EwaldParams(cutoff = Float32(rc), precision = 1.0f-6))
+    r32 = widom(b32, g32; T = Float32(Tk), ninsert = 100_000, seed = 7, nblocks = 10)[1]
+    @test isfinite(r32.mu_ex)
+    @test r32.mu_ex isa Float32
+
+    L64 = 40.0
+    A64 = SMatrix{3, 3}(L64, 0, 0, 0, L64, 0, 0, 0, L64)
+    fw64 = Framework{Float64}(A64, [SVector(0.5, 0.5, 0.5)], ["X"], ["X"], [0.0])
+    ff64 = ForceField(["X_"], [σ], [ε]; cutoff = rc, tail = false)
+    g64 = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(0.0), 1.0, 1.0, 0.0)
+    b64 = FrameworkBatch([fw64], ff64, g64, EwaldParams(cutoff = rc))
+    r64 = widom(b64, g64; T = Tk, ninsert = 100_000, seed = 8, nblocks = 10)[1]
+    @test abs(r32.mu_ex - r64.mu_ex) < 4 * hypot(r32.mu_ex_err, r64.mu_ex_err)
+
+    # K_H itself scales with exp(well depth/kT), so it legitimately exceeds Float32's range for
+    # this well: an infinite Henry's constant in Float32 is the honest representation, not a bug.
+    @test isinf(r32.K_H)
+    @test isfinite(r64.K_H)
+end
+
+@testitem "an insertion energy below about -709 kT throws, naming the system" begin
+    # Synthetic block sums standing in for an insertion so attractive that its Boltzmann weight
+    # overflows even Float64 (exp(x) overflows past about 709.78): `_reduce` must throw rather
+    # than propagate the resulting Inf/NaN into a `WidomResult`.
+    n = [50, 50]
+    sW = [Inf, Inf]
+    sUW = [-Inf, -Inf]
+    @test_throws "system 4" PureAdsorb._reduce(sW, sUW, n, 1.0, 1.0, 4, Float64)
 end
 
 @testitem "RUBTAK CO2 runs and is finite" begin
@@ -248,37 +298,41 @@ end
 
 @testitem "two-phase widom equals single-phase widom exactly" begin
     using StaticArrays
-    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
-    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
-    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
-    sc = replicate(fw, (3, 3, 3))
-    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
-    g0 = PureAdsorb.Guest(g.sites, g.types, SVector(0.0, 0.0, 0.0), g.tc, g.pc, g.omega)   # neutral guest
+    for T in (Float64, Float32)
+        fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T)
+        ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T)
+        g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T)
+        sc = replicate(fw, (3, 3, 3))
+        ewald = EwaldParams(cutoff = T(12), precision = T(1.0e-6))
+        g0 = PureAdsorb.Guest(g.sites, g.types, SVector{3, T}(0, 0, 0), g.tc, g.pc, g.omega)   # neutral guest
 
-    # A framework whose B_s is Inf: a host atom of a type with no Lennard-Jones well (ε = 0)
-    # carries a charge opposite in sign to a guest site, so no finite rejection bound exists.
-    A_inf = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
-    fw_inf = Framework{Float64}(A_inf, [SVector(0.5, 0.5, 0.5)], ["B"], ["B"], [1.0])
-    ff_inf = ForceField(["C_co2", "O_co2", "B_"], [2.8, 3.05, 3.0], [0.0023, 0.0068, 0.0]; cutoff = 12.0, tail = false)
-    ewald_inf = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
-    g_inf = PureAdsorb.Guest(g.sites, SVector(1, 2, 2), g.charges, g.tc, g.pc, g.omega)   # ff_inf's own type index
+        # A framework whose B_s is Inf: a host atom of a type with no Lennard-Jones well (ε = 0)
+        # carries a charge opposite in sign to a guest site, so no finite rejection bound exists.
+        A_inf = SMatrix{3, 3}(T(30), 0, 0, 0, T(30), 0, 0, 0, T(30))
+        fw_inf = Framework{T}(A_inf, [SVector(T(0.5), T(0.5), T(0.5))], ["B"], ["B"], [one(T)])
+        ff_inf = ForceField(
+            ["C_co2", "O_co2", "B_"], T[2.8, 3.05, 3.0], T[0.0023, 0.0068, 0.0]; cutoff = T(12), tail = false
+        )
+        ewald_inf = EwaldParams(cutoff = T(12), precision = T(1.0e-6))
+        g_inf = PureAdsorb.Guest(g.sites, SVector(1, 2, 2), g.charges, g.tc, g.pc, g.omega)   # ff_inf's own type index
 
-    scenarios = [
-        ("one framework" => (FrameworkBatch([sc], ff, g, ewald), g)),
-        ("several frameworks" => (FrameworkBatch([sc, sc, sc], ff, g, ewald), g)),
-        ("neutral guest" => (FrameworkBatch([sc], ff, g0, ewald), g0)),
-        ("B_s = Inf" => (FrameworkBatch([fw_inf], ff_inf, g_inf, ewald_inf), g_inf)),
-    ]
-    for (name, (b, guest)) in scenarios
-        if name == "B_s = Inf"
-            @test isinf(only(b.bs))
+        scenarios = [
+            ("one framework" => (FrameworkBatch([sc], ff, g, ewald), g)),
+            ("several frameworks" => (FrameworkBatch([sc, sc, sc], ff, g, ewald), g)),
+            ("neutral guest" => (FrameworkBatch([sc], ff, g0, ewald), g0)),
+            ("B_s = Inf" => (FrameworkBatch([fw_inf], ff_inf, g_inf, ewald_inf), g_inf)),
+        ]
+        for (name, (b, guest)) in scenarios
+            if name == "B_s = Inf"
+                @test isinf(only(b.bs))
+            end
+            # A small chunk relative to ninsert, with the ~41% measured rejection fraction for CO2 in
+            # RUBTAK, makes both an all-rejected and an all-surviving chunk overwhelmingly likely
+            # somewhere across the run, exercising both edges of the phase-0/phase-1 hand-off.
+            r2 = widom(b, guest; T = T(298.15), ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
+            r1 = PureAdsorb.widom_singlephase(b, guest; T = T(298.15), ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
+            @test r1 == r2
         end
-        # A small chunk relative to ninsert, with the ~41% measured rejection fraction for CO2 in
-        # RUBTAK, makes both an all-rejected and an all-surviving chunk overwhelmingly likely
-        # somewhere across the run, exercising both edges of the phase-0/phase-1 hand-off.
-        r2 = widom(b, guest; T = 298.15, ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
-        r1 = PureAdsorb.widom_singlephase(b, guest; T = 298.15, ninsert = 2000, seed = 17, nblocks = 4, chunk = 4)
-        @test r1 == r2
     end
 end
 

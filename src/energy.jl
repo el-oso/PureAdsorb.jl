@@ -20,9 +20,9 @@ end
 lj_pair_energy(r2::T, σ::T, ε::T) where {T} = (x = (σ * σ / r2)^3; 4 * ε * (x * x - x))
 
 # Energy of inserting one guest molecule at pose (pos, q) into a fixed host, looping linearly
-# over the system's `natoms` atoms (this is the fastest form for a framework this size — see the
-# efficiency design's E2 cellwidth measurements — now that the hard-core rejection stage (E3)
-# has already screened out most poses before this ever runs), plus the reciprocal cross term
+# over the system's `natoms` atoms (the fastest form for a framework this size, once the
+# hard-core rejection stage (E3) has already screened out most poses before this ever runs — see
+# the efficiency design's E2 cellwidth measurements), plus the reciprocal cross term
 # against the host's precomputed structure factor Shost over only the k-vectors coupled to this
 # framework's replication (`FrameworkBatch` keeps no others). The guest self term
 # `Σ_k pref_k |S_g(k)|²` is orientation-dependent but pose-otherwise-fixed, so its orientation

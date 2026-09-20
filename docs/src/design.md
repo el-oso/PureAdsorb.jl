@@ -38,8 +38,8 @@ structure unchanged.
 
 Lennard-Jones types are remapped to a compact index covering only the types actually present
 (any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` all use this
-index instead of the full force field's, and `compact_to_orig` maps back to the force field's
-own index for error messages built at construction. The guest's site types are remapped the
+index instead of the full force field's, and `compact_to_orig` is the public mapping back to the
+force field's own index. The guest's site types are remapped the
 same way (`guest_types`); `guest_types_orig`, `guest_sites_orig` and `guest_charges_orig` record
 the guest exactly as passed in, so `widom` can verify a later call passes the same guest the
 batch was built for and throw a clear error otherwise (every precomputed quantity below depends
@@ -64,14 +64,15 @@ orientation-averaged approximation is then no longer accurate enough.
 
 **Cell list.** Each system's atoms are stored sorted into a grid of `ncells[n]` cells along the
 stored cell's three axes, one cell per `cellwidth` Å of perpendicular length (`grid_dims`,
-`FrameworkBatch`'s `cellwidth` keyword, default 3 Å): `n_i = max(1, floor(L_i / cellwidth))`. A
+`FrameworkBatch`'s `cellwidth` keyword, default 2 Å): `n_i = max(1, floor(L_i / cellwidth))`. A
 stable counting sort (`cell_sort`) permutes `positions`/`types`/`charges` into cell order (linear
 index `i + n1*(j + n2*k)`, 0-based, over the fractional coordinate wrapped into `[0,1)`), so a
 cell's atoms are the contiguous range `cell_offsets[c+1]+1:cell_offsets[c+2]` (shifted by the
 system's `atom_offsets` entry). `cell_offsets` concatenates every system's `prod(ncells)+1` local
 offsets, ragged, with `cellgrid_offsets` marking where each system's block starts — the same
-pattern `atom_offsets`/`k_offsets` already use. This cell list now serves only the hard-core
-rejection stage's phase-0 kernel (below): the energy itself no longer walks a stencil. The
+pattern `atom_offsets`/`k_offsets` already use. This cell list serves only the hard-core
+rejection stage's phase-0 kernel (below): the energy itself loops linearly over the system's
+atoms instead of walking a stencil. The
 construction guard is `min_multiplicity(cell, max(ff.cutoff, ewald.cutoff) + r_guest) == (1,1,1)`
 (`r_guest` the guest's largest site distance from its reference point), needed because a single
 minimum image per host atom (see `insertion_energy` below) is only exact when every contributing
@@ -81,11 +82,10 @@ pair's separation stays under half the cell's perpendicular length.
 and Ewald real/reciprocal terms of one guest pose against one system's atoms, looping linearly
 over `positions[(atom_base+1):(atom_base+natoms)]`: one `minimum_image` per host atom, with each
 guest site's own (already rotated) offset added directly without a further minimum image — valid
-exactly when the construction guard above holds. This linear form replaced a cell-list stencil
-walk once measurement showed it was already the fastest form for a framework this size (the
-efficiency design's E2 cellwidth measurements). `insertion_energy` takes only isbits scalars,
-`SVector`s, and plain array/view arguments, so it runs identically whether called from Julia on
-the CPU or compiled into a GPU kernel.
+exactly when the construction guard above holds. This linear form is the fastest measured for a
+framework this size (the efficiency design's E2 cellwidth measurements). `insertion_energy`
+takes only isbits scalars, `SVector`s, and plain array/view arguments, so it runs identically
+whether called from Julia on the CPU or compiled into a GPU kernel.
 
 **Hard-core rejection** (`src/reject.jl`) — before computing an insertion's energy, `widom`
 checks whether a rigorous lower bound on it already exceeds the point past which its Boltzmann

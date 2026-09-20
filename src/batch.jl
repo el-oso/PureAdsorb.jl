@@ -32,14 +32,14 @@ three axes (fractional coordinates, wrapped into [0,1)), so that a cell is a con
 offsets back to back (system `n`'s block starts at `cellgrid_offsets[n]+1`; local offset `c`'s
 atom range is `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c] + 1` through
 `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c + 1]`, cell index `c` linear in
-`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). This cell list now serves only the hard-core
+`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). This cell list serves only the hard-core
 rejection stage's phase-0 kernel (E3): the energy itself (`insertion_energy`) loops linearly
 over a system's atoms, the fastest form measured for a framework this size.
 
 Lennard-Jones types are remapped to a compact index covering only the types actually present
 (any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` use this
-compact index, and `compact_to_orig` maps it back to the force field's own type index (kept for
-error messages). The guest's own site types are remapped the same way and stored as
+compact index, and `compact_to_orig` is the public mapping back to the force field's own type
+index. The guest's own site types are remapped the same way and stored as
 `guest_types` (compact); `guest_types_orig`, `guest_sites_orig` and `guest_charges_orig` record
 the guest exactly as `widom` received it, so a later `widom` call can verify it was passed the
 same guest the batch was built for (every precomputed quantity below — `bs`, `kmin`,
@@ -142,12 +142,12 @@ the pose itself and adds each guest site's own offset directly, without re-imagi
 only exact within that bound. `cellwidth` (Å) is the target grid spacing of the cell list that
 serves the hard-core rejection stage's phase-0 kernel only; each system gets
 `max(1, floor(L_i / cellwidth))` cells along its `i`-th perpendicular length `L_i`. Phase 0's
-short reach (about 1.5 Å for CO2 in RUBTAK 3×3×3) makes a NARROWER cell width faster, the
-opposite of E2's full-cutoff finding: fewer, smaller cells around each pose's home cell mean
-fewer atoms scanned before a stencil that no longer spans the whole grid. The default, 2 Å, is
-the fastest of `(2, 3, 4)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the efficiency
-design spec's E3 measurements): 4.8 ms (Float64) / 0.8 ms (Float32) for a 65,536-insertion
-phase-0 launch, against 123–143 KB/framework across the swept widths.
+short reach (about 0.9–1.2 Å for CO2 in RUBTAK 3×3×3) makes a narrower cell width faster here, unlike
+the full-cutoff energy kernel: fewer, smaller cells around each pose's home cell mean fewer atoms
+scanned before a stencil that spans less than the whole grid. The default, 2 Å, is the fastest of
+`(2, 3, 4)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the efficiency design spec's E3
+measurements): 4.8 ms (Float64) / 0.8 ms (Float32) for a 65,536-insertion phase-0 launch, against
+123–143 KB/framework across the swept widths.
 
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same

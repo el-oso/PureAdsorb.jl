@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-20T17:11:00.274",
+    "gpu": "",
+    "backend": "cpu",
+    "precision": "f64",
+    "nthreads": 16,
+    "nsys_grid": [
+      1
+    ],
+    "ninsert_grid": [
+      10000
+    ],
+    "bench_seconds": 300,
+    "bench_samples": 5,
+    "kernel_chunk": 65536,
+    "cellwidth": 2.0,
+    "commit": "1ea8993",
+    "batch_construction_s": 0.164024063
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "ninsert": 10000,
+      "backend": "cpu",
+      "times_s": [
+        0.096659359,
+        0.09883267400000001,
+        0.09297788200000001,
+        0.11091709300000001,
+        0.100978436
+      ]
+    }
+  ],
+  "kernel_only_s": []
+}

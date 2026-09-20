@@ -51,7 +51,7 @@ linear loop over every host atom in the system, the fastest form measured for a 
 size once the hard-core rejection stage (below) has already screened out most poses. The cell
 list `FrameworkBatch` builds — a grid of ``n_i = \max(1, \lfloor L_i / w \rfloor)`` cells along
 each of the stored cell's three perpendicular lengths ``L_i`` (target width ``w``, the
-`cellwidth` keyword), atoms sorted so a cell is a contiguous array range — now serves only the
+`cellwidth` keyword), atoms sorted so a cell is a contiguous array range — serves only the
 rejection stage's phase-0 kernel, which needs just the few atoms within its own much shorter
 reach.
 
@@ -138,7 +138,7 @@ range this loop ever evaluates, since it only reaches pairs with ``r < r_c^{\mat
 `FrameworkBatch` rejects any batch whose ``\alpha \cdot r_c^{\mathrm{Ew}}`` would exceed that
 bound. The narrower range needs far fewer terms (17 in Float64, 8 in Float32) for the same or
 better accuracy: measured maximum relative error against `SpecialFunctions.erfc` over
-``[0, 4]`` is 9.5e-15 in Float64 and 1.4e-6 in Float32, against `erfc_dev`'s own 3.7e-15 and
+``[0, 4]`` is 9.5e-15 in Float64 and 1.51e-6 in Float32, against `erfc_dev`'s own 3.7e-15 and
 1.8e-6 on the same range. Every other use of ``\operatorname{erfc}`` (the reciprocal-space
 self/exclusion terms, `ewald_energy`, and the test oracle `insertion_energy_reference`) keeps
 `erfc_dev`.
@@ -184,7 +184,7 @@ about 2.4e-7 eV, against a mean self term of about 0.0052 eV — the orientation
 negligible next to the mean either way, which is why replacing the per-insertion sum with its
 average changes `widom`'s results by only a few times `self_term_halfrange`. `FrameworkBatch`
 throws instead of silently using this approximation when `2 · self_term_halfrange` exceeds
-`1e-3 · k_B · 300\,\mathrm{K}`.
+``10^{-3}\,k_B\cdot 300\,\mathrm{K}``.
 
 **Reciprocal cutoff and k-vector bound.** Reciprocal vectors are kept while ``|k| \leq
 k_{\max}``. The search range along each reciprocal-lattice direction is bounded using the
@@ -238,43 +238,47 @@ ever evaluating `insertion_energy`.
 **Underflow point.** `theta_F(T)` is the smallest value ``\theta`` for which `exp(-θ)` underflows
 to exactly zero in float type ``T`` (about 745.13 for `Float64`, 103.97 for `Float32`, found by
 bisection on the float grid rather than assumed). Since `exp` is monotone non-increasing,
-``\Delta U / k_B T > \theta_F(T)`` guarantees `exp(-\Delta U/k_B T) == 0`.
+``\Delta U / k_B T > \theta_F(T)`` guarantees `exp(-ΔU/kT) == 0`.
 
 **Lower bound.** Write the insertion energy as a sum over guest-site/host-atom pairs plus the
 reciprocal-space cross term and the pose-independent constant ``c_s``:
 
 ```math
 \Delta U = \sum_{a,h} u_{ah}(r_{ah}) + U_{\mathrm{recip}} + c_s, \qquad
-u_{ah}(r) = \mathrm{LJ}_{ah}(r) + K_{ah}\,\frac{\operatorname{pair\_erfc\_dev}(\alpha r)}{r},
-\qquad K_{ah} = k_e\, q_a q_h.
+u_{ah}(r) = \mathrm{LJ}_{ah}(r)\,[r < r_{\mathrm{lj}}] +
+K_{ah}\,\frac{\operatorname{pair\_erfc\_dev}(\alpha r)}{r}\,[r < r_{\mathrm{ew}}],
+\qquad K_{ah} = k_e\, q_a q_h,
 ```
 
-For every pair, the worst this term can be anywhere on its domain is bounded: `-\varepsilon_{ah}`
-when ``K_{ah} \geq 0`` (the Coulomb term is non-negative, the Lennard-Jones term is bounded below
-by ``-\varepsilon_{ah}``); when ``K_{ah} < 0``, at the radius ``r_0`` where ``u_{ah}`` crosses
-zero below its own minimum, ``-\varepsilon_{ah} - |K_{ah}|\operatorname{pair\_erfc\_dev}(\alpha
-r_0)/r_0`` (the Coulomb term's magnitude is largest, for ``r \geq r_0``, at ``r_0`` itself).
-Summing these per-pair magnitudes over every pair in a system, plus a reciprocal-space bound
+with ``r_{\mathrm{lj}}`` and ``r_{\mathrm{ew}}`` the Lennard-Jones and Ewald cutoffs and
+``[\,\cdot\,]`` the indicator (1 when the bracketed condition holds, 0 otherwise). For every
+pair, the worst this term can be anywhere on its domain is bounded: ``-\varepsilon_{ah}`` when
+``K_{ah} \geq 0`` (the Coulomb term is non-negative, the Lennard-Jones term is bounded below by
+``-\varepsilon_{ah}``); when ``K_{ah} < 0``, at the radius ``r_0`` where the untruncated
+``\mathrm{LJ}_{ah}(r) + K_{ah}\,\operatorname{pair\_erfc\_dev}(\alpha r)/r`` crosses zero below
+its own minimum, clamped to ``r_{\mathrm{lj}}`` (the crossing can lie beyond ``r_{\mathrm{lj}}``,
+past which ``u_{ah}`` no longer includes the Lennard-Jones term at all), the bound is
+``-\varepsilon_{ah} - |K_{ah}|\operatorname{pair\_erfc\_dev}(\alpha r_0)/r_0`` (the Coulomb
+term's magnitude is largest, for ``r \geq r_0``, at ``r_0`` itself). Summing these per-pair
+magnitudes over every pair in a system, plus a reciprocal-space bound
 ``R_s = k_e \sum_a |q_a| \sum_k 2\, \mathrm{kprefactor}_k\, |S_{\mathrm{host},k}|`` (from
 ``|\mathrm{Re}(\overline{S_{\mathrm{host}}}\,S_g)| \leq |S_{\mathrm{host}}||S_g| \leq
 |S_{\mathrm{host}}|\sum_a|q_a|``), gives ``B_s``: for CO2 in RUBTAK 3×3×3, ``B_s \approx 127{,}118
 \, k_B T`` at 298.15 K, computed once per system at `FrameworkBatch` construction since it does
-not depend on temperature. `B_s = \infty` when some pair combines an attractive Coulomb term
+not depend on temperature. ``B_s = \infty`` when some pair combines an attractive Coulomb term
 with no Lennard-Jones well at all (``\varepsilon_{ah} = 0``, ``K_{ah} < 0``): no finite bound
 exists, and rejection is disabled for that system.
 
 **Rejection radius.** For one guest site `a` and host type `t`, `K_min(a,t)` is the most negative
 ``K_{ah}`` over that system's atoms of type `t` (zero if none is negative) — temperature
 independent, so it is also computed once at construction. `widom` combines it with the
-temperature-dependent margin `(θ_F + 2)·k_B T + \mathrm{safety} + B_s - c_s` into a rejection
-radius ``\rho_{at}``: the first root, scanning up from ``r \to 0``, of
+temperature-dependent margin ``(\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s`` into a
+rejection radius ``\rho_{at}``, clamped to ``r_{\mathrm{lj}}`` for the same reason as ``r_0``
+above: the first root, scanning up from ``r \to 0``, of
 
 ```math
-\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s,
+\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + \mathrm{safety} + B_s - c_s.
 ```
-
-clamped to the Lennard-Jones cutoff ``r_{\mathrm{lj}}`` (the equation assumes the Lennard-Jones
-term is present at the root, which only holds for ``r < r_{\mathrm{lj}}``).
 
 The safety term ``\mathrm{safety} = 2 n \,\mathrm{eps}(F) (B_s + |c_s|) + 4\times10^{-6} B_s``
 bounds the gap between this ideal, exact-formula ``\Delta U`` and the actual floating-point value

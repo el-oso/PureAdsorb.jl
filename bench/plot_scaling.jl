@@ -2,6 +2,9 @@
 # in one batch, from every bench/results/*_scaling_*.json — no benchmark runs here.
 # PA_PLOT_OUT overrides the output path, e.g. to write the docs copy:
 #   PA_PLOT_OUT=docs/src/assets/widom_scaling.png julia --project=bench bench/plot_scaling.jl
+# By default, only the most recent commit's file is plotted per host/backend/precision/run
+# series (an older file for the same series draws an indistinguishable line otherwise);
+# PA_PLOT_ALL=1 plots every file instead.
 using CairoMakie, JSON, Statistics
 
 resultsdir = joinpath(@__DIR__, "results")
@@ -16,11 +19,21 @@ ax = Axis(
 palette = Makie.wong_colors()
 
 docs = [(p, JSON.parsefile(p)) for p in sort(paths)]
+if get(ENV, "PA_PLOT_ALL", "0") != "1"
+    series_key(d) = (d["meta"]["host"], d["meta"]["backend"], d["meta"]["precision"], get(d["meta"], "run_length", 1))
+    latest = Dict{Any, Tuple{String, Any}}()
+    for (p, d) in docs
+        key = series_key(d)
+        (!haskey(latest, key) || d["meta"]["date"] > latest[key][2]["meta"]["date"]) && (latest[key] = (p, d))
+    end
+    docs = collect(values(latest))
+end
 precisions = sort(unique(d["meta"]["precision"] for (_, d) in docs))
 for (p, d) in docs
     precision = d["meta"]["precision"]
     run_length = get(d["meta"], "run_length", 1)
-    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$precision, run=$run_length"
+    commit = get(d["meta"], "commit", "unknown")
+    label = "$(d["meta"]["host"])/$(d["meta"]["backend"])/$precision, run=$run_length, $commit"
     points = sort(d["samples"]; by = s -> s["nsys"])
     nsys = Float64[s["nsys"] for s in points]
     ips = Float64[s["chunk"] / median(Float64.(s["times_s"])) for s in points]

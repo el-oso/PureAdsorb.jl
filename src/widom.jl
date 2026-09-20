@@ -270,8 +270,9 @@ function _widom(
             guest.charges == batch.guest_charges_orig
     ) || throw(
         ArgumentError(
-            "guest passed to widom does not match the guest FrameworkBatch was built with " *
-                "(types=$(batch.guest_types_orig), sites=$(batch.guest_sites_orig), charges=$(batch.guest_charges_orig)); " *
+            "guest passed to widom does not match the guest FrameworkBatch was built with: " *
+                "passed types=$(guest.types), sites=$(guest.sites), charges=$(guest.charges); " *
+                "batch types=$(batch.guest_types_orig), sites=$(batch.guest_sites_orig), charges=$(batch.guest_charges_orig); " *
                 "build a new FrameworkBatch for a different guest"
         )
     )

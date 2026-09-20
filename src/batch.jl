@@ -75,12 +75,17 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
     length(sample) > 32 && (sample = sample[1:32])
     Ssample = Sh_full[sample]
     maxS, i = findmax(abs, Ssample)
-    threshold = 1.0e-8 * sum(abs, fw.charges)
+    # `structure_factor` sums natoms terms of order 1; canceling to "zero" leaves roundoff noise
+    # that grows with the working type's precision, not a fixed absolute scale — `1e-8` alone is
+    # far tighter than Float32's roundoff floor over a few thousand atoms. `100*eps(T)` extends
+    # the threshold to cover that floor while leaving Float64 (`100*eps(Float64) < 1e-8`)
+    # unchanged.
+    threshold = max(T(1.0e-8), 100 * eps(T)) * sum(abs, fw.charges)
     maxS > threshold && throw(
         ArgumentError(
             "framework $n claims replication $(fw.replication), but its host structure factor at " *
                 "k=$(kv_full[sample[i]]) (not coupled to that replication) is $maxS, exceeding " *
-                "1e-8·Σ|q_host| = $threshold; this replication does not describe the atoms"
+                "threshold $threshold = max(1e-8, 100·eps($T))·Σ|q_host|; this replication does not describe the atoms"
         )
     )
     return nothing

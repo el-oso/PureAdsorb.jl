@@ -22,11 +22,35 @@ struct WidomResult{T}
     nblocks::Int
 end
 
-# Insertions are dealt round-robin within each chunk; per-system counts across a chunk differ
-# by at most one.
-function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, nsys)
+# System assigned to global insertion index `g` (position in `1:ninsert`, independent of chunk
+# boundaries) under the run-length assignment: `run` consecutive values of `g` share a system
+# before the assignment cycles to the next one, so device work-items adjacent in `g` read the
+# same framework's tables.
+sys_of_index(g::Integer, run::Integer, nsys::Integer) = Int32(mod1((g - 1) ÷ run + 1, nsys))
+
+# `run` length `widom` uses when the caller does not override it: a quarter of one system's
+# average share of the insertions, clamped so a small batch still gets `run >= 1` and a huge one
+# does not let a single system dominate an entire chunk.
+default_run(ninsert::Integer, nsys::Integer) = clamp((ninsert ÷ nsys) ÷ 4, 1, 256)
+
+# Exact per-system insertion count under the run-length assignment: `run`-length runs cycle
+# round-robin through systems `1:nsys`, and any insertions left over after the last full run are
+# credited to the system holding that final, shorter run.
+function system_counts(ninsert::Integer, nsys::Integer, run::Integer)
+    q, rem = divrem(ninsert, run)
+    full, hi = divrem(q, nsys)
+    ns = fill(full * run, nsys)
+    for r in 0:(hi - 1)
+        ns[r + 1] += run
+    end
+    rem > 0 && (ns[mod(q, nsys) + 1] += rem)
+    return ns
+end
+
+# Poses for global insertion indices `first_g:(first_g + length(sys_of) - 1)`.
+function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, first_g::Integer, run::Integer, nsys::Integer)
     for i in eachindex(sys_of, rpos, quat)
-        sys_of[i] = Int32(mod1(i, nsys))
+        sys_of[i] = sys_of_index(first_g + i - 1, run, nsys)
         rpos[i] = rand(rng, eltype(rpos))
         u1, u2, u3 = rand(rng), rand(rng), rand(rng)
         a, b = sqrt(1 - u1), sqrt(u1)
@@ -57,23 +81,44 @@ end
 
 """
     widom(batch::FrameworkBatch, guest::Guest; T, ninsert, backend = CPU(), seed = 0,
-          chunk = 2^16, nblocks = 10) -> Vector{WidomResult}
+          chunk = 2^16, nblocks = 10, run = nothing) -> Vector{WidomResult}
 
 Widom test-particle insertion at temperature `T` (K): `ninsert` random poses per system give
 the Boltzmann-weighted insertion average `W = ⟨exp(-ΔU/kT)⟩`, split into `nblocks` blocks for a
 standard-error estimate, and reduced to a `WidomResult` per system in `batch`. Insertions are
 generated and evaluated in chunks of `chunk` poses per `backend` kernel launch. `seed` sets the
 random-pose generator.
+
+Insertion `g` of `1:ninsert` goes to system `mod1((g - 1) ÷ run + 1, nsys)`: `run` consecutive
+insertions share a system before the assignment cycles to the next one, so device work-items
+that are adjacent in `g` read the same framework's tables. `run` defaults to
+`clamp((ninsert ÷ nsys) ÷ 4, 1, 256)` and can be overridden, subject to
+`1 <= run <= ninsert ÷ nsys`. Each system's block statistics are drawn from its own sample
+order, so one system's block boundaries do not depend on how many insertions any other system
+receives.
 """
 function widom(
         batch::FrameworkBatch{F}, guest::Guest{F}; T, ninsert::Integer, backend = CPU(), seed = 0,
-        chunk::Integer = 2^16, nblocks::Integer = 10
+        chunk::Integer = 2^16, nblocks::Integer = 10, run::Union{Nothing, Integer} = nothing
     ) where {F}
     nblocks >= 2 || throw(ArgumentError("nblocks=$nblocks: at least two blocks are needed for a standard error"))
     chunk >= 1 || throw(ArgumentError("chunk=$chunk must be ≥ 1"))
     nsys = batch.nsys
-    ninsert >= 2 * nblocks * nsys ||
-        throw(ArgumentError("ninsert=$ninsert is too small: need at least 2·nblocks·nsys = $(2 * nblocks * nsys)"))
+    per = ninsert ÷ nsys
+    runlen = if isnothing(run)
+        default_run(ninsert, nsys)
+    else
+        run >= 1 || throw(ArgumentError("run=$run must be ≥ 1"))
+        run <= per || throw(ArgumentError("run=$run must be ≤ per=$per (= ninsert ÷ nsys)"))
+        Int(run)
+    end
+    ns = system_counts(ninsert, nsys, runlen)
+    minimum(ns) >= 2 * nblocks || throw(
+        ArgumentError(
+            "ninsert=$ninsert, nsys=$nsys, run=$runlen: system $(argmin(ns)) gets only $(minimum(ns)) samples, " *
+                "need at least 2·nblocks = $(2 * nblocks) per system"
+        )
+    )
     axes(batch.positions) == axes(batch.types) == axes(batch.charges) || throw(
         DimensionMismatch(
             "batch positions/types/charges must share axes: $(axes(batch.positions)) vs $(axes(batch.types)) vs $(axes(batch.charges))"
@@ -99,13 +144,16 @@ function widom(
     sUW = zeros(F, nsys, nblocks)
     n = zeros(Int, nsys, nblocks)
     kern = widom_kernel!(backend)
-    done = 0
+    # Per-system count of insertions already accumulated: each system's blocks are drawn from
+    # its own sample order, not from the interleaved global insertion index.
+    seen = zeros(Int, nsys)
     # Floor division so the clamp below absorbs the remainder into the last block instead of
-    # leaving it with zero samples (the guard above guarantees floor(ninsert/nblocks) >= 2·nsys).
-    block_len = ninsert ÷ nblocks
+    # leaving it with zero samples (the guard above guarantees ns[s] >= 2·nblocks for every s).
+    block_len = ns .÷ nblocks
+    done = 0
     while done < ninsert
         m = min(chunk, ninsert - done)
-        random_poses!(rng, view(sys_of, 1:m), view(rpos, 1:m), view(quat, 1:m), nsys)
+        random_poses!(rng, view(sys_of, 1:m), view(rpos, 1:m), view(quat, 1:m), done + 1, runlen, nsys)
         copyto!(dsys, sys_of)
         copyto!(drpos, rpos)
         copyto!(dquat, quat)
@@ -114,7 +162,8 @@ function widom(
         copyto!(ΔU_h, dΔU)
         for i in 1:m
             s = sys_of[i]
-            blk = min(nblocks, (done + i - 1) ÷ block_len + 1)
+            seen[s] += 1
+            blk = min(nblocks, (seen[s] - 1) ÷ block_len[s] + 1)
             w = exp(-ΔU_h[i] / kT)
             sW[s, blk] += w
             sUW[s, blk] += ΔU_h[i] * w

@@ -93,7 +93,7 @@ reciprocal loop for every insertion, after which there is nothing left to skip.
 - `Framework` gains `replication`. `read_cif` sets `(1,1,1)`.
 - `FrameworkBatch` gains `self_term_halfrange` (E1) and the cell-list fields (E2); `ks`/`kprefactor`/`Shost` shrink. Atom order inside a framework is no longer the CIF order (E2).
 - `insertion_energy` takes the cell-list arrays (E2). The reference implementation keeps the current signature's semantics for tests.
-- `widom`'s signature and results' meaning are unchanged. Results change by at most `self_term_halfrange` in energy (E1) and by floating-point summation order (E2).
+- `widom`'s signature and results' meaning are unchanged. Results change by about `self_term_halfrange` in energy (E1; a 64-orientation estimate that sampled continuous orientations exceed by up to about 1.3×) and by floating-point summation order (E2).
 - bench scripts and `bench/audit.jl` follow the kernel signature.
 
 ## Testing and gates

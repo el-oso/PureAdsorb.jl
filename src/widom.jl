@@ -178,7 +178,7 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
             σ = batch.sigma[gt, t]
             ε = batch.epsilon[gt, t]
             kmin_at = batch.kmin[base + (a - 1) * ntypes + t]
-            r2 = find_rho2(σ, ε, kmin_at, margin)
+            r2 = find_rho2(σ, ε, kmin_at, margin, batch.cutoff)
             rho2[base + (a - 1) * ntypes + t] = r2
             rmax = max(rmax, r2)
         end

@@ -296,7 +296,7 @@ function FrameworkBatch(
         push!(
             bs,
             hardcore_bound(
-                guest_compact, sigma_c, epsilon_c, positions, types, charges, atoms_n, α,
+                guest_compact, sigma_c, epsilon_c, positions, types, charges, atoms_n, ff.cutoff, α,
                 view(kprefactor, k_n), view(Shost, k_n)
             )
         )

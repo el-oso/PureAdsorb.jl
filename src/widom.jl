@@ -190,7 +190,9 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
     # concurrent writes from `Threads.@threads` below; each iteration writes only its own system's
     # slots of `rho2`/`reach0`, so the threaded loop itself needs no other synchronization.
     memos = [Dict{NTuple{4, F}, F}() for _ in 1:Threads.maxthreadid()]
-    Threads.@threads for s in 1:batch.nsys
+    # `:static` schedule: the memo is indexed by `threadid()`, which is fixed per iteration only
+    # under the static schedule.
+    Threads.@threads :static for s in 1:batch.nsys
         memo = memos[Threads.threadid()]
         Bs = batch.bs[s]
         cs = batch.constant_offset[s]

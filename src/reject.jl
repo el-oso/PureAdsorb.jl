@@ -24,7 +24,7 @@ pair_energy(r::T, σ::T, ε::T, K::T, alpha::T) where {T} = lj_pair_energy(r * r
 
 # Cap on every bracket-search and bisection loop in this file: with a valid bracket, halving or
 # doubling the search radius converges within a few dozen steps, and bisection to a relative
-# width of 4·eps(T) needs at most about log2(1/(4*eps(T))) ≈ 55 (Float64) or 26 (Float32) steps.
+# width of 4·eps(T) needs at most log2(1/(4*eps(T))) = 50 (Float64) or 21 (Float32) steps.
 # 200 leaves ample margin without letting a degenerate input (e.g. margin <= 0) spin forever.
 const MAX_BISECT_ITERS = 200
 

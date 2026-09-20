@@ -320,7 +320,9 @@ function FrameworkBatch(
     # is not safe for concurrent writes), reused across the frameworks that thread handles, since
     # a batch of several frameworks sharing a force field often repeats the same (σ, ε, K) triple.
     memos = [Dict{NTuple{3, T}, T}() for _ in 1:Threads.maxthreadid()]
-    Threads.@threads for n in eachindex(fws)
+    # `:static` schedule: the memo is indexed by `threadid()`, which is fixed per iteration only
+    # under the static schedule.
+    Threads.@threads :static for n in eachindex(fws)
         bs[n] = hardcore_bound(
             guest_compact, sigma_c, epsilon_c, positions, types, charges, atom_ranges[n], ff.cutoff, α,
             view(kprefactor, k_ranges[n]), view(Shost, k_ranges[n]); memo = memos[Threads.threadid()]

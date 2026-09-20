@@ -204,9 +204,9 @@ end
     @test sqrt(PureAdsorb.find_rho2(σ, ε, K, margin, 3.0)) == rho_unclamped   # r_lj above: unaffected
 end
 
-# C1: a cubic 30 Å cell with one host atom (type B, q=+1) at the center, a one-site guest (type G,
+# A cubic 30 Å cell with one host atom (type B, q=+1) at the center, a one-site guest (type G,
 # q=-1), σ=ε=0.01 for both types and a Lennard-Jones cutoff far shorter than the pair's natural
-# length scale (`ρ_at`/`r0` both land beyond it) -- the reviewer's reproducer for C1.
+# length scale (`ρ_at`/`r0` both land beyond it).
 @testsnippet C1Fixture begin
     using StaticArrays
     A_c1 = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
@@ -216,7 +216,7 @@ end
     atom_pos_c1 = A_c1 * SVector(0.5, 0.5, 0.5)
 end
 
-@testitem "C1 reproducer: rho_at clamped to the LJ cutoff" setup = [C1Fixture] begin
+@testitem "a Lennard-Jones cutoff shorter than the core radius" setup = [C1Fixture] begin
     using StaticArrays
     ff_c1 = ForceField(["G_", "B_"], [3.0, 3.0], [0.01, 0.01]; cutoff = 1.0, tail = false)
     b_c1 = FrameworkBatch([fw_c1], ff_c1, g_c1, ewald_c1)
@@ -244,7 +244,7 @@ end
     @test r1 == r2
 end
 
-@testitem "C1 second case: r0 clamped to the LJ cutoff in hardcore_bound" setup = [C1Fixture] begin
+@testitem "a pair zero beyond the Lennard-Jones cutoff" setup = [C1Fixture] begin
     using StaticArrays
     ff_c1b = ForceField(["G_", "B_"], [3.0, 3.0], [0.01, 0.01]; cutoff = 1.9, tail = false)
     b_c1b = FrameworkBatch([fw_c1], ff_c1b, g_c1, ewald_c1)

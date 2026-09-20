@@ -24,6 +24,19 @@
     @test b.kprefactor[i] ≈ w * PureAdsorb.pk(dot(k, k), b.alphas[1], b.volumes[1])
 end
 
+@testitem "batch rejects an Ewald precision too tight for pair_erfc_dev's fitted range" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    # α·ewald_cutoff grows as ewald_cutoff*sqrt(-log(precision)) roughly, so a very tight
+    # precision at this cutoff pushes past PAIR_ERFC_XMAX = 4.
+    @test_throws "exceeds PAIR_ERFC_XMAX" FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-12))
+    @test_throws "loosen ewald.precision or shorten ewald.cutoff" FrameworkBatch(
+        [sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-12)
+    )
+end
+
 @testitem "batch rejects a cell too small for the cutoff" begin
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))

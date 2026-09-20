@@ -160,8 +160,9 @@ offending value. Throws if `$(SELF_TERM_GUARD_FACTOR)·self_term_halfrange` exce
 `$(SELF_TERM_TOLERANCE)·KB·300K` for a guest/framework combination, naming the half-range
 estimate and the guard factor: that combination (a strongly polar guest in a small periodic
 cell) needs the per-insertion sum, which this batch does not provide. Throws if
-`α·ewald.cutoff` exceeds `PAIR_ERFC_XMAX`, naming both values: `insertion_energy`'s
-screened-Coulomb pair term (`pair_erfc_dev`) is only fitted up to that bound.
+`α·ewald.cutoff` exceeds `PAIR_ERFC_XMAX`, naming both values and the two ways out (a looser
+`ewald.precision` or a shorter `ewald.cutoff`): `insertion_energy`'s screened-Coulomb pair term
+(`pair_erfc_dev`) is only fitted up to that bound.
 """
 function FrameworkBatch(
         fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T, N}, ewald::EwaldParams{T};
@@ -197,7 +198,8 @@ function FrameworkBatch(
     α * ewald.cutoff <= PAIR_ERFC_XMAX || throw(
         ArgumentError(
             "α·ewald_cutoff = $(α * ewald.cutoff) exceeds PAIR_ERFC_XMAX = $PAIR_ERFC_XMAX: " *
-                "insertion_energy's screened-Coulomb series is only fitted up to that bound"
+                "insertion_energy's screened-Coulomb series is only fitted up to that bound; " *
+                "loosen ewald.precision or shorten ewald.cutoff to bring α·ewald_cutoff back under $PAIR_ERFC_XMAX"
         )
     )
     kmax = ewald_kmax(α, ewald.precision)

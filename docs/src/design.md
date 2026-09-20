@@ -161,7 +161,9 @@ its inputs:
   structure factor on a sample of uncoupled k-vectors (naming the framework index, the claimed
   replication and the offending value). `2 · self_term_halfrange` must not exceed
   `1e-3 · KB · 300 K` for any guest/framework pair (naming the estimate, the factor, the guest
-  and the framework index).
+  and the framework index). `α · ewald.cutoff` must not exceed `PAIR_ERFC_XMAX = 4` (naming both
+  values and the two ways out: a looser `ewald.precision` or a shorter `ewald.cutoff`) —
+  `insertion_energy`'s screened-Coulomb series (`pair_erfc_dev`) is only fitted up to that bound.
 - `ewald_alpha`: raises if the requested precision is unreachable with the given cutoff.
 - `tail_delta`: the per-type count vectors must match the force field's number of LJ types
   (`DimensionMismatch`).

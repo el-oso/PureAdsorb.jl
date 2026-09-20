@@ -200,6 +200,7 @@ visit to far atoms dominated the kernel; the decomposition above shows it is 36%
 - `insertion_energy` took the cell-list arrays (E2); E3 replaces them with a plain `atom_base`/`natoms` pair (linear loop, no stencil). The reference implementation keeps the current signature's semantics for tests.
 - `widom`'s public signature and results' meaning are unchanged. Results change by about `self_term_halfrange` in energy (E1; a 64-orientation estimate that sampled continuous orientations exceed by up to about 1.3×), by floating-point summation order (E2), and are exactly (`==`) unchanged by E3's rejection (tested). `widom` now throws if the passed `guest` does not match the one `FrameworkBatch` was built from (E3). A new non-exported `widom_singlephase` (E3, test-only) skips rejection.
 - bench scripts and `bench/audit.jl` follow the kernel signatures, including the new phase-0 kernel (E3).
+- `FrameworkBatch` throws when `α·ewald_cutoff` exceeds `PAIR_ERFC_XMAX = 4` (Ewald precision tighter than about 1e-9 at a 12 Å cutoff); the message names both values and the two ways out, a looser `ewald.precision` or a shorter `ewald.cutoff`.
 
 ## Testing and gates
 

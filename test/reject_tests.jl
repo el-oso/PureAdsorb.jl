@@ -158,6 +158,33 @@ end
     end
 end
 
+@testitem "find_rho2 guards a non-positive margin and a zero epsilon" begin
+    # A non-positive margin makes the bound's target unreachable (see the docstring); the guard
+    # throws immediately instead of the upper-bracket search looping forever (unbounded as
+    # margin <= 0 makes f(r) -> -margin >= 0 for large r).
+    @test_throws "margin=0.0 must be positive" PureAdsorb.find_rho2(3.0, 0.01, -14.0, 0.0, Inf)
+    @test_throws "margin=-5.0 must be positive" PureAdsorb.find_rho2(3.0, 0.01, -14.0, -5.0, Inf)
+
+    # A zero epsilon (no Lennard-Jones repulsion) returns rho^2 = 0 directly, without searching:
+    # with kmin = 0 too, f(r) has no root at all, so a search would halve r toward zero for
+    # about 1080 iterations before exiting through a NaN.
+    @test iszero(PureAdsorb.find_rho2(3.0, 0.0, 0.0, 25.0, Inf))
+    @test iszero(PureAdsorb.find_rho2(3.0, 0.0, -14.0, 25.0, Inf))
+end
+
+@testitem "build_rejection_tables rejects a non-positive margin, naming the system" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    N = length(g.sites)
+    g_compact = PureAdsorb.Guest{Float64, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
+    # A large negative kT drives margin negative through the (θ_F+2)*kT term; the guard must
+    # name the offending system rather than letting the search loop run unbounded.
+    @test_throws "system 1" PureAdsorb.build_rejection_tables(b, g_compact, -1.0e30)
+end
+
 @testitem "find_r0 and find_rho2 clamp to the LJ cutoff" begin
     σ, ε = 3.0, 0.01
     α = PureAdsorb.ewald_alpha(12.0, 1.0e-6)

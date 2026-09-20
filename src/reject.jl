@@ -22,6 +22,12 @@ end
 # screened-Coulomb split `insertion_energy` sums over every pair, evaluated for one pair alone.
 pair_energy(r::T, σ::T, ε::T, K::T, alpha::T) where {T} = lj_pair_energy(r * r, σ, ε) + K * pair_erfc_dev(alpha * r) / r
 
+# Cap on every bracket-search and bisection loop in this file: with a valid bracket, halving or
+# doubling the search radius converges within a few dozen steps, and bisection to a relative
+# width of 4·eps(T) needs at most about log2(1/(4*eps(T))) ≈ 55 (Float64) or 26 (Float32) steps.
+# 200 leaves ample margin without letting a degenerate input (e.g. margin <= 0) spin forever.
+const MAX_BISECT_ITERS = 200
+
 """
     find_r0(σ, ε, K, alpha, r_lj) -> r0
 
@@ -44,8 +50,12 @@ function find_r0(σ::T, ε::T, K::T, alpha::T, r_lj::T) where {T}
     pair_energy(hi, σ, ε, K, alpha) < zero(T) ||
         throw(ArgumentError("find_r0: pair_energy at σ·2^(1/6)=$hi is not negative for σ=$σ, ε=$ε, K=$K"))
     lo = hi
+    iters = 0
     while pair_energy(lo, σ, ε, K, alpha) <= zero(T)
         lo /= 2
+        (iters += 1) > MAX_BISECT_ITERS && throw(
+            ArgumentError("find_r0: lower bracket search exceeded $MAX_BISECT_ITERS halvings for σ=$σ, ε=$ε, K=$K, alpha=$alpha")
+        )
     end
     for _ in 1:100
         mid = (lo + hi) / 2
@@ -133,17 +143,40 @@ the returned `ρ²` is zero, so the phase-0 kernel's `r² < ρ²` check never tr
 the Lennard-Jones term is present, but the true insertion energy only includes it for `r < r_lj`,
 so an unclamped root beyond `r_lj` would flag poses whose true energy has no Lennard-Jones
 repulsion at all.
+
+`margin` must be positive (a non-positive margin makes `f` negative everywhere, so no upper
+bracket exists and the search would not terminate); a zero `epsilon_at` (no Lennard-Jones
+repulsion at all) returns `ρ² = 0` directly, before any loop, since `f` then has no root either
+(no rejection is safe without a repulsive wall to bound the Coulomb term against).
 """
 function find_rho2(sigma_at::T, epsilon_at::T, kmin_at::T, margin::T, r_lj::T) where {T}
+    margin > zero(T) || throw(
+        ArgumentError("find_rho2: margin=$margin must be positive (sigma=$sigma_at, epsilon=$epsilon_at, kmin=$kmin_at)")
+    )
     isinf(margin) && return zero(T)
+    iszero(epsilon_at) && return zero(T)
     f(r) = lj_pair_energy(r * r, sigma_at, epsilon_at) - abs(kmin_at) / r - margin
     hi = sigma_at
+    iters = 0
     while f(hi) >= zero(T)
         hi *= 2
+        (iters += 1) > MAX_BISECT_ITERS && throw(
+            ArgumentError(
+                "find_rho2: upper bracket search exceeded $MAX_BISECT_ITERS doublings for " *
+                    "sigma=$sigma_at, epsilon=$epsilon_at, kmin=$kmin_at, margin=$margin"
+            )
+        )
     end
     lo = hi
+    iters = 0
     while f(lo) < zero(T)
         lo /= 2
+        (iters += 1) > MAX_BISECT_ITERS && throw(
+            ArgumentError(
+                "find_rho2: lower bracket search exceeded $MAX_BISECT_ITERS halvings for " *
+                    "sigma=$sigma_at, epsilon=$epsilon_at, kmin=$kmin_at, margin=$margin"
+            )
+        )
     end
     for _ in 1:100
         mid = (lo + hi) / 2

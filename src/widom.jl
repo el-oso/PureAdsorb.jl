@@ -171,6 +171,12 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
     for s in 1:batch.nsys
         Bs = batch.bs[s]
         margin = isinf(Bs) ? F(Inf) : (θ + 2) * kT + F(1.0e-5) * Bs + Bs - batch.constant_offset[s]
+        margin > zero(F) || throw(
+            ArgumentError(
+                "build_rejection_tables: system $s has margin=$margin <= 0 (Bs=$Bs, " *
+                    "constant_offset=$(batch.constant_offset[s]), kT=$kT, theta_F=$θ); no valid rejection radius exists"
+            )
+        )
         rmax = zero(F)
         base = (s - 1) * N * ntypes
         for a in 1:N, t in 1:ntypes

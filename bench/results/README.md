@@ -44,6 +44,8 @@ julia --project=bench bench/plot_widom.jl
 | neuromancer | — | cpu | f64 | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_f64_20260920_a4c86a7.json` |
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920_a4c86a7.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_f64_20260920_e903fac.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json` |
 
@@ -63,6 +65,7 @@ phase1_times_s)`, chunk 65,536) at each point:
 | Restricted-range pair term | `082c656` | RTX-3050-only measurement; not recorded on the R9700 | — | — |
 | Core rejection | `3653c6f` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_3653c6f.json` | 280,754 | 3,503,406 |
 | Current | `a4c86a7` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_a4c86a7.json` | 280,241 | 3,478,392 |
+| Float64 host-side Boltzmann accumulation, pinned thread schedule | `e903fac` | `pureadsorb_widom_galen_rocm_{f64,f32}_20260920_e903fac.json` | 280,524 | 3,520,481 |
 
 At nsys=1, Float32, `a4c86a7`, this kernel-path rate (3,478,392 insertions/s) runs faster than
 the end-to-end call at 1,000,000 insertions (`pureadsorb_widom_galen_rocm_f32_20260920_a4c86a7.json`,

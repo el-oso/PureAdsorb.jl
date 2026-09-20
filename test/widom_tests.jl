@@ -1,3 +1,35 @@
+@testitem "boltzmann_weight forces zero energy-weight product when the weight underflows" begin
+    # Ordinary underflow (large finite ΔU): unaffected by the fix, the weight is zero either way.
+    w, uw = PureAdsorb.boltzmann_weight(1000.0, 0.0257)
+    @test iszero(w) && iszero(uw)
+
+    # A guest site within about 1e-3 Å of a host atom overflows the Lennard-Jones term to `Inf`
+    # in Float32; without the fix, `Inf * 0.0f0` is `NaN32`, not `0.0f0`.
+    w32, uw32 = PureAdsorb.boltzmann_weight(Inf32, 0.0257f0)
+    @test iszero(w32)
+    @test iszero(uw32)
+    @test !isnan(uw32)
+
+    # A pose placed exactly on a host atom, in Float32, reproduces the Inf-energy case through
+    # the real energy kernel rather than a synthetic ΔU.
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0f0, 0, 0, 0, 30.0f0, 0, 0, 0, 30.0f0)
+    fw = Framework{Float32}(A, [SVector(0.5f0, 0.5f0, 0.5f0)], ["X"], ["X"], [0.0f0])
+    ff = ForceField(["X_"], Float32[3.4], Float32[0.0103]; cutoff = 12.0f0, tail = false)
+    g = PureAdsorb.Guest(SVector{1}(SVector(0.0f0, 0.0f0, 0.0f0)), SVector(1), SVector(0.0f0), 1.0f0, 1.0f0, 0.0f0)
+    b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0f0, precision = 1.0f-6))
+    q = SVector(0.0f0, 0.0f0, 0.0f0, 1.0f0)
+    atom_pos = A * SVector(0.5f0, 0.5f0, 0.5f0)
+    e = PureAdsorb.insertion_energy(
+        atom_pos + SVector(1.0f-4, 0.0f0, 0.0f0), q, g, ff.sigma, ff.epsilon, ff.cutoff, b.ewald_cutoff,
+        b.positions, b.types, b.charges, b.atom_offsets[1], b.ncells[1], b.reach[1], b.cell_offsets,
+        b.cells[1], b.invcells[1], b.alphas[1], b.ks, b.kprefactor, b.Shost
+    )
+    @test isinf(e)
+    w_atom, uw_atom = PureAdsorb.boltzmann_weight(e + b.constant_offset[1], Float32(PureAdsorb.KB) * 300.0f0)
+    @test iszero(w_atom) && iszero(uw_atom)
+end
+
 @testitem "empty box gives ideal-gas statistics" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)

@@ -65,6 +65,14 @@ function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, first_g::Integer, r
     return nothing
 end
 
+# Boltzmann weight and its energy-weighted product, with `ΔU·W` forced to exactly zero whenever
+# `W` itself underflows to exactly zero: in Float32, a guest site within about 1e-3 Å of a host
+# atom overflows the Lennard-Jones term to `Inf`, and `Inf * 0.0` is `NaN`, not `0.0`.
+function boltzmann_weight(ΔU::F, kT::F) where {F}
+    w = exp(-ΔU / kT)
+    return w, iszero(w) ? zero(F) : ΔU * w
+end
+
 @kernel function widom_kernel!(ΔU, @Const(sys_of), @Const(rpos), @Const(quat), batch, guest)
     i = @index(Global)
     s = sys_of[i]
@@ -196,9 +204,9 @@ function widom(
             s = sys_of[i]
             seen[s] += 1
             blk = min(nblocks, (seen[s] - 1) ÷ block_len[s] + 1)
-            w = exp(-ΔU_h[i] / kT)
+            w, uw = boltzmann_weight(ΔU_h[i], kT)
             sW[s, blk] += w
-            sUW[s, blk] += ΔU_h[i] * w
+            sUW[s, blk] += uw
             n[s, blk] += 1
         end
         done += m

@@ -10,7 +10,7 @@ end
 
 @testitem "insertion_energy_reference equals the full-system energy difference" begin
     using StaticArrays, LinearAlgebra, Random
-    # `insertion_energy` itself (post-E1) computes only the reciprocal-space cross term over the
+    # `insertion_energy` itself computes only the reciprocal-space cross term over the
     # host-coupled k-vectors and omits the guest self term, so this full-contract check — every
     # k-vector, cross plus self — runs against the oracle `insertion_energy_reference` instead.
     ff = ForceField(

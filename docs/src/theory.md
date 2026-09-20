@@ -147,13 +147,16 @@ table to about a third of its size.
 
 **Guest self term.** The remaining term of ``E_{\mathrm{recip}}``, the guest's own
 ``|S_{\mathrm{guest}}(k)|^2`` summed over the FULL k-vector set, depends only on the guest's
-orientation (not its position or the host), so `FrameworkBatch` evaluates it once at 64 fixed
-orientations and folds their mean into `constant_offset`, storing half the orientations' spread
-as `self_term_halfrange`. For CO2 in RUBTAK 3×3×3 that half-range is about 2.4e-7 eV, against a
-mean self term of about 0.0052 eV — the orientation dependence is negligible next to the mean,
-which is why replacing the per-insertion sum with its average changes `widom`'s results by no
-more than `self_term_halfrange`. `FrameworkBatch` throws instead of silently using this
-approximation when `self_term_halfrange` exceeds `1e-3 · k_B · 300\,\mathrm{K}`.
+orientation (not its position or the host), so `FrameworkBatch` evaluates it at 64 fixed
+orientations and folds their mean into `constant_offset`, storing half the spread of those 64
+samples as `self_term_halfrange`. That half-range is an estimate from a finite sample, not a
+bound on the true continuous-orientation range: a continuous orientation can reach roughly
+1.3 times `self_term_halfrange` away from the mean. For CO2 in RUBTAK 3×3×3 the half-range is
+about 2.4e-7 eV, against a mean self term of about 0.0052 eV — the orientation dependence is
+negligible next to the mean either way, which is why replacing the per-insertion sum with its
+average changes `widom`'s results by only a few times `self_term_halfrange`. `FrameworkBatch`
+throws instead of silently using this approximation when `2 · self_term_halfrange` exceeds
+`1e-3 · k_B · 300\,\mathrm{K}`.
 
 **Reciprocal cutoff and k-vector bound.** Reciprocal vectors are kept while ``|k| \leq
 k_{\max}``. The search range along each reciprocal-lattice direction is bounded using the

@@ -4,7 +4,11 @@
 A periodic host structure: unit cell `cell` (Å, lattice vectors as columns), atom fractional
 coordinates `frac`, per-atom `labels` and element `symbols`, partial `charges` (e), and
 `replication`, the `(nx, ny, nz)` supercell factors already folded into `cell`/`frac`
-relative to the CIF-read unit cell (`(1,1,1)` for an unreplicated framework).
+relative to the CIF-read unit cell (`(1,1,1)` for an unreplicated framework). `replication`
+asserts that `frac`/`labels`/`symbols`/`charges` are exact translational copies of a smaller
+cell repeated `nx × ny × nz` times — `FrameworkBatch` checks this claim on a sample of
+k-vectors rather than trusting it blindly, but a caller constructing a `Framework` directly
+(not via `replicate`) is responsible for making it true.
 """
 struct Framework{T}
     cell::SMatrix{3, 3, T, 9}
@@ -68,7 +72,8 @@ end
 
 Build the `n[1] × n[2] × n[3]` supercell of `fw`, replicating the unit cell along each lattice
 vector and repeating labels, symbols and charges accordingly, and setting `replication` to
-`fw.replication .* n`.
+`fw.replication .* n`. The result's atoms are, by construction, exact translational copies
+under that replication — the property `replication` asserts.
 """
 function replicate(fw::Framework{T}, n::NTuple{3, Int}) where {T}
     all(>=(1), n) || throw(ArgumentError("replication factors must be ≥ 1, got $n"))

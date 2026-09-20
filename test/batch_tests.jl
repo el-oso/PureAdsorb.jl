@@ -78,6 +78,27 @@ end
     @test length(b.ks) == length(ks_full)
 end
 
+@testitem "FrameworkBatch verifies a claimed replication against the host structure factor" begin
+    using StaticArrays
+    A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)
+    ff = ForceField(["X_"], [3.0], [0.001]; cutoff = 12.0, tail = false)
+    gq = PureAdsorb.Guest(SVector{1}(SVector(0.0, 0.0, 0.0)), SVector(1), SVector(1.0), 1.0, 1.0, 0.0)
+    # Two atoms that are NOT translational copies of each other under (2,1,1): a genuine
+    # `replicate` output would place a matching atom at frac (x+0.5, y, z) with the same charge.
+    frac = [SVector(0.1, 0.1, 0.1), SVector(0.6, 0.35, 0.7)]
+    fw = Framework{Float64}(A, frac, ["X", "X"], ["X", "X"], [1.0, -1.0], (2, 1, 1))
+    @test_throws "replication" FrameworkBatch([fw], ff, gq, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+end
+
+@testitem "a genuine replicate output passes the replication check" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    @test b.nsys == 1
+end
+
 @testitem "self-term half-range guard trips for a strongly polar guest in a small cell" begin
     using StaticArrays
     cutoff = 3.0

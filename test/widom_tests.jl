@@ -184,18 +184,18 @@ end
     end
 end
 
-@testitem "widom results for a single system are close to the pre-E1 recorded values" begin
+@testitem "widom results for a single system match a recorded reference within tolerance" begin
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
     r = widom(b, g; T = 298.15, ninsert = 2_000, seed = 3, nblocks = 4)[1]
-    # These literals are bit-identical results from before the sparse reciprocal table (E1)
-    # replaced the exact per-insertion guest self term with its orientation average. `mu_ex`
-    # and `q_st` are energies, so they move by at most `self_term_halfrange`. `K_H` and every
-    # standard error are built from the Boltzmann weight `exp(-ΔU/kT)`, so they move by a
-    # relative amount of order `self_term_halfrange/kT`; the 5x margin below covers the
-    # block-statistics propagation on top of that leading-order estimate.
+    # `insertion_energy` approximates the guest self term by its orientation average, folded
+    # into `constant_offset`; the literals below were computed under the exact per-insertion
+    # formula, so `mu_ex`/`q_st` (energies) differ from them by at most `self_term_halfrange`.
+    # `K_H` and every standard error are built from the Boltzmann weight `exp(-ΔU/kT)`, so they
+    # differ by a relative amount of order `self_term_halfrange/kT`; the 5x margin below covers
+    # the block-statistics propagation on top of that leading-order estimate.
     halfrange = b.self_term_halfrange[1]
     kT = PureAdsorb.KB * 298.15
     rtol = 5 * expm1(halfrange / kT)
@@ -224,10 +224,10 @@ end
     se(a, b) = 3 * hypot(a, b)
     @test abs(r_mixed[1].mu_ex - r_full.mu_ex) < se(r_mixed[1].mu_ex_err, r_full.mu_ex_err)
     @test abs(r_mixed[1].K_H - r_full.K_H) < se(r_mixed[1].K_H_err, r_full.K_H_err)
-    # An empty framework has no host atoms, so `insertion_energy` (cross term only, post-E1)
-    # returns exactly zero for every pose: ΔU is the same constant for every insertion, giving
-    # zero block-to-block variance and hence `se == 0`; the two runs must then match exactly
-    # rather than within a nonzero statistical margin.
+    # An empty framework has no host atoms, so `insertion_energy`'s cross term is always zero
+    # and ΔU is the same constant for every insertion, giving zero block-to-block variance and
+    # hence `se == 0`; the two runs must then match exactly rather than within a nonzero
+    # statistical margin.
     @test abs(r_mixed[2].mu_ex - r_empty.mu_ex) <= se(r_mixed[2].mu_ex_err, r_empty.mu_ex_err)
     @test abs(r_mixed[2].K_H - r_empty.K_H) <= se(r_mixed[2].K_H_err, r_empty.K_H_err)
     # RUBTAK and the empty box give very different physics, so a system/sample mix-up would show

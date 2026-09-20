@@ -10,11 +10,17 @@ launch can evaluate an insertion in every system at once. Per-system slices are
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each system's replication: those
 whose integer reciprocal-lattice coefficients are all divisible by the corresponding
 replication factor, since only those repeat identically across the copies making up the
-supercell and so carry a nonzero host structure factor. `self_term_halfrange[n]` (energy
-units) is half the max-min spread, over 64 fixed guest orientations, of the guest self term
-`KE Σ_k pref_k |S_g(k)|²` taken over the FULL (unfiltered) k set of system `n`; its mean over
-those orientations is folded into `constant_offset[n]` in place of recomputing the self term
-per insertion.
+supercell and so carry a nonzero host structure factor. A framework's `replication` is taken
+on trust everywhere else, so `FrameworkBatch` checks it: on a sample of up to 32 of the
+*uncoupled* k-vectors, the framework's own host structure factor must be negligible, or the
+framework's atoms are not actually the translational copies `replication` claims and
+`FrameworkBatch` throws rather than silently dropping k-vectors and shifting energies.
+`self_term_halfrange[n]` (energy units) is half the max-min spread, over 64 fixed guest
+orientations, of the guest self term `KE Σ_k pref_k |S_g(k)|²` taken over the FULL (unfiltered)
+k set of system `n`; its mean over those orientations is folded into `constant_offset[n]` in
+place of recomputing the self term per insertion. This half-range is an estimate from that
+finite sample, not a bound on the true continuous-orientation range — a continuous orientation
+can reach roughly 1.3 times `self_term_halfrange` away from the mean.
 """
 struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
     positions::VP
@@ -41,9 +47,39 @@ Adapt.@adapt_structure FrameworkBatch
 
 # Relative tolerance on the guest self term's orientation dependence: `FrameworkBatch` uses the
 # orientation average, so a guest/cell combination whose self term swings by more than this
-# fraction of a reference thermal energy needs the per-insertion sum instead.
+# fraction of a reference thermal energy needs the per-insertion sum instead. The guard checks
+# `2·self_term_halfrange` rather than `self_term_halfrange` itself: the half-range is an
+# estimate from 64 sampled orientations, and a continuous orientation can reach roughly 1.3
+# times that estimate, so the factor of 2 covers that undersampling with margin.
 const SELF_TERM_TOLERANCE = 1.0e-3
+const SELF_TERM_GUARD_FACTOR = 2
 const KT_REF = KB * 300
+
+# Verifies a framework's claimed `replication` against its own host structure factor: a
+# translational copy under `replication` implies a k-vector whose integer coefficients are NOT
+# all divisible by `replication` has its phase cancel across the copies, leaving a negligible
+# structure factor. Checks a deterministic, evenly strided sample of up to 32 such k-vectors
+# (`kv_full`/`coeffs`, `kvectors`'s enumeration for the framework's cell) rather than all of
+# them, since this runs once per framework at batch-construction time and a sample that
+# disagrees is already proof the claim is false.
+function verify_replication(n::Integer, fw::Framework{T}, pos, kv_full, coeffs) where {T}
+    uncoupled = [i for i in eachindex(coeffs) if !all(iszero, mod.(coeffs[i], fw.replication))]
+    isempty(uncoupled) && return nothing
+    stride = max(1, cld(length(uncoupled), 32))
+    sample = uncoupled[1:stride:length(uncoupled)]
+    length(sample) > 32 && (sample = sample[1:32])
+    Ssample = structure_factor(kv_full[sample], pos, fw.charges)
+    maxS, i = findmax(abs, Ssample)
+    threshold = 1.0e-8 * sum(abs, fw.charges)
+    maxS > threshold && throw(
+        ArgumentError(
+            "framework $n claims replication $(fw.replication), but its host structure factor at " *
+                "k=$(kv_full[sample[i]]) (not coupled to that replication) is $maxS, exceeding " *
+                "1e-8·Σ|q_host| = $threshold; this replication does not describe the atoms"
+        )
+    )
+    return nothing
+end
 
 """
     FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams) -> FrameworkBatch
@@ -57,8 +93,11 @@ the tail-correction change, the guest self-energy, its intramolecular exclusion 
 erfc_dev convention as `ewald_energy`'s E_excl, since the guest is rigid this is
 pose-independent), the net-charge correction from adding the guest's total charge, and the
 orientation-averaged reciprocal-space guest self term (see `FrameworkBatch`'s docstring).
-Throws if a guest/framework combination's self-term half-range exceeds
-`$(SELF_TERM_TOLERANCE)·KB·300K`: that combination (a strongly polar guest in a small periodic
+Throws if a framework's claimed `replication` disagrees with its own host structure factor (see
+`FrameworkBatch`'s docstring), naming the framework index, the claimed replication and the
+offending value. Throws if `$(SELF_TERM_GUARD_FACTOR)·self_term_halfrange` exceeds
+`$(SELF_TERM_TOLERANCE)·KB·300K` for a guest/framework combination, naming the half-range
+estimate and the guard factor: that combination (a strongly polar guest in a small periodic
 cell) needs the per-insertion sum, which this batch does not provide.
 """
 function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T}, ewald::EwaldParams{T}) where {T}
@@ -103,11 +142,16 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
         push!(invcells, inv(A))
         push!(volumes, V)
         push!(alphas, α)
+        # Verifying a claimed `replication` needs the full k-vector table even for a neutral
+        # guest, which otherwise builds no reciprocal-space table at all.
+        if !neutral_guest || fw.replication != (1, 1, 1)
+            kv_full, kpref_full, Sh_full, coeffs = full_ktables(A, pos, fw.charges, α, kmax)
+            fw.replication == (1, 1, 1) || verify_replication(n, fw, pos, kv_full, coeffs)
+        end
         self_mean = zero(T)
         # a guest without charges has no Coulomb terms, so no reciprocal-space table is built
         # and its self term is exactly zero at every orientation
         if !neutral_guest
-            kv_full, kpref_full, Sh_full, coeffs = full_ktables(A, pos, fw.charges, α, kmax)
             coupled = [all(iszero, mod.(c, fw.replication)) for c in coeffs]
             append!(ks, kv_full[coupled])
             append!(kprefactor, kpref_full[coupled])
@@ -130,11 +174,13 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
             self_mean = sum(samples) / length(samples)
             halfrange = (maximum(samples) - minimum(samples)) / 2
             push!(self_term_halfrange, halfrange)
-            halfrange / KT_REF > SELF_TERM_TOLERANCE && throw(
+            SELF_TERM_GUARD_FACTOR * halfrange / KT_REF > SELF_TERM_TOLERANCE && throw(
                 ArgumentError(
-                    "guest self-term half-range $halfrange eV for guest with charges $(guest.charges) at " *
-                        "framework $n exceeds $(SELF_TERM_TOLERANCE)·KB·300K = $(SELF_TERM_TOLERANCE * KT_REF) eV; " *
-                        "this guest/cell combination needs the per-insertion reciprocal sum"
+                    "guest self-term half-range estimate $halfrange eV (guard factor $SELF_TERM_GUARD_FACTOR) for " *
+                        "guest with charges $(guest.charges) at framework $n: " *
+                        "$SELF_TERM_GUARD_FACTOR·$halfrange exceeds $(SELF_TERM_TOLERANCE)·KB·300K = " *
+                        "$(SELF_TERM_TOLERANCE * KT_REF) eV; this guest/cell combination needs the per-insertion " *
+                        "reciprocal sum"
                 )
             )
         else

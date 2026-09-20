@@ -26,12 +26,12 @@ times more atoms than the cutoff needs; most insertions are decided by one close
 ### E1 — sparse reciprocal table
 - ☑ `replicate` records its replication factors in the `Framework` (field `replication::NTuple{3,Int}`, `(1,1,1)` for an unreplicated framework; `replicate` of a replicated framework multiplies them).
 - ☑ `FrameworkBatch` stores only the host-coupled k-vectors: those whose integer coefficients in the stored cell's reciprocal basis are all divisible by the corresponding replication factor. `ks`, `kprefactor`, `Shost`, `k_offsets` keep their meaning and shrink. The integer coefficients come from the enumeration in `kvectors`, not from rounding a matrix product.
-- ☑ The guest self term `KE Σ_k pref_k |S_g(k)|²` over the full k-vector set of the stored cell depends on the orientation only. `FrameworkBatch` evaluates it at a fixed set of 64 orientations (deterministic, seeded), adds its mean to `constant_offset`, and stores the half-range as `self_term_halfrange` (per system, energy units). It throws if `self_term_halfrange / kT_ref > 1e-3` with `kT_ref = KB·300 K`, naming the value: that situation (a strongly polar guest in a small periodic cell) needs the per-insertion sum, which this design does not provide.
+- ☑ The guest self term `KE Σ_k pref_k |S_g(k)|²` over the full k-vector set of the stored cell depends on the orientation only. `FrameworkBatch` evaluates it at a fixed set of 64 orientations (deterministic, seeded), adds its mean to `constant_offset`, and stores the half-range as `self_term_halfrange` (per system, energy units). It throws if `2·self_term_halfrange / kT_ref > 1e-3` with `kT_ref = KB·300 K`, naming the half-range estimate and the guard factor: that situation (a strongly polar guest in a small periodic cell) needs the per-insertion sum, which this design does not provide.
 - ☑ `insertion_energy`'s reciprocal loop computes only the cross term `2 Re(conj(S_host) S_g)` over the coupled k-vectors.
 - ☑ The neutral-guest shortcut (no reciprocal table at all) is unchanged.
-- ☑ Oracle: a test-only reference `insertion_energy_reference` keeps the full sum (all k-vectors, cross + self) and the brute-force real-space loop. The production energy agrees with it within `self_term_halfrange` plus 1e-12 relative, over random poses, for CO2 and for a polar three-site guest.
+- ☑ Oracle: a test-only reference `insertion_energy_reference` keeps the full sum (all k-vectors, cross + self) and the brute-force real-space loop. The production energy agrees with it within `2·self_term_halfrange` plus 1e-12 relative, over random poses, for CO2 and for a polar three-site guest.
 - ☑ The kUPS cross-code test passes unchanged in tolerance.
-- ☑ Measured and recorded: kernel time before/after on the RTX 3050, both precisions; bytes per framework.
+- ☐ Measured and recorded: kernel time before/after on the RTX 3050 and the R9700, both precisions; bytes per framework. R9700 row pending — the controller fills it in.
 
   RUBTAK 3×3×3 + CO2, kernel-only time for a 65,536-insertion chunk on an RTX 3050 (`bench/gpu`,
   Julia 1.13.0):
@@ -40,9 +40,6 @@ times more atoms than the cutoff needs; most insertions are decided by one close
   |---|---|---|---|---|
   | Float32 | 190 (was 4587) | 66,120 B (was 171,648 B) | 96.4 ms | 77.2 ms |
   | Float64 | 190 (was 4587) | 119,928 B (was 330,984 B) | 2099.8 ms | 1621.9 ms |
-
-  The R9700 number from the design's "Expected effect" table is not measured here: this run
-  used the RTX 3050 only, per the task that produced these numbers.
 
 ### E2 — cell list for the real-space loop
 - ☐ Per framework, a grid in fractional coordinates of the stored cell with `n_i = max(1, floor(L_i / w))` cells along axis i (`L_i` perpendicular lengths, `w` the target width, default chosen by benchmark among 2, 3, 4, 6 Å and recorded).

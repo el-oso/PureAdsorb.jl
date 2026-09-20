@@ -25,8 +25,8 @@ reciprocal-space sum runs over the FULL k-vector table of the stored cell (`ks_f
 `kprefactor_full`, `Shost_full`, as `full_ktables` builds them) rather than only the
 host-coupled subset, and includes both the host/guest cross term and the guest self term
 `Σ_k pref_k |S_g(k)|²` explicitly rather than folding its orientation average into a
-precomputed constant. Every stage of the kernel efficiency design is checked against this
-reference.
+precomputed constant. This is the reference implementation the production kernels are tested
+against.
 """
 function insertion_energy_reference(
         pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, ff_sigma, ff_epsilon, cutoff, ewald_cutoff,

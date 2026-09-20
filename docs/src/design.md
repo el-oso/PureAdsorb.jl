@@ -36,11 +36,17 @@ structure unchanged.
 
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each framework's replication (see
 `docs/src/theory.md`): for CO2 in RUBTAK 3×3×3 that is 190 of the unreplicated cell's 4587
-k-vectors. The guest's own reciprocal-space self term, which depends on orientation but not on
-the host, is evaluated once at 64 fixed orientations (`Xoshiro(0x5e1f)`, the same Shoemake
+k-vectors. Since a framework's `replication` is taken on trust, `FrameworkBatch` samples up to
+32 of the *uncoupled* k-vectors and checks that the framework's own host structure factor is
+negligible there, throwing if it is not: a framework whose atoms are not actually translational
+copies under the claimed `replication` would otherwise have k-vectors dropped and its energies
+shifted silently. The guest's own reciprocal-space self term, which depends on orientation but
+not on the host, is evaluated at 64 fixed orientations (`Xoshiro(0x5e1f)`, the same Shoemake
 construction `random_poses!` uses); its mean over those orientations is folded into
-`constant_offset`, and `self_term_halfrange` records half their spread. `FrameworkBatch` throws
-if that half-range exceeds `1e-3 · KB · 300 K` for a guest/framework pair, since the
+`constant_offset`, and `self_term_halfrange` records half their spread — an estimate from that
+finite sample, not a bound on the true continuous-orientation range (a continuous orientation
+reaches roughly 1.3 times `self_term_halfrange` away from the mean). `FrameworkBatch` throws if
+`2 · self_term_halfrange` exceeds `1e-3 · KB · 300 K` for a guest/framework pair, since the
 orientation-averaged approximation is then no longer accurate enough.
 
 **Energy** (`src/energy.jl`, `src/ewald.jl`) — `insertion_energy` evaluates the Lennard-Jones
@@ -90,8 +96,11 @@ its inputs:
 - `replicate`: replication factors must be ≥ 1.
 - `FrameworkBatch`: each framework's `min_multiplicity` against
   `max(LJ cutoff, Ewald cutoff)` must already be `(1,1,1)` — the caller must replicate a
-  too-small cell first. `self_term_halfrange` must not exceed `1e-3 · KB · 300 K` for any
-  guest/framework pair (naming the value, the guest and the framework index).
+  too-small cell first. A framework's claimed `replication` must be consistent with its host
+  structure factor on a sample of uncoupled k-vectors (naming the framework index, the claimed
+  replication and the offending value). `2 · self_term_halfrange` must not exceed
+  `1e-3 · KB · 300 K` for any guest/framework pair (naming the estimate, the factor, the guest
+  and the framework index).
 - `ewald_alpha`: raises if the requested precision is unreachable with the given cutoff.
 - `tail_delta`: the per-type count vectors must match the force field's number of LJ types
   (`DimensionMismatch`).

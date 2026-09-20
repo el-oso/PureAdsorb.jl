@@ -192,15 +192,18 @@ end
     r = widom(b, g; T = 298.15, ninsert = 2_000, seed = 3, nblocks = 4)[1]
     # `insertion_energy` approximates the guest self term by its orientation average, folded
     # into `constant_offset`; the literals below were computed under the exact per-insertion
-    # formula, so `mu_ex`/`q_st` (energies) differ from them by at most `self_term_halfrange`.
+    # formula, so `mu_ex`/`q_st` (energies) differ from them by at most `2·self_term_halfrange`:
+    # `self_term_halfrange` is a spread estimate from 64 discrete orientations, and a continuous
+    # orientation can exceed it by up to about 1.3x, so the bound carries the same 2x margin used
+    # in "insertion_energy agrees with the full-sum reference within the self-term half-range".
     # `K_H` and every standard error are built from the Boltzmann weight `exp(-ΔU/kT)`, so they
     # differ by a relative amount of order `self_term_halfrange/kT`; the 5x margin below covers
     # the block-statistics propagation on top of that leading-order estimate.
     halfrange = b.self_term_halfrange[1]
     kT = PureAdsorb.KB * 298.15
     rtol = 5 * expm1(halfrange / kT)
-    @test abs(r.mu_ex - (-0.14435951741921793)) <= halfrange + 1.0e-12
-    @test abs(r.q_st - 0.2563139447257997) <= halfrange + 1.0e-12
+    @test abs(r.mu_ex - (-0.14435951741921793)) <= 2 * halfrange + 1.0e-12 * abs(r.mu_ex)
+    @test abs(r.q_st - 0.2563139447257997) <= 2 * halfrange + 1.0e-12 * abs(r.q_st)
     @test r.mu_ex_err ≈ 0.004098060610114027 rtol = rtol
     @test r.K_H ≈ 6.590899117050657e8 rtol = rtol
     @test r.K_H_err ≈ 1.0512729413942294e8 rtol = rtol

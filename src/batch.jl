@@ -21,6 +21,9 @@ k set of system `n`; its mean over those orientations is folded into `constant_o
 place of recomputing the self term per insertion. This half-range is an estimate from that
 finite sample, not a bound on the true continuous-orientation range — a continuous orientation
 can reach roughly 1.3 times `self_term_halfrange` away from the mean.
+
+A sample of up to 32 k-vectors gives high probability, not certainty, that a false
+`replication` claim is caught (see `verify_replication`).
 """
 struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT}
     positions::VP
@@ -61,14 +64,16 @@ const KT_REF = KB * 300
 # structure factor. Checks a deterministic, evenly strided sample of up to 32 such k-vectors
 # (`kv_full`/`coeffs`, `kvectors`'s enumeration for the framework's cell) rather than all of
 # them, since this runs once per framework at batch-construction time and a sample that
-# disagrees is already proof the claim is false.
-function verify_replication(n::Integer, fw::Framework{T}, pos, kv_full, coeffs) where {T}
+# disagrees is already proof the claim is false; a sample of 32 gives high probability, not
+# certainty, of catching a false claim. `Sh_full` is the host structure factor already computed
+# for the framework's full k-vector table, reused here rather than recomputed.
+function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_full) where {T}
     uncoupled = [i for i in eachindex(coeffs) if !all(iszero, mod.(coeffs[i], fw.replication))]
     isempty(uncoupled) && return nothing
     stride = max(1, cld(length(uncoupled), 32))
     sample = uncoupled[1:stride:length(uncoupled)]
     length(sample) > 32 && (sample = sample[1:32])
-    Ssample = structure_factor(kv_full[sample], pos, fw.charges)
+    Ssample = Sh_full[sample]
     maxS, i = findmax(abs, Ssample)
     threshold = 1.0e-8 * sum(abs, fw.charges)
     maxS > threshold && throw(
@@ -146,7 +151,7 @@ function FrameworkBatch(fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, 
         # guest, which otherwise builds no reciprocal-space table at all.
         if !neutral_guest || fw.replication != (1, 1, 1)
             kv_full, kpref_full, Sh_full, coeffs = full_ktables(A, pos, fw.charges, α, kmax)
-            fw.replication == (1, 1, 1) || verify_replication(n, fw, pos, kv_full, coeffs)
+            fw.replication == (1, 1, 1) || verify_replication(n, fw, kv_full, coeffs, Sh_full)
         end
         self_mean = zero(T)
         # a guest without charges has no Coulomb terms, so no reciprocal-space table is built

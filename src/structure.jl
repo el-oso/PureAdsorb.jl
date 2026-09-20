@@ -6,9 +6,10 @@ coordinates `frac`, per-atom `labels` and element `symbols`, partial `charges` (
 `replication`, the `(nx, ny, nz)` supercell factors already folded into `cell`/`frac`
 relative to the CIF-read unit cell (`(1,1,1)` for an unreplicated framework). `replication`
 asserts that `frac`/`labels`/`symbols`/`charges` are exact translational copies of a smaller
-cell repeated `nx × ny × nz` times — `FrameworkBatch` checks this claim on a sample of
-k-vectors rather than trusting it blindly, but a caller constructing a `Framework` directly
-(not via `replicate`) is responsible for making it true.
+cell repeated `nx × ny × nz` times — `FrameworkBatch` checks this claim on a sample of up to 32
+k-vectors rather than trusting it blindly, which gives high probability, not certainty, of
+catching a false claim; a caller constructing a `Framework` directly (not via `replicate`) is
+responsible for making it true.
 """
 struct Framework{T}
     cell::SMatrix{3, 3, T, 9}

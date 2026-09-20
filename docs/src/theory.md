@@ -266,18 +266,22 @@ exists, and rejection is disabled for that system.
 **Rejection radius.** For one guest site `a` and host type `t`, `K_min(a,t)` is the most negative
 ``K_{ah}`` over that system's atoms of type `t` (zero if none is negative) — temperature
 independent, so it is also computed once at construction. `widom` combines it with the
-temperature-dependent margin `(θ_F + 2)·k_B T + B_s - c_s` into a rejection radius ``\rho_{at}``:
-the first root, scanning up from ``r \to 0``, of
+temperature-dependent margin `(θ_F + 2)·k_B T + 1e-5·B_s + B_s - c_s` into a rejection radius
+``\rho_{at}``: the first root, scanning up from ``r \to 0``, of
 
 ```math
-\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + B_s - c_s.
+\mathrm{LJ}_{at}(r) - \frac{|K_{\min}(a,t)|}{r} = (\theta_F + 2)\,k_B T + 10^{-5} B_s + B_s - c_s.
 ```
 
-Every separation under ``\rho_{at}`` then satisfies the rejection condition for any atom of type
-`t`, since the left-hand side lower bounds that atom's true pair energy at distance `r`. For CO2
-in RUBTAK 3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the system's compact
-types — a small fraction of the Lennard-Jones ``\sigma``, consistent with these radii marking
-the steep repulsive wall rather than the interaction range itself.
+The ``10^{-5} B_s`` term covers `pair_erfc_dev`'s approximation error and floating-point
+summation error in the actually-computed ``\Delta U`` (both proportional to the magnitude of the
+summed terms), so that a rejected insertion's true (bound) energy still clears
+``(\theta_F+2)\,k_B T`` once that error is subtracted back out. Every separation under
+``\rho_{at}`` then satisfies the rejection condition for any atom of type `t`, since the
+left-hand side lower bounds that atom's true pair energy at distance `r`. For CO2 in RUBTAK
+3×3×3, ``\rho_{at}`` ranges from about 0.92 to 1.20 Å across the system's compact types — a
+small fraction of the Lennard-Jones ``\sigma``, consistent with these radii marking the steep
+repulsive wall rather than the interaction range itself.
 
 **Two-phase evaluation.** `widom` launches a phase-0 kernel that flags every insertion whose
 guest sites all stay outside ``\rho_{at}`` of every host atom of the matching type, scanning a

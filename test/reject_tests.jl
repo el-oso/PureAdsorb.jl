@@ -144,7 +144,10 @@ end
         kmin = PureAdsorb.kmin_table(g2, htype2, b2.charges, atoms, ntypes)
         kT = T(PureAdsorb.KB) * T(298.15)
         θ = PureAdsorb.theta_F(T)
-        margin = (θ + 2) * kT + Bs - b2.constant_offset[1]
+        # The 1e-5*B_s term covers pair_erfc_dev's approximation error and floating-point
+        # summation error in the actual computed ΔU (the same margin the rejection rule
+        # requires), on top of the +B_s that bounds the ideal (exact-formula) energy.
+        margin = (θ + 2) * kT + T(1.0e-5) * Bs + Bs - b2.constant_offset[1]
         rho2 = [
             PureAdsorb.find_rho2(ff2.sigma[g2.types[a], t], ff2.epsilon[g2.types[a], t], kmin[a, t], margin)
                 for a in eachindex(g2.sites), t in 1:ntypes

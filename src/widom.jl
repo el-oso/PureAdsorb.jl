@@ -153,18 +153,24 @@ end
 end
 
 # Rejection radii ρ_at² and phase-0 stencil half-widths for one `widom` call at temperature
-# `kT`: both depend on temperature through the underflow margin `(θ_F+2)·kT + B_s − c_s`, even
-# though `batch.bs` and `batch.kmin` themselves do not, so both are rebuilt fresh here on every
-# call rather than stored in `FrameworkBatch`. `guest` must already carry compact type indices
-# (`batch.guest_types`). A system whose `bs` is `Inf` gets an infinite margin, and `find_rho2`
-# returns `0` for every one of its entries, disabling rejection for that system.
+# `kT`: both depend on temperature through the underflow margin
+# `(θ_F+2)·kT + 1e-5·B_s + B_s − c_s`, even though `batch.bs` and `batch.kmin` themselves do
+# not, so both are rebuilt fresh here on every call rather than stored in `FrameworkBatch`. The
+# `1e-5·B_s` term covers `pair_erfc_dev`'s approximation error and floating-point summation
+# error in the actual computed `ΔU`, both proportional to the magnitude of the summed terms —
+# the same margin the rejection rule itself requires, so a rejected insertion's ideal (bound)
+# energy clears `(θ_F+2)·kT` even after that error is subtracted back out. `guest` must already
+# carry compact type indices (`batch.guest_types`). A system whose `bs` is `Inf` gets an
+# infinite margin, and `find_rho2` returns `0` for every one of its entries, disabling rejection
+# for that system.
 function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT::F) where {F, N}
     ntypes = size(batch.sigma, 1)
     θ = theta_F(F)
     rho2 = zeros(F, batch.nsys * N * ntypes)
     reach0 = Vector{SVector{3, Int32}}(undef, batch.nsys)
     for s in 1:batch.nsys
-        margin = isinf(batch.bs[s]) ? F(Inf) : (θ + 2) * kT + batch.bs[s] - batch.constant_offset[s]
+        Bs = batch.bs[s]
+        margin = isinf(Bs) ? F(Inf) : (θ + 2) * kT + F(1.0e-5) * Bs + Bs - batch.constant_offset[s]
         rmax = zero(F)
         base = (s - 1) * N * ntypes
         for a in 1:N, t in 1:ntypes

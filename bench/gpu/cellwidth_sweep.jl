@@ -1,6 +1,4 @@
-# One-off script (not part of the regular suite) mirroring bench/widom_bench.jl's kernel-only
-# path, isolated to the phase-0 kernel time and bytes/framework across a cellwidth grid — see
-# the efficiency design spec's E3 "Full energy path" measurement.
+# One-off script (not part of the regular suite): phase-0 kernel time and bytes/framework across a cellwidth grid, for RUBTAK 3x3x3 + CO2 (E3's cellwidth choice) -- run as PA_BACKEND=cuda|rocm PA_PRECISION=f64|f32 julia --project=bench/gpu bench/gpu/cellwidth_sweep.jl
 using PureAdsorb, StaticArrays, Chairmarks, LinearAlgebra, KernelAbstractions, Statistics, Random
 BLAS.set_num_threads(1)
 

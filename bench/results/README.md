@@ -38,9 +38,14 @@ julia --project=bench bench/plot_widom.jl
 | host | GPU | backend | precision | result |
 |---|---|---|---|---|
 | neuromancer | — | cpu | f64 | `pureadsorb_widom_neuromancer_cpu_20260917.json` |
-| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_20260917.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f64 | `pureadsorb_widom_galen_rocm_f64_20260920.json` |
+| galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260919.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260919.json` |
+
+The 2026-09-20 galen ROCm files supersede `pureadsorb_widom_galen_rocm_20260917.json` for the
+R9700 throughput tables in `docs/src/benchmarks.md`; the 2026-09-17 file stays committed but is
+not otherwise referenced.
 
 The RTX 3050 sits behind a Thunderbolt eGPU enclosure on neuromancer, and neuromancer's CPU
 clock is unpinned (see the top-level protocol note): its numbers are indicative only, never
@@ -48,6 +53,14 @@ gate-authoritative (galen and wintermute are the clock-locked, gate-authoritativ
 Consumer GeForce cards throttle double-precision throughput relative to a datacenter part, which
 is why the f64/f32 gap on this card (~20x insertions/s) is far larger than the AMD Radeon AI
 PRO R9700 numbers above.
+
+## Batch-size scaling
+
+`bench/widom_scaling.jl` measures kernel throughput against the number of frameworks in one
+batch, up to the largest batch each precision holds on the R9700 (galen, ROCm):
+`pureadsorb_widom_scaling_galen_rocm_f64_20260920.json` (up to 98,304 frameworks) and
+`pureadsorb_widom_scaling_galen_rocm_f32_20260920.json` (up to 196,608 frameworks). See
+`docs/src/benchmarks.md`, "Throughput against batch size".
 
 ## Precision
 

@@ -14,12 +14,16 @@
 using CairoMakie, JSON, Statistics
 
 resultsdir = joinpath(@__DIR__, "results")
-paths = filter(p -> endswith(p, ".json"), readdir(resultsdir; join = true))
+paths = filter(p -> endswith(p, ".json") && !occursin("_scaling_", basename(p)), readdir(resultsdir; join = true))
 isempty(paths) && error("no *.json files in $resultsdir to plot")
 # Files without a "samples" array (e.g. pureadsorb_widom_processcost_*.json, a single
 # whole-process wall-time measurement reported only in bench/results/README.md) carry no
-# throughput series to plot.
-filter!(p -> haskey(JSON.parsefile(p), "samples"), paths)
+# throughput series to plot. Scaling results (excluded above by name; kept here as a second
+# guard) use a different sample schema — keyed by nsys and chunk, not ninsert.
+filter!(paths) do p
+    samples = get(JSON.parsefile(p), "samples", nothing)
+    !isnothing(samples) && !isempty(samples) && all(haskey(s, "ninsert") for s in samples)
+end
 
 # Least-squares intercept of t = a + b*ninsert; the caller only needs `a`, since `ninsert - 0`
 # needs no slope.

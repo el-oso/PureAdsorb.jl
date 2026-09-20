@@ -90,7 +90,7 @@ end
     b = FrameworkBatch([fw], ff, g, EwaldParams(cutoff = 12.0))
     bad = PureAdsorb.FrameworkBatch(
         b.positions, push!(copy(b.types), Int32(1)), b.charges, b.atom_offsets, b.cells, b.invcells,
-        b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset,
+        b.volumes, b.alphas, b.ks, b.kprefactor, b.Shost, b.k_offsets, b.constant_offset, b.self_term_halfrange,
         b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff, b.nsys
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
@@ -184,18 +184,27 @@ end
     end
 end
 
-@testitem "widom results for a single system are exact for a fixed seed" begin
+@testitem "widom results for a single system are close to the pre-E1 recorded values" begin
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     b = FrameworkBatch([replicate(fw, (3, 3, 3))], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
     r = widom(b, g; T = 298.15, ninsert = 2_000, seed = 3, nblocks = 4)[1]
-    @test r.mu_ex == -0.14435951741921793
-    @test r.mu_ex_err == 0.004098060610114027
-    @test r.K_H == 6.590899117050657e8
-    @test r.K_H_err == 1.0512729413942294e8
-    @test r.q_st == 0.2563139447257997
-    @test r.q_st_err == 0.0025536418864197745
+    # These literals are bit-identical results from before the sparse reciprocal table (E1)
+    # replaced the exact per-insertion guest self term with its orientation average. `mu_ex`
+    # and `q_st` are energies, so they move by at most `self_term_halfrange`. `K_H` and every
+    # standard error are built from the Boltzmann weight `exp(-ΔU/kT)`, so they move by a
+    # relative amount of order `self_term_halfrange/kT`; the 5x margin below covers the
+    # block-statistics propagation on top of that leading-order estimate.
+    halfrange = b.self_term_halfrange[1]
+    kT = PureAdsorb.KB * 298.15
+    rtol = 5 * expm1(halfrange / kT)
+    @test abs(r.mu_ex - (-0.14435951741921793)) <= halfrange + 1.0e-12
+    @test abs(r.q_st - 0.2563139447257997) <= halfrange + 1.0e-12
+    @test r.mu_ex_err ≈ 0.004098060610114027 rtol = rtol
+    @test r.K_H ≈ 6.590899117050657e8 rtol = rtol
+    @test r.K_H_err ≈ 1.0512729413942294e8 rtol = rtol
+    @test r.q_st_err ≈ 0.0025536418864197745 rtol = rtol
 end
 
 @testitem "widom credits samples to the correct framework in a mixed batch" begin
@@ -215,8 +224,12 @@ end
     se(a, b) = 3 * hypot(a, b)
     @test abs(r_mixed[1].mu_ex - r_full.mu_ex) < se(r_mixed[1].mu_ex_err, r_full.mu_ex_err)
     @test abs(r_mixed[1].K_H - r_full.K_H) < se(r_mixed[1].K_H_err, r_full.K_H_err)
-    @test abs(r_mixed[2].mu_ex - r_empty.mu_ex) < se(r_mixed[2].mu_ex_err, r_empty.mu_ex_err)
-    @test abs(r_mixed[2].K_H - r_empty.K_H) < se(r_mixed[2].K_H_err, r_empty.K_H_err)
+    # An empty framework has no host atoms, so `insertion_energy` (cross term only, post-E1)
+    # returns exactly zero for every pose: ΔU is the same constant for every insertion, giving
+    # zero block-to-block variance and hence `se == 0`; the two runs must then match exactly
+    # rather than within a nonzero statistical margin.
+    @test abs(r_mixed[2].mu_ex - r_empty.mu_ex) <= se(r_mixed[2].mu_ex_err, r_empty.mu_ex_err)
+    @test abs(r_mixed[2].K_H - r_empty.K_H) <= se(r_mixed[2].K_H_err, r_empty.K_H_err)
     # RUBTAK and the empty box give very different physics, so a system/sample mix-up would show
     # up as a false pass above; this confirms the two references are actually distinguishable.
     @test abs(r_full.mu_ex - r_empty.mu_ex) > se(r_full.mu_ex_err, r_empty.mu_ex_err)

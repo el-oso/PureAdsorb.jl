@@ -8,8 +8,11 @@
     @test PureAdsorb.rotate(SVector(0.0, 0.0, sqrt(0.5), sqrt(0.5)), SVector(1.0, 0.0, 0.0)) ≈ SVector(0.0, 1.0, 0.0) atol = 1.0e-12
 end
 
-@testitem "insertion energy equals the full-system energy difference" begin
+@testitem "insertion_energy_reference equals the full-system energy difference" begin
     using StaticArrays, LinearAlgebra, Random
+    # `insertion_energy` itself (post-E1) computes only the reciprocal-space cross term over the
+    # host-coupled k-vectors and omits the guest self term, so this full-contract check — every
+    # k-vector, cross plus self — runs against the oracle `insertion_energy_reference` instead.
     ff = ForceField(
         ["Zr_", "H_", "C_", "O_", "C", "O"], [2.78, 2.57, 3.43, 3.12, 2.8, 3.05],
         [0.003, 0.0019, 0.0046, 0.0026, 0.0023, 0.0068]; cutoff = 10.0, tail = false
@@ -27,7 +30,7 @@ end
     kpre = [w[i] * PureAdsorb.pk(dot(ks[i], ks[i]), α, V) for i in eachindex(ks, w)]
     rng = Xoshiro(7)
     pos = A * rand(rng, SVector{3, Float64}); q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
-    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, 10.0, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
+    ΔU = PureAdsorb.insertion_energy_reference(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, 10.0, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
     gpos = [pos + PureAdsorb.rotate(q, s) for s in g.sites]
     mol_h = collect(1:length(hpos)); mol_g = fill(0, 3) # noidiom: hpos is a freshly built Vector, always one-based
     Ecoul = PureAdsorb.ewald_energy(A, vcat(hpos, gpos), vcat(hq, collect(g.charges)), vcat(mol_h, mol_g), α, 10.0, ks, w) -
@@ -49,8 +52,10 @@ end
     @test ΔU ≈ Elj + Ecoul - Eself - Eexcl - Enet rtol = 1.0e-8
 end
 
-@testitem "insertion energy uses independent LJ and Ewald cutoffs" begin
+@testitem "insertion_energy_reference uses independent LJ and Ewald cutoffs" begin
     using StaticArrays, LinearAlgebra, Random
+    # See the comment in "insertion_energy_reference equals the full-system energy difference"
+    # above: this is the oracle's full-contract check, not `insertion_energy`'s own.
     ff = ForceField(
         ["Zr_", "H_", "C_", "O_", "C", "O"], [2.78, 2.57, 3.43, 3.12, 2.8, 3.05],
         [0.003, 0.0019, 0.0046, 0.0026, 0.0023, 0.0068]; cutoff = 6.0, tail = false
@@ -69,7 +74,7 @@ end
     kpre = [w[i] * PureAdsorb.pk(dot(ks[i], ks[i]), α, V) for i in eachindex(ks, w)]
     rng = Xoshiro(11)
     pos = A * rand(rng, SVector{3, Float64}); q = normalize(rand(rng, SVector{4, Float64}) .- 0.5)
-    ΔU = PureAdsorb.insertion_energy(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald_cutoff, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
+    ΔU = PureAdsorb.insertion_energy_reference(pos, q, g, ff.sigma, ff.epsilon, ff.cutoff, ewald_cutoff, hpos, htype, hq, A, invA, α, ks, kpre, Sh)
     gpos = [pos + PureAdsorb.rotate(q, s) for s in g.sites]
     mol_h = collect(1:length(hpos)); mol_g = fill(0, 3) # noidiom: hpos is a freshly built Vector, always one-based
     Ecoul = PureAdsorb.ewald_energy(A, vcat(hpos, gpos), vcat(hq, collect(g.charges)), vcat(mol_h, mol_g), α, ewald_cutoff, ks, w) -

@@ -74,7 +74,7 @@ function tiled_batch(backend, b::FrameworkBatch{T}, n::Integer) where {T}
         tile(backend, b.positions, n), tile(backend, b.types, n), tile(backend, b.charges, n), offsets(na),
         rep(b.cells), rep(b.invcells), rep(b.volumes), rep(b.alphas),
         tile(backend, b.ks, n), tile(backend, b.kprefactor, n), tile(backend, b.Shost, n), offsets(nkv),
-        rep(b.constant_offset), adapt(backend, b.sigma), adapt(backend, b.epsilon),
+        rep(b.constant_offset), rep(b.self_term_halfrange), adapt(backend, b.sigma), adapt(backend, b.epsilon),
         b.cutoff, b.ewald_cutoff, Int(n),
     )
 end

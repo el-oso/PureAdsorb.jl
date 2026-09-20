@@ -83,6 +83,18 @@ end
     @test sum(w) == sum(w_brute)
 end
 
+@testitem "kvectors integer coefficients reproduce the vectors" begin
+    using StaticArrays, LinearAlgebra
+    A = PureAdsorb.cell_matrix(14.7619, 14.80147, 14.76539, 59.84578, 60.04729, 59.8131)
+    B = PureAdsorb.reciprocal_basis(A)
+    α = PureAdsorb.ewald_alpha(12.0, 1.0e-6)
+    ks, w, coeffs = PureAdsorb.kvectors(A, PureAdsorb.ewald_kmax(α, 1.0e-6))
+    @test length(coeffs) == length(ks)
+    for i in eachindex(ks, coeffs)
+        @test B * SVector(coeffs[i]) ≈ ks[i]
+    end
+end
+
 @testitem "intramolecular exclusion removes the pair" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0, 0, 0, 0, 30.0, 0, 0, 0, 30.0)

@@ -34,6 +34,15 @@ one precomputed scalar per insertion instead of recomputing these every time.
 produces a `FrameworkBatch` whose array fields are of `backend`'s array type, with the
 structure unchanged.
 
+`ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each framework's replication (see
+`docs/src/theory.md`): for CO2 in RUBTAK 3×3×3 that is 190 of the unreplicated cell's 4587
+k-vectors. The guest's own reciprocal-space self term, which depends on orientation but not on
+the host, is evaluated once at 64 fixed orientations (`Xoshiro(0x5e1f)`, the same Shoemake
+construction `random_poses!` uses); its mean over those orientations is folded into
+`constant_offset`, and `self_term_halfrange` records half their spread. `FrameworkBatch` throws
+if that half-range exceeds `1e-3 · KB · 300 K` for a guest/framework pair, since the
+orientation-averaged approximation is then no longer accurate enough.
+
 **Energy** (`src/energy.jl`, `src/ewald.jl`) — `insertion_energy` evaluates the Lennard-Jones
 and Ewald real/reciprocal terms of one guest pose against one system's slice of the batch
 arrays. It takes only isbits scalars, `SVector`s, and plain array/view arguments, so it runs
@@ -81,7 +90,8 @@ its inputs:
 - `replicate`: replication factors must be ≥ 1.
 - `FrameworkBatch`: each framework's `min_multiplicity` against
   `max(LJ cutoff, Ewald cutoff)` must already be `(1,1,1)` — the caller must replicate a
-  too-small cell first.
+  too-small cell first. `self_term_halfrange` must not exceed `1e-3 · KB · 300 K` for any
+  guest/framework pair (naming the value, the guest and the framework index).
 - `ewald_alpha`: raises if the requested precision is unreachable with the given cutoff.
 - `tail_delta`: the per-type count vectors must match the force field's number of LJ types
   (`DimensionMismatch`).

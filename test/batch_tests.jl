@@ -40,15 +40,67 @@ end
     @test isempty(b0.ks)
     @test b0.k_offsets == zeros(Int32, nsys + 1)
     @test !isempty(bq.ks)
+    @test all(iszero, b0.self_term_halfrange)   # no charge, no orientation dependence
 end
 
-@testitem "constant offset matches the pose-independent terms" begin
-    using StaticArrays, LinearAlgebra
+@testitem "FrameworkBatch keeps only the k-vectors coupled to the replication" begin
+    using LinearAlgebra
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
-    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald)
+    @test length(b.ks) == 190
+
+    α = PureAdsorb.ewald_alpha(ewald.cutoff, ewald.precision)
+    kmax = PureAdsorb.ewald_kmax(α, ewald.precision)
+    hpos = PureAdsorb.cartesian(sc)
+    ks_full, kpref_full, Sh_full, coeffs = PureAdsorb.full_ktables(sc.cell, hpos, sc.charges, α, kmax)
+    dropped = [i for i in eachindex(coeffs) if !all(iszero, mod.(coeffs[i], sc.replication))]
+    @test length(dropped) == length(ks_full) - 190
+    @test all(i -> abs(Sh_full[i]) < 1.0e-9, dropped)
+end
+
+@testitem "an unreplicated framework keeps every k-vector" begin
+    using StaticArrays
+    L = 30.0
+    A = SMatrix{3, 3}(L, 0, 0, 0, L, 0, 0, 0, L)
+    fw = Framework{Float64}(A, [SVector(0.5, 0.5, 0.5)], ["Zr"], ["Zr"], [1.0])
+    @test fw.replication == (1, 1, 1)
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([fw], ff, g, ewald)
+    α = PureAdsorb.ewald_alpha(ewald.cutoff, ewald.precision)
+    kmax = PureAdsorb.ewald_kmax(α, ewald.precision)
+    ks_full, = PureAdsorb.full_ktables(fw.cell, PureAdsorb.cartesian(fw), fw.charges, α, kmax)
+    @test length(b.ks) == length(ks_full)
+end
+
+@testitem "self-term half-range guard trips for a strongly polar guest in a small cell" begin
+    using StaticArrays
+    cutoff = 3.0
+    L = 2 * cutoff       # smallest cell satisfying min_multiplicity(cell, cutoff) == (1,1,1)
+    A = SMatrix{3, 3}(L, 0, 0, 0, L, 0, 0, 0, L)
+    fw = Framework{Float64}(A, [SVector(0.5, 0.5, 0.5)], ["Zr"], ["Zr"], [1.0])
+    ff = ForceField(["Zr_"], [2.78], [0.003]; cutoff = cutoff, tail = false)
+    # A strongly polar two-site guest: charges ±2, 3 Å apart.
+    g = PureAdsorb.Guest(
+        SVector(SVector(0.0, 0.0, 0.0), SVector(3.0, 0.0, 0.0)),
+        SVector(1, 1), SVector(2.0, -2.0), 1.0, 1.0, 0.0
+    )
+    @test_throws "self-term half-range" FrameworkBatch([fw], ff, g, EwaldParams(cutoff = cutoff, precision = 1.0e-6))
+end
+
+@testitem "constant offset matches the pose-independent terms" begin
+    using StaticArrays, LinearAlgebra, Random
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald)
     α = b.alphas[1]; V = b.volumes[1]
     self = -PureAdsorb.KE * α / sqrt(π) * sum(abs2, g.charges)
     excl = -PureAdsorb.KE * sum(
@@ -58,5 +110,26 @@ end
     counts = [count(==(t), b.types) for t in eachindex(ff.names)]
     gcounts = [count(==(t), g.types) for t in eachindex(ff.names)]
     tail = PureAdsorb.tail_delta(ff, counts, gcounts, V)
-    @test b.constant_offset[1] ≈ self + excl + tail     # CO2 is neutral: no net-charge term
+
+    # Guest self term over the full k set, at the same 64 fixed orientations `FrameworkBatch`
+    # draws from `Xoshiro(0x5e1f)`, computed directly from `full_ktables` rather than through
+    # `FrameworkBatch`'s internals.
+    kmax = PureAdsorb.ewald_kmax(α, ewald.precision)
+    hpos = PureAdsorb.cartesian(sc)
+    ks_full, kpref_full, = PureAdsorb.full_ktables(sc.cell, hpos, sc.charges, α, kmax)
+    rng = Xoshiro(0x5e1f)
+    samples = Float64[]
+    for _ in 1:64
+        q = PureAdsorb.shoemake_quaternion(rng, Float64)
+        gsites = [PureAdsorb.rotate(q, s) for s in g.sites]
+        acc = 0.0
+        for i in eachindex(ks_full, kpref_full)
+            Sg = sum(g.charges[s] * cis(dot(ks_full[i], gsites[s])) for s in eachindex(gsites, g.charges))
+            acc += kpref_full[i] * abs2(Sg)
+        end
+        push!(samples, PureAdsorb.KE * acc)
+    end
+    self_mean = sum(samples) / 64
+    @test b.self_term_halfrange[1] ≈ (maximum(samples) - minimum(samples)) / 2
+    @test b.constant_offset[1] ≈ self + excl + tail + self_mean     # CO2 is neutral: no net-charge term
 end

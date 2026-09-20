@@ -2,7 +2,9 @@
     Framework{T}
 
 A periodic host structure: unit cell `cell` (Å, lattice vectors as columns), atom fractional
-coordinates `frac`, per-atom `labels` and element `symbols`, and partial `charges` (e).
+coordinates `frac`, per-atom `labels` and element `symbols`, partial `charges` (e), and
+`replication`, the `(nx, ny, nz)` supercell factors already folded into `cell`/`frac`
+relative to the CIF-read unit cell (`(1,1,1)` for an unreplicated framework).
 """
 struct Framework{T}
     cell::SMatrix{3, 3, T, 9}
@@ -10,7 +12,11 @@ struct Framework{T}
     labels::Vector{String}
     symbols::Vector{String}
     charges::Vector{T}
+    replication::NTuple{3, Int}
 end
+
+Framework{T}(cell, frac, labels, symbols, charges) where {T} =
+    Framework{T}(cell, frac, labels, symbols, charges, (1, 1, 1))
 
 natoms(fw::Framework) = length(fw.frac)
 total_charge(fw::Framework) = sum(fw.charges)
@@ -61,7 +67,8 @@ end
     replicate(fw::Framework, n::NTuple{3, Int}) -> Framework
 
 Build the `n[1] × n[2] × n[3]` supercell of `fw`, replicating the unit cell along each lattice
-vector and repeating labels, symbols and charges accordingly.
+vector and repeating labels, symbols and charges accordingly, and setting `replication` to
+`fw.replication .* n`.
 """
 function replicate(fw::Framework{T}, n::NTuple{3, Int}) where {T}
     all(>=(1), n) || throw(ArgumentError("replication factors must be ≥ 1, got $n"))
@@ -72,5 +79,8 @@ function replicate(fw::Framework{T}, n::NTuple{3, Int}) where {T}
         idx += 1
         frac[idx] = (f + SVector(i, j, k)) ./ SVector(n)
     end
-    return Framework{T}(fw.cell * Diagonal(SVector(n)), frac, repeat(fw.labels, N), repeat(fw.symbols, N), repeat(fw.charges, N))
+    return Framework{T}(
+        fw.cell * Diagonal(SVector(n)), frac, repeat(fw.labels, N), repeat(fw.symbols, N), repeat(fw.charges, N),
+        fw.replication .* n
+    )
 end

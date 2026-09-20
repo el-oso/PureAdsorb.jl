@@ -47,16 +47,20 @@ function system_counts(ninsert::Integer, nsys::Integer, run::Integer)
     return ns
 end
 
+# Shoemake (1992) uniform random unit quaternion, in (x, y, z, w) order per the comment block
+# above `rotate`: (√(1-u₁) cos 2πu₂, √u₁ sin 2πu₃, √u₁ cos 2πu₃, √(1-u₁) sin 2πu₂).
+function shoemake_quaternion(rng::AbstractRNG, ::Type{T}) where {T}
+    u1, u2, u3 = rand(rng), rand(rng), rand(rng)
+    a, b = sqrt(1 - u1), sqrt(u1)
+    return SVector{4, T}(a * cospi(2u2), b * sinpi(2u3), b * cospi(2u3), a * sinpi(2u2))
+end
+
 # Poses for global insertion indices `first_g:(first_g + length(sys_of) - 1)`.
 function random_poses!(rng::AbstractRNG, sys_of, rpos, quat, first_g::Integer, run::Integer, nsys::Integer)
     for i in eachindex(sys_of, rpos, quat)
         sys_of[i] = sys_of_index(first_g + i - 1, run, nsys)
         rpos[i] = rand(rng, eltype(rpos))
-        u1, u2, u3 = rand(rng), rand(rng), rand(rng)
-        a, b = sqrt(1 - u1), sqrt(u1)
-        # Shoemake (1992) sample mapped into (x, y, z, w) order per the comment block above
-        # `rotate`: (√(1-u₁) cos 2πu₂, √u₁ sin 2πu₃, √u₁ cos 2πu₃, √(1-u₁) sin 2πu₂).
-        quat[i] = eltype(quat)(a * cospi(2u2), b * sinpi(2u3), b * cospi(2u3), a * sinpi(2u2))
+        quat[i] = shoemake_quaternion(rng, eltype(eltype(quat)))
     end
     return nothing
 end

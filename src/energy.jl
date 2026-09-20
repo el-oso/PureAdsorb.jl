@@ -18,10 +18,13 @@ end
 # Energy of inserting one guest molecule at pose (pos, q) into a fixed host: LJ against every
 # host site within the LJ cutoff, the real-space Ewald cross term (screened by erfc_dev,
 # GPU-safe) against every host site within the (generally larger) Ewald cutoff, and the
-# reciprocal cross plus guest-self terms against the host's precomputed structure factor
-# Shost. `kprefactor[i]` is `w_k · pk(|k|², α, V)`, precomputed once per batch since it does
-# not depend on the insertion pose. All arguments are isbits scalars, SVectors or plain array
-# reads, so this runs unchanged inside a GPU kernel.
+# reciprocal cross term against the host's precomputed structure factor Shost, over only the
+# k-vectors coupled to this framework's replication (`FrameworkBatch` keeps no others). The
+# guest self term `Σ_k pref_k |S_g(k)|²` is orientation-dependent but pose-otherwise-fixed, so
+# its orientation average over the full k set is folded into `constant_offset` instead of
+# recomputed here (see `FrameworkBatch`'s docstring). `kprefactor[i]` is `w_k · pk(|k|², α, V)`,
+# precomputed once per batch since it does not depend on the insertion pose. All arguments are
+# isbits scalars, SVectors or plain array reads, so this runs unchanged inside a GPU kernel.
 function insertion_energy(
         pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
         hpos, htype, hq, A, invA, alpha, ks, kprefactor, Shost
@@ -59,7 +62,7 @@ function insertion_energy(
         for s in 1:N
             Sg += guest.charges[s] * cis(dot(k, gpos[s]))
         end
-        E_lr += kprefactor[i] * (2 * real(conj(Shost[i]) * Sg) + abs2(Sg))
+        E_lr += kprefactor[i] * 2 * real(conj(Shost[i]) * Sg)
     end
     return E_lj + T(KE) * (E_sr + E_lr)
 end

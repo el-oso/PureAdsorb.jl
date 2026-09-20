@@ -136,6 +136,25 @@ The host's structure factor `Shost` is precomputed once per framework (it does n
 the guest pose); a guest insertion recomputes only its own, much smaller, structure factor and
 combines it with `Shost` via ``2\,\mathrm{Re}(\overline{S_{\mathrm{host}}}\,S_{\mathrm{guest}}) + |S_{\mathrm{guest}}|^2``.
 
+**Coupled k-vectors.** A supercell built by replicating a cell by `(n_1, n_2, n_3)` repeats the
+host's fractional positions identically in every copy, so its structure factor is nonzero only
+at k-vectors whose integer reciprocal-lattice coefficients ``(m_1, m_2, m_3)`` are each
+divisible by the corresponding replication factor — every other k-vector's phase does not
+repeat between copies and its host contribution cancels. `FrameworkBatch` keeps only this
+coupled subset in `ks`, `kprefactor` and `Shost`: for CO2 in RUBTAK 3×3×3 that is 190 of the
+4587 k-vectors the unreplicated cell's `kvectors` enumerates, cutting the reciprocal-space
+table to about a third of its size.
+
+**Guest self term.** The remaining term of ``E_{\mathrm{recip}}``, the guest's own
+``|S_{\mathrm{guest}}(k)|^2`` summed over the FULL k-vector set, depends only on the guest's
+orientation (not its position or the host), so `FrameworkBatch` evaluates it once at 64 fixed
+orientations and folds their mean into `constant_offset`, storing half the orientations' spread
+as `self_term_halfrange`. For CO2 in RUBTAK 3×3×3 that half-range is about 2.4e-7 eV, against a
+mean self term of about 0.0052 eV — the orientation dependence is negligible next to the mean,
+which is why replacing the per-insertion sum with its average changes `widom`'s results by no
+more than `self_term_halfrange`. `FrameworkBatch` throws instead of silently using this
+approximation when `self_term_halfrange` exceeds `1e-3 · k_B · 300\,\mathrm{K}`.
+
 **Reciprocal cutoff and k-vector bound.** Reciprocal vectors are kept while ``|k| \leq
 k_{\max}``. The search range along each reciprocal-lattice direction is bounded using the
 corresponding *direct* lattice vector's own length ``|a_i|``,

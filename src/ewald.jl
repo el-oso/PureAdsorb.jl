@@ -77,19 +77,27 @@ erfc_dev(x) = x >= 0 ? _erfccheb(x) : 2 - _erfccheb(-x)
 # in for its mirror image with weight 2. Since aᵢ·bⱼ = 2π δᵢⱼ, nᵢ = k·aᵢ/2π, so any k with
 # |k| ≤ kmax has |nᵢ| ≤ kmax·|aᵢ|/2π, where |aᵢ| = norm(A[:,i]) is the lattice vector's own
 # length; the shorter perpendicular length underbounds this for a triclinic cell.
+#
+# The third return value gives each kept vector's integer coefficients (n1, n2, n3) in the
+# reciprocal basis (`k == B * SVector(n...)`); a k-vector is coupled to a supercell built by
+# replicating the stored cell by `replication` iff every coefficient is divisible by the
+# corresponding factor, since only then does the phase `k · r` repeat identically in every
+# copy of the unreplicated cell.
 function kvectors(A::SMatrix{3, 3, T}, kmax) where {T}
     B = reciprocal_basis(A)
     n = ntuple(i -> ceil(Int, kmax * norm(A[:, i]) / (2π)), 3)
     ks = SVector{3, T}[]
     w = T[]
+    coeffs = NTuple{3, Int}[]
     for n1 in 0:n[1], n2 in (-n[2]):n[2], n3 in (-n[3]):n[3]
         (iszero(n1) && iszero(n2) && iszero(n3)) && continue
         k = B * SVector(n1, n2, n3)
         norm(k) <= kmax || continue
         push!(ks, k)
         push!(w, iszero(n1) ? one(T) : T(2))
+        push!(coeffs, (n1, n2, n3))
     end
-    return ks, w
+    return ks, w, coeffs
 end
 
 function structure_factor(ks, positions, charges)

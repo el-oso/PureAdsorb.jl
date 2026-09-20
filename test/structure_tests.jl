@@ -7,6 +7,7 @@
     @test fw.frac[1] ≈ SVector(0.37986, 0.37998, 0.61969)
     @test abs(PureAdsorb.total_charge(fw)) < 1.0e-3
     @test fw.cell ≈ PureAdsorb.cell_matrix(14.7619, 14.80147, 14.76539, 59.84578, 60.04729, 59.8131)
+    @test fw.replication == (1, 1, 1)
 end
 
 @testitem "replicate preserves counts and charge" begin
@@ -16,6 +17,13 @@ end
     @test sc.cell ≈ 3 * fw.cell
     @test PureAdsorb.total_charge(sc) ≈ 27 * PureAdsorb.total_charge(fw) atol = 1.0e-9
     @test all(0 .<= reduce(vcat, collect.(sc.frac)) .< 1)
+    @test sc.replication == (3, 3, 3)
+end
+
+@testitem "replication factors compose across successive replicate calls" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    sc = replicate(replicate(fw, (2, 1, 1)), (1, 3, 2))
+    @test sc.replication == (2, 3, 2)
 end
 
 @testitem "read_cif rejects non-P1 and chargeless files" begin

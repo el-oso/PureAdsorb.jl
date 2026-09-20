@@ -203,11 +203,20 @@ Each insertion samples an independent pose:
   equivalent to the quaternion sandwich product ``q\,v\,q^{-1}`` without building a rotation
   matrix.
 
+Insertion ``g`` of the global sequence ``1{:}ninsert`` is assigned to system
+``\mathrm{mod1}((g-1) \div \mathrm{run} + 1,\ nsys)``: ``\mathrm{run}`` consecutive insertions
+go to the same system before the assignment cycles to the next one. GPU work-items are indexed
+by their position in one kernel-launch chunk, which follows the global sequence directly, so
+work-items adjacent on the device then read the same framework's tables instead of a different
+one per work-item.
+
 ## Block-averaged statistics and the delta method
 
-Insertions accumulate into `nblocks` blocks of (as close to equal as possible) size. Per
-block ``b``, `widom` sums ``\sum W`` and ``\sum \Delta U\,W`` and counts samples ``n_b``, giving
-per-block means ``\overline{W}_b`` and ``\overline{UW}_b``. The overall estimates are the
+Each system's ``n_s`` insertions accumulate into `nblocks` blocks of (as close to equal as
+possible) size, in that system's own sample order — independent of how many insertions any
+other system in the batch receives. Per block ``b``, `widom` sums ``\sum W`` and
+``\sum \Delta U\,W`` and counts samples ``n_b``, giving per-block means ``\overline{W}_b`` and
+``\overline{UW}_b``. The overall estimates are the
 pooled ratios ``W = \sum_b \sum W_b / \sum_b n_b`` and ``UW`` likewise (not the average of the
 per-block means), with block variances
 

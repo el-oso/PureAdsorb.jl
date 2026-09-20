@@ -15,6 +15,10 @@ function rotate(q::SVector{4}, v::SVector{3})
     return v + 2 * cross(u, cross(u, v) + w * v)
 end
 
+# Lennard-Jones energy of one pair at squared distance r2, shared by `insertion_energy` and the
+# hard-core rejection bound in `reject.jl`.
+lj_pair_energy(r2::T, σ::T, ε::T) where {T} = (x = (σ * σ / r2)^3; 4 * ε * (x * x - x))
+
 # Energy of inserting one guest molecule at pose (pos, q) into a fixed host, visiting only the
 # host atoms that can be within `cutoff`/`ewald_cutoff` of some guest site via a cell-list
 # stencil around `pos`'s home cell, plus the reciprocal cross term against the host's
@@ -77,8 +81,7 @@ function insertion_energy(
                         gt = guest.types[s]; gq = guest.charges[s]
                         if r2 < rc_lj2
                             σ = sigma[gt, ht]; ε = epsilon[gt, ht]
-                            x = (σ * σ / r2)^3
-                            E_lj += 4 * ε * (x * x - x)
+                            E_lj += lj_pair_energy(r2, σ, ε)
                         end
                         if r2 < rc_ew2
                             r = sqrt(r2)

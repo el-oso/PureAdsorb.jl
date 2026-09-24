@@ -164,6 +164,8 @@ end
 
 # Remote hosts are synced without `.git`, so `git rev-parse` cannot find the commit there;
 # `PA_COMMIT` lets the caller pass it in explicitly instead of falling back to "unknown".
+# `PA_HOST` likewise names the machine when `gethostname()` reports something other than the
+# name the results are filed under.
 commit = get(ENV, "PA_COMMIT") do
     try
         readchomp(`git -C $(pkgdir(PureAdsorb)) rev-parse --short HEAD`)
@@ -173,7 +175,7 @@ commit = get(ENV, "PA_COMMIT") do
 end
 
 meta = (;
-    host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
+    host = get(ENV, "PA_HOST", gethostname()), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
     precision = precision_name, nthreads = Threads.nthreads(), nsys_grid = collect(nsys_grid),
     ninsert_grid = collect(ninsert_grid), bench_seconds, bench_samples, kernel_chunk, cellwidth, commit,
     batch_construction_s,

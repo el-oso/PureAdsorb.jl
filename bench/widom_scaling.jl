@@ -190,7 +190,7 @@ commit = get(ENV, "PA_COMMIT") do
 end
 
 meta = (;
-    host = gethostname(), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
+    host = get(ENV, "PA_HOST", gethostname()), julia = string(VERSION), date = string(now()), gpu, backend = backend_name,
     precision, nthreads = Threads.nthreads(), natoms_per_system = natoms, nk_per_system = nk,
     bytes_per_system, nsys_grid, min_chunk, run_length, cellwidth, commit,
 )

@@ -1,5 +1,6 @@
 [deps]
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
@@ -17,6 +18,7 @@ StrictMode = {rev = "v0.4.6", subdir = "StrictMode", url = "https://github.com/e
 
 [compat]
 AllocCheck = "0.2.6"
+AppleAccelerate = "0.7.0"
 CairoMakie = "0.15.14"
 Chairmarks = "1.3.1"
 JET = "0.12.1"

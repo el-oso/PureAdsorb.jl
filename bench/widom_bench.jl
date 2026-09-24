@@ -12,6 +12,9 @@
 # of the full sweep below, for a head-to-head run against a single kUPS config
 # (bench/run_headtohead.sh); `PA_REPS` then sets how many Chairmarks samples that one point
 # collects (default 5).
+# `PA_NINSERT_GRID` overrides the default `ninsert` sweep with a comma-separated list (e.g.
+# "10000,100000,1000000"), on either backend, without touching `nsys_grid` or the sample
+# budget; it is ignored when `PA_GRID` is also set.
 using PureAdsorb, StaticArrays, Chairmarks, JSON, LinearAlgebra, Dates, KernelAbstractions, Statistics, Random
 BLAS.set_num_threads(1)
 
@@ -48,7 +51,12 @@ ewald = EwaldParams(cutoff = F(12), precision = F(1.0e-6))
 
 if isempty(pa_grid)
     nsys_grid = is_gpu ? (1, 64) : (1,)
-    ninsert_grid = is_gpu ? (10^4, 10^5, 10^6) : (10^4, 10^5)
+    ninsert_grid_override = get(ENV, "PA_NINSERT_GRID", "")
+    ninsert_grid = if !isempty(ninsert_grid_override)
+        Tuple(parse.(Int, split(ninsert_grid_override, ",")))
+    else
+        is_gpu ? (10^4, 10^5, 10^6) : (10^4, 10^5)
+    end
     bench_seconds = is_gpu ? 30 : 10
     bench_samples = is_gpu ? 10 : 5
     point_nsys, point_ninsert = nothing, nothing

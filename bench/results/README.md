@@ -24,6 +24,11 @@ for minutes per sample there:
 | cpu | 1 | 10^4, 10^5 | 10 | 5 |
 | cuda / rocm | 1, 64 | 10^4, 10^5, 10^6 | 30 | 10 |
 
+`PA_NINSERT_GRID` (comma-separated, e.g. `10000,100000,1000000`) overrides the `ninsert` sweep
+on either backend without touching `nsys_grid` or the time/sample budget above — used for the
+CPU f64 three-point rerun below, where `ninsert=10^6` takes ~4.1 s/sample and still fits the
+10 s budget for 3 of the 5 requested samples.
+
 The kernel-only measurement always uses `nsys ∈ (1, 64)` with `chunk = 2^16`. The grid actually
 used, the host, the GPU name (when applicable), `Threads.nthreads()`, and the benchmark's
 `seconds`/`samples` are all recorded in each JSON's `meta` block, so a file is self-describing
@@ -48,7 +53,7 @@ julia --project=bench bench/plot_widom.jl
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json` |
-| brutus | — | cpu | f64 | `pureadsorb_widom_brutus_cpu_f64_20260924_53f8e40.json` |
+| brutus | — | cpu | f64 | `pureadsorb_widom_brutus_cpu_f64_20260924_97efb80.json` |
 | brutus | Apple M6 (12 GPU cores) | metal | f32 | `pureadsorb_widom_brutus_metal_f32_20260924_53f8e40.json` |
 
 The commit-suffixed files above are each the latest for their (host, backend, precision) series;
@@ -98,9 +103,101 @@ median times, same fit as `plot_headtohead.jl`):
 
 | backend | precision | nsys | intercept (s) | marginal rate (insertions/s) |
 |---|---|---|---|---|
-| cpu | f64 | 1 | 0.0051 | 240,328 |
+| cpu | f64 | 1 | 0.0052 | 243,011 |
 | metal | f32 | 1 | 0.0081 | 2,118,441 |
 | metal | f32 | 64 | 0.0080 | 2,112,754 |
+
+The cpu/f64 row uses the three-point `ninsert ∈ {10^4, 10^5, 10^6}` grid
+(`pureadsorb_widom_brutus_cpu_f64_20260924_97efb80.json`, `PA_NINSERT_GRID=10000,100000,1000000`);
+an earlier two-point run at `10^4, 10^5` only
+(`pureadsorb_widom_brutus_cpu_f64_20260924_53f8e40.json`, still committed) gave 240,328
+insertions/s, within 1.1% of the three-point fit. Residuals of the three-point fit against the
+median times are 0.35 ms (0.75%) at `ninsert=10^4`, -0.39 ms (-0.09%) at `10^5`, and 0.035 ms
+(0.001%) at `10^6` — the fit is linear in `ninsert` across two decades, and the two-point rate
+holds up.
+
+## Accelerate GEMM feasibility (Apple M6, brutus): no-go
+
+A measurement study of whether the all-pairs distance-matrix identity
+`‖a-b‖² = ‖a‖² + ‖b‖² - 2·a·b` (a GEMM) is worth pursuing to replace part of the CPU Widom
+kernel, on the RUBTAK 3x3x3 + CO2 case (LJ cutoff 12 Å, Ewald cutoff 12 Å, cellwidth 2 Å). Not an
+implementation: no `src/` file changed.
+
+**Time decomposition** (`bench/widom_decompose.jl`, chunk = 65,536, phase split from
+`pureadsorb_widom_brutus_cpu_{f64,f32}_20260924_*.json`'s `kernel_only_s`, further split within
+`insertion_energy` by calling the real, unmodified function four times per precision with
+`cutoff`/`ewald_cutoff`/`ks` zeroed one term at a time):
+
+| term | Float64 | Float32 |
+|---|---|---|
+| distance + cutoff test | 32.1% | 38.5% |
+| Lennard-Jones | 32.9% | 41.7% |
+| real-space screened Coulomb | 19.8% | 3.4% |
+| Ewald reciprocal sum | 13.7% | 14.4% |
+| phase-0 cell-list rejection (all insertions) | 1.5% | 1.9% |
+
+The reciprocal sum is 13.7-14.4% of kernel time on this CPU, not the 1-2% measured on GPU — the
+GPU split does **not** carry over. `Profile.@profile` over a real `widom()` call segfaults on
+this machine (libunwind `stepWithCompactEncoding - invalid compact unwind encoding`, SIGABRT) —
+an Apple Silicon libunwind issue, not code-specific; the table above uses the selective-term
+fallback instead (see the script for the exact method and its caveats).
+
+**Sparsity ratio**: the only cell list in this code is phase-0's cheap rejection test (1.5-1.9%
+of kernel time above). It visits a measured 14.32 framework atoms per guest site on average,
+against `natoms = 3078` total framework atoms in this batch — a 215x sparsity ratio. **Phase 1
+(`insertion_energy`, the dominant 98.1-98.5% of kernel time) does not use this cell list at
+all**: it already loops over all 3078 atoms per surviving pose, gated only by a scalar cutoff
+test. A GEMM route does not make phase 1 sparser than it already isn't; the only work a GEMM
+route avoids paying cheaply is phase-0's rejection test, which is already the smallest piece of
+the kernel.
+
+**Accelerate GEMM rate** (`bench/accelerate_probe.jl`; `AppleAccelerate` v0.7.0, LBT-forwarded;
+`BLAS.set_num_threads(8)` for OpenBLAS, `AppleAccelerate.set_num_threads(8)` for Accelerate, which
+reported 12 threads back — both an 8-thread request, Accelerate's own toggle picks its own
+count):
+
+| shape | OpenBLAS f64 | Accelerate f64 | OpenBLAS f32 | Accelerate f32 |
+|---|---|---|---|---|
+| thin-K, npose=1024, K=3, natoms=3078 | 58.8 GFLOP/s | 89.4 GFLOP/s | 126.8 GFLOP/s | 130.7 GFLOP/s |
+| thin-K, npose=16384 | 20.9 GFLOP/s | 54.0 GFLOP/s | 37.3 GFLOP/s | 86.2 GFLOP/s |
+| thin-K, npose=65536 | 21.4 GFLOP/s | 52.8 GFLOP/s | 40.4 GFLOP/s | 80.8 GFLOP/s |
+| square, n=1024 (reference) | 241.8 GFLOP/s | 591.5 GFLOP/s | 485.1 GFLOP/s | 2157.8 GFLOP/s |
+
+Accelerate beats OpenBLAS at every shape (2.0-2.5x at thin-K, 2.4-4.4x at square), but the thin-K
+shape the distance-matrix route needs falls to 6-11% of Accelerate's own square-GEMM rate
+(2.4-4% of OpenBLAS's) — thin-K is far off peak on both BLASes, as expected for K=3.
+
+**The bound**: the distance+cutoff test plus phase-0's rejection (32.1%+1.5%=33.6% of kernel
+time, f64; 38.5%+1.9%=40.4%, f32) is the only part a GEMM route can touch; Lennard-Jones,
+Coulomb, and the Ewald sum (66.4% f64, 59.6% f32) stay scalar/elementwise regardless. That sets a
+hard ceiling — `1/(non-replaceable fraction)` — of **1.51x (f64)** and **1.68x (f32)**, even for
+an infinitely fast GEMM. Measured Accelerate thin-K already reaches most of that ceiling: at the
+npose=65536 chunk (265.7 ms f64 / 208.1 ms f32 total kernel time), replacing the distance test
+with Accelerate's measured thin-K GEMM (22.9 ms f64, 15.0 ms f32) gives an end-to-end speedup of
+**1.33x (f64)** and **1.50x (f32)** — 88% and 89% of the theoretical ceiling — against OpenBLAS's
+**1.14x (f64)** / **1.35x (f32)**. This ignores the elementwise `‖a‖²+‖b‖²-2ab` combine step and
+the memory traffic of writing/reading back the full 65,536x3,078 distance matrix (1.6 GB f64,
+0.8 GB f32) that a real implementation would pay on top, so the realistic number is at or below
+these already-modest figures, not above them.
+
+**Go/no-go: no-go.** The deciding number is the 66.4%/59.6% (f64/f32) of kernel time spent on
+Lennard-Jones, Coulomb and the Ewald sum, which is scalar/elementwise work no GEMM touches — it
+caps the best possible end-to-end speedup at 1.5-1.7x, far short of the ~10x measured on generic
+matrix operations on this machine. For this to become worthwhile, the elementwise pair terms
+(not just the distance test) would need to be vectorized too. `AppleAccelerate.jl`'s own
+`VMATH_COVERAGE` docstring enumerates every vForce.h routine it wraps, and `erf`/`erfc` is not
+among them — Accelerate has no vectorized erfc at all, so the real-space Coulomb term's
+`pair_erfc_dev` (src/ewald.jl) has nothing to be measured against there; that part of item 4 is
+unmeasured because the routine does not exist, not because it was skipped. Separately promising:
+vForce's `exp` (a routine it does wrap) beat `Base` broadcast `exp` by 2.15x (f64) and 7.11x
+(f32) on a 1e6-element array — a real, measured signal that vForce vectorization helps the
+transcendentals it covers, just not the one this kernel's Coulomb term actually calls.
+
+Result files: `bench/results/accelerate_gemm_brutus_20260924.json` (item 3-4 raw numbers);
+item 1-2 numbers are read directly off `bench/widom_decompose.jl`'s stdout (not saved to JSON,
+since they are derived from the already-committed `pureadsorb_widom_brutus_cpu_f64_*.json` kernel
+timings plus this script's own selective-term measurements, which are exact function calls, not
+samples needing a distribution).
 
 ## Batch-size scaling
 

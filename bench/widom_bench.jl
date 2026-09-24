@@ -5,7 +5,8 @@
 # that the CPU grid stays at nsys=1 with ninsert up to 10^5. The grid actually used is recorded
 # in `meta` so a JSON file is self-describing regardless of which host produced it.
 #
-# `PA_BACKEND` selects the KernelAbstractions backend: "cpu" (default), "cuda", or "rocm".
+# `PA_BACKEND` selects the KernelAbstractions backend: "cpu" (default), "cuda", "rocm", or
+# "metal". Metal has no double precision, so it requires `PA_PRECISION=f32`.
 # `PA_PRECISION` selects the element type: "f64" (default) or "f32".
 # `PA_GRID` restricts the timing grid to one "nsys:ninsert" point (e.g. "64:1000000") instead
 # of the full sweep below, for a head-to-head run against a single kUPS config
@@ -26,11 +27,16 @@ elseif backend_name == "rocm"
     using AMDGPU
     backend = ROCBackend()
     gpu = AMDGPU.HIP.name(AMDGPU.device())
+elseif backend_name == "metal"
+    using Metal
+    F === Float32 || error("the Metal backend has no Float64; set PA_PRECISION=f32")
+    backend = MetalBackend()
+    gpu = String(Metal.device().name)
 else
     backend = KernelAbstractions.CPU()
     gpu = ""
 end
-is_gpu = backend_name in ("cuda", "rocm")
+is_gpu = backend_name in ("cuda", "rocm", "metal")
 
 cellwidth = parse(Float64, get(ENV, "PA_CELLWIDTH", "2"))
 

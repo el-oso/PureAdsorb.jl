@@ -48,6 +48,8 @@ julia --project=bench bench/plot_widom.jl
 | galen | AMD Radeon AI PRO R9700 (gfx1201, Navi48/RDNA4) | rocm | f32 | `pureadsorb_widom_galen_rocm_f32_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f64 | `pureadsorb_widom_neuromancer_cuda_f64_20260920_e903fac.json` |
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json` |
+| brutus | — | cpu | f64 | `pureadsorb_widom_brutus_cpu_f64_20260924_53f8e40.json` |
+| brutus | Apple M6 (12 GPU cores) | metal | f32 | `pureadsorb_widom_brutus_metal_f32_20260924_53f8e40.json` |
 
 The commit-suffixed files above are each the latest for their (host, backend, precision) series;
 every earlier file for the same series stays committed but is not otherwise referenced
@@ -78,6 +80,27 @@ gate-authoritative (galen and wintermute are the clock-locked, gate-authoritativ
 Consumer GeForce cards throttle double-precision throughput relative to a datacenter part, which
 is why the f64/f32 gap on this card (~20x insertions/s) is far larger than the AMD Radeon AI
 PRO R9700 numbers above.
+
+## Apple M6 (`brutus`)
+
+First bring-up of PureAdsorb on Apple Silicon: `Pkg.test()`'s 23,581 non-`:gpu`/`:slow` items all
+pass (the `:gpu` item is filtered out by `test/runtests.jl` on every host, since it hard-requires
+CUDA or AMDGPU). `bench/metal_check.jl` runs the same RUBTAK/CO2 case in Float32 once on
+`KernelAbstractions.CPU()` and once on `MetalBackend()`: `mu_ex` and `q_st` match to the last
+printed digit (relative difference `0.0`), `K_H` differs by a relative `6.1e-8` — four orders of
+magnitude below its own statistical error (`~4.7e-2` relative) — and the phase-0 hard-core
+rejection flags (`hardcore_kernel!`, boolean/integer) match exactly, 0 mismatches out of 20,000.
+Apple GPUs have no double precision, so only `f32` runs on `metal`; the `cpu`/`f64` row above is
+the reference run on the same machine.
+
+Marginal insertion rate (`t = intercept + ninsert/rate`, OLS over `pureadsorb_widom_brutus_*`'s
+median times, same fit as `plot_headtohead.jl`):
+
+| backend | precision | nsys | intercept (s) | marginal rate (insertions/s) |
+|---|---|---|---|---|
+| cpu | f64 | 1 | 0.0051 | 240,328 |
+| metal | f32 | 1 | 0.0081 | 2,118,441 |
+| metal | f32 | 64 | 0.0080 | 2,112,754 |
 
 ## Batch-size scaling
 

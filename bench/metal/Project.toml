@@ -1,0 +1,17 @@
+[deps]
+Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+PureAdsorb = "a0f6fc57-9b29-47be-bd5c-5f2182c0fc16"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[sources]
+PureAdsorb = {path = "../.."}
+
+[compat]
+Chairmarks = "1.3.1"
+JSON = "1.6"
+KernelAbstractions = "0.9.42"
+Metal = "1.11.1"
+StaticArrays = "1.9.22"

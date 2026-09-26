@@ -577,3 +577,68 @@ overwrote the other's committed JSON.
 `plot_widom.jl` regenerates `widom_throughput.png` from the committed JSON only (no benchmark
 runs); its kUPS series is plotted as the marginal rate above (`ninsert / (t - intercept)`), not
 raw `ninsert/t`, and PureAdsorb's series is labeled "warm in-process".
+
+## Guest-guest move throughput (Milestone B, task 3)
+
+The throughput amendment to the Milestone B plan requires the reciprocal-versus-real-space
+split to be measured before task 5 designs a move kernel, since the design's own estimate (the
+reciprocal sum "expected to dominate" at 4587 k-vectors against ~360 real-space neighbors) is a
+hypothesis, not a finding.
+
+### Protocol
+
+`bench/guest_bench.jl` builds RUBTAK 3x3x3 with 50 CO2 guests (`PA_NGUESTS`, default 50) and
+`FrameworkBatch(...; fullk = true)`, generates `PA_NMOVES` (default 65536) independent move
+proposals (a random guest, a Gaussian displacement — R3's translation shape), and times two
+kernels with `Chairmarks.@be` (`evals = 1`, `seconds = 20`, `samples = 10`, wall time only):
+`realspace_move_kernel!` (host-guest Lennard-Jones + Ewald real-space, plus guest-guest
+Lennard-Jones + Ewald real-space against every other guest in the system) and
+`recip_move_kernel!` (the running-structure-factor `ΔU_recip` formula, §3.3 of the design). Both
+kernels process all `PA_NMOVES` proposals in a single launch; per-move cost is
+`median(times_s) / PA_NMOVES`. `BLAS.set_num_threads(1)` runs before any timing.
+`avg_neighbors` is the average number of host atoms within `max(cutoff, ewald_cutoff)` of a
+proposal's old position, over the same proposals, computed directly (not from a benchmark) for
+context on the real-space side.
+
+Every sample is written to `bench/results/pureadsorb_guestmove_<host>_<backend>_<precision>_<date>_<commit>.json`.
+
+### Results
+
+RUBTAK 3x3x3 + 50 CO2: `nk = 4587`, `natoms = 3078` (host atoms in the system), measured
+`avg_neighbors ≈ 367.8` — i.e. only about 12% of the real-space kernel's unconditional per-atom
+loop actually falls inside the cutoff, since (matching Milestone A's own `insertion_energy`) it
+is a plain linear scan over every host atom with no cell list at the energy-evaluation stage.
+
+| host | backend | precision | real (ns/move) | recip (ns/move) | recip/real | file |
+|---|---|---|---|---|---|---|
+| neuromancer4070 | cuda | f64 | 11,149 | 6,806 | **0.61** | `pureadsorb_guestmove_neuromancer4070_cuda_f64_20260926_80ea256.json` |
+| neuromancer4070 | cuda | f32 | 733 | 364 | **0.50** | `pureadsorb_guestmove_neuromancer4070_cuda_f32_20260926_80ea256.json` |
+| neuromancer | cpu | f64 | 17,828 | 69,153 | 3.88 | `pureadsorb_guestmove_neuromancer_cpu_f64_20260926_80ea256.json` |
+
+**The reciprocal sum does not dominate on the GPU — it is the cheaper half, by roughly 2×, at
+both precisions.** This is the opposite of the design's own a priori estimate and is the more
+interesting result the amendment asked to flag loudly if the expectation were wrong. The CPU row
+shows the expected direction (reciprocal costlier, 3.9×), so the reversal is backend-specific,
+not a sign error in either kernel — the same code, same proposals, same system, run on two
+backends.
+
+**Unverified hypothesis, not re-measured by profiling (task 3 does not optimize, only
+measures):** the real-space kernel's cost is plausibly dominated by its unconditional
+`O(natoms) = O(3078)` host scan (of which only ~368 iterations, ~12%, produce a nonzero
+contribution) plus, for each of up to 49 other guests in the system, a full site-pair
+recomputation (`guest_guest_move_delta` rebuilds every other guest's rotated sites from scratch,
+twice, once against the mover's old pose and once against its new one) — both O(natoms) and
+O(nguests) exceed the ~368-neighbor count the design's estimate was based on. The reciprocal
+kernel's cost is a fixed `O(nk) = O(4587)` regardless of occupancy or host size. Task 5 should
+treat "a real-space neighbor list for the move kernel" as at least as promising a lever as
+anything on the reciprocal side, and should profile before choosing between them.
+
+### Caveats
+
+- Single RTX 4070 (see "RTX 4070 eGPU link" above); no ROCm/Metal numbers for this benchmark.
+- The real-space kernel here is deliberately unoptimized (task 3's instruction): no neighbor
+  list, no amortization of proposals sharing a launch, no exploitation of `ΔS`'s structure
+  (translation/rotation-specific shortcuts) — see the plan's "Levers" list, none of which is
+  applied yet.
+- `avg_neighbors` uses the LJ/Ewald cutoff jointly (`max(cutoff, ewald_cutoff)`), not the two
+  cutoffs separately, so it is an upper bound on either individual neighbor count.

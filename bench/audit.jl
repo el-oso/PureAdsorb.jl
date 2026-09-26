@@ -26,6 +26,32 @@ insertion_energy_types(::Type{T}) where {T} = (
 )
 const M3 = SMatrix{3, 3, Float64, 9}
 
+# `host_guest_realspace_energy` is `insertion_energy`'s own real-space loop with the reciprocal
+# cross term omitted, so its argument types are `insertion_energy_types`'s first 15 (through
+# `alpha`; the trailing `ks`/`kprefactor`/`Shost` are absent).
+host_guest_realspace_energy_types(::Type{T}) where {T} = insertion_energy_types(T)[1:15]
+
+sm3(::Type{T}) where {T} = SMatrix{3, 3, T, 9}
+guest_pair_realspace_energy_types(::Type{T}) where {T} = (
+    SVector{3, SVector{3, T}}, SVector{3, SVector{3, T}}, SVector{3, Int}, SVector{3, T},
+    Matrix{T}, Matrix{T}, T, T, sm3(T), sm3(T), T,
+)
+guest_guest_energy_types(::Type{T}) where {T} = (
+    PureAdsorb.Guest{T, 3}, Vector{SVector{3, T}}, Vector{SVector{4, T}}, UnitRange{Int}, Matrix{T}, Matrix{T},
+    SVector{3, Int}, T, T, sm3(T), sm3(T), T,
+)
+guest_guest_move_delta_types(::Type{T}) where {T} = (
+    PureAdsorb.Guest{T, 3}, Vector{SVector{3, T}}, Vector{SVector{4, T}}, UnitRange{Int}, Int,
+    SVector{3, T}, SVector{4, T}, SVector{3, T}, SVector{4, T}, Matrix{T}, Matrix{T}, SVector{3, Int}, T, T, sm3(T), sm3(T), T,
+)
+reciprocal_move_delta_energy_types(::Type{T}) where {T} = (
+    PureAdsorb.Guest{T, 3}, SVector{3, T}, SVector{4, T}, SVector{3, T}, SVector{4, T},
+    Vector{SVector{3, T}}, Vector{T}, Vector{Complex{T}},
+)
+reciprocal_move_delta_bang_types(::Type{T}) where {T} = (Vector{Complex{T}}, reciprocal_move_delta_energy_types(T)...)
+guest_sites_at_types(::Type{T}) where {T} = (PureAdsorb.Guest{T, 3}, SVector{3, T}, SVector{4, T})
+total_reciprocal_energy_types(::Type{T}) where {T} = (Vector{T}, Vector{Complex{T}}, Vector{Complex{T}})
+
 # `SystemState`'s field types for a concrete precision, matching exactly what `SystemState`'s
 # own constructor produces (`src/state.jl`), for auditing its accessors without building a real
 # batch and state just to call `typeof` on them.
@@ -60,6 +86,24 @@ results = vcat(
     signature_findings(PureAdsorb.stencil_start_count, (Int32, Int32, Int32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.wrap_cell, (Int32, Int32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.cell_linear, (Int32, Int32, Int32, Int32, Int32); guarantees = (:typestable, :noalloc)),
+    # Milestone B's per-move guest-guest/guest-host kernels (`src/guest.jl`): every function a
+    # move kernel calls, both precisions.
+    signature_findings(PureAdsorb.host_guest_realspace_energy, host_guest_realspace_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.host_guest_realspace_energy, host_guest_realspace_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_pair_realspace_energy, guest_pair_realspace_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_pair_realspace_energy, guest_pair_realspace_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_guest_energy, guest_guest_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_guest_energy, guest_guest_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_guest_move_delta, guest_guest_move_delta_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_guest_move_delta, guest_guest_move_delta_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_move_delta_energy, reciprocal_move_delta_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_move_delta_energy, reciprocal_move_delta_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_move_delta!, reciprocal_move_delta_bang_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_move_delta!, reciprocal_move_delta_bang_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_sites_at, guest_sites_at_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_sites_at, guest_sites_at_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
 )
 StrictMode.format_findings(stdout, results; format = :text)
 exit(StrictMode.nfailures(results))

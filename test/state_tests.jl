@@ -4,7 +4,7 @@
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b_sparse = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
-    @test_throws "fullk=true" PureAdsorb.SystemState(b_sparse, g, [1]; T = 300.0)
+    @test_throws "fullk=true" PureAdsorb.SystemState(b_sparse, g, [1], ff; T = 300.0)
 end
 
 @testitem "SystemState rejects a mismatched guest count or a mismatched guest" begin
@@ -13,9 +13,9 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    @test_throws DimensionMismatch PureAdsorb.SystemState(b, g, [1]; T = 300.0)
+    @test_throws DimensionMismatch PureAdsorb.SystemState(b, g, [1], ff; T = 300.0)
     g_wrong = PureAdsorb.Guest(g.sites, g.types, g.charges .+ 1, g.tc, g.pc, g.omega)
-    @test_throws "does not match the guest" PureAdsorb.SystemState(b, g_wrong, [1, 1]; T = 300.0)
+    @test_throws "does not match the guest" PureAdsorb.SystemState(b, g_wrong, [1, 1], ff; T = 300.0)
 end
 
 @testitem "SystemState builds a ragged layout, one running structure factor entry per k-vector" begin
@@ -26,7 +26,7 @@ end
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
     ncounts = [5, 0, 2]
-    st = PureAdsorb.SystemState(b, g, ncounts; T = 298.15, seed = 3)
+    st = PureAdsorb.SystemState(b, g, ncounts, ff; T = 298.15, seed = 3)
     @test st.nsys == 3
     for n in 1:3
         @test length(PureAdsorb.guest_range(st, n)) == ncounts[n]
@@ -38,7 +38,12 @@ end
     @test PureAdsorb.guest_range(st, 3) == 6:7
     @test length(st.refpoints) == length(st.orientations) == sum(ncounts)
     @test length(st.Sk) == length(b.Shost)
-    @test all(iszero, st.energy)
+    # `energy` is seeded with each system's real total configuration energy at construction
+    # (`total_energy`): zero for the empty system, and matching a fresh recomputation for the
+    # occupied ones.
+    @test iszero(st.energy[2])
+    @test st.energy == [PureAdsorb.total_energy(b, st, g, ff, n) for n in 1:3]
+    @test !iszero(st.energy[1]) && !iszero(st.energy[3])
     @test all(iszero, st.rng_counter)
     @test length(unique(st.rng_seed)) == 3   # distinct chains get distinct seeds
     @test all(==(zero(SVector{3, Int32})), st.accepted)
@@ -51,7 +56,7 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    st = PureAdsorb.SystemState(b, g, [0, 0]; T = 300.0)
+    st = PureAdsorb.SystemState(b, g, [0, 0], ff; T = 300.0)
     @test isempty(st.refpoints)
     @test isempty(st.orientations)
     @test st.Sk == b.Shost
@@ -67,7 +72,7 @@ end
         ewald = EwaldParams(cutoff = T(12), precision = T(1.0e-6))
         b = FrameworkBatch([sc, sc], ff, g, ewald; fullk = true)
         Tk = T(298.15)
-        st = PureAdsorb.SystemState(b, g, [4, 3]; T = Tk, seed = 11)
+        st = PureAdsorb.SystemState(b, g, [4, 3], ff; T = Tk, seed = 11)
         kT = T(PureAdsorb.KB) * Tk
         N = length(g.sites)
         g_compact = PureAdsorb.Guest{T, N}(g.sites, SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
@@ -91,7 +96,7 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    st = PureAdsorb.SystemState(b, g, [3, 2]; T = 298.15, seed = 5)
+    st = PureAdsorb.SystemState(b, g, [3, 2], ff; T = 298.15, seed = 5)
     for n in 1:2
         kr = PureAdsorb.kvec_range(st, n)
         expected = copy(b.Shost[kr])
@@ -111,9 +116,9 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    st1 = PureAdsorb.SystemState(b, g, [4, 4]; T = 298.15, seed = 42)
-    st2 = PureAdsorb.SystemState(b, g, [4, 4]; T = 298.15, seed = 42)
-    st3 = PureAdsorb.SystemState(b, g, [4, 4]; T = 298.15, seed = 43)
+    st1 = PureAdsorb.SystemState(b, g, [4, 4], ff; T = 298.15, seed = 42)
+    st2 = PureAdsorb.SystemState(b, g, [4, 4], ff; T = 298.15, seed = 42)
+    st3 = PureAdsorb.SystemState(b, g, [4, 4], ff; T = 298.15, seed = 43)
     @test st1.refpoints == st2.refpoints
     @test st1.orientations == st2.orientations
     @test st1.rng_seed == st2.rng_seed
@@ -128,7 +133,7 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    st = PureAdsorb.SystemState(b, g, [4, 3]; T = 298.15, seed = 9)
+    st = PureAdsorb.SystemState(b, g, [4, 3], ff; T = 298.15, seed = 9)
     st2 = PureAdsorb.adapt(CPU(), st)
     @test typeof(st2) == typeof(st)
     for f in fieldnames(typeof(st))
@@ -153,7 +158,7 @@ end
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
-    st = PureAdsorb.SystemState(b, g, [4, 3]; T = 298.15, seed = 9)
+    st = PureAdsorb.SystemState(b, g, [4, 3], ff; T = 298.15, seed = 9)
     dst = PureAdsorb.adapt(backend, st)
     @test !(dst.refpoints isa Array)   # actually moved to the device, not a no-op adapt
     back = PureAdsorb.adapt(CPU(), dst)

@@ -24,11 +24,10 @@ correct only when that batch was built with `fullk = true`: a guest's own struct
 nonzero at every k, not only the host-coupled subset the sparse (Milestone A) path keeps, so the
 constructor requires it.
 
-`energy` is a per-system running total, meant to be updated incrementally from accepted moves
-and checked against a from-scratch recomputation (the energy audit — a later task); at
-construction it is exactly `zero(F)`, since computing the true initial value needs guest–guest
-and guest–host energetics that do not exist yet (`src/guest.jl`, a later task). A driver built
-on this state must set the real starting energy itself before running the chain.
+`energy` is a per-system running total, set at construction to `total_energy(batch, state,
+guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incrementally from
+accepted moves thereafter, checked periodically against a from-scratch recomputation (the
+energy audit).
 
 `rng_seed`/`rng_counter` are a per-chain seed (mixed from the constructor's `seed` and the
 chain's system index via `splitmix64`, so distinct chains from one `seed` get distinct,
@@ -181,22 +180,24 @@ function guest_site_positions_charges(guest::Guest{F, N}, refpoints, orientation
 end
 
 """
-    SystemState(batch::FrameworkBatch{F}, guest::Guest{F,N}, ncounts::AbstractVector{<:Integer};
-                T, seed = 0, backend = CPU()) -> SystemState
+    SystemState(batch::FrameworkBatch{F}, guest::Guest{F,N}, ncounts::AbstractVector{<:Integer},
+                ff::ForceField{F}; T, seed = 0, backend = CPU()) -> SystemState
 
 Build a `SystemState` for `batch`'s `nsys` systems, `ncounts[n]` guests in system `n`. `guest`
 must be the same guest (by value) `batch` was built from, checked the same way `widom` checks
-it. `batch` must have been built with `fullk = true` (see `SystemState`'s docstring).
+it. `batch` must have been built with `fullk = true` (see `SystemState`'s docstring). `ff` is
+the force field `batch` was built from, needed to seed each system's `energy` with its total
+configuration energy (`total_energy`, `src/guest.jl`).
 
 Each guest's initial pose is drawn uniformly (position in the cell, orientation on SO(3)) and
 resampled until it clears `widom`'s hard-core rejection test at temperature `T` (K) against the
-host — see `initial_poses`; guest–guest overlap is not checked, since no guest–guest energy
-exists yet to make an overlap at construction merely improbable rather than incorrect. `seed`
-seeds both the placement draws and (via `splitmix64`) each chain's own RNG stream. `backend`
-runs the placement's rejection kernel (`CPU()` by default).
+host — see `initial_poses`; guest–guest overlap is not checked, since an overlapping placement
+only drives `total_energy` to a very large (or infinite) value here, not an error. `seed` seeds both the
+placement draws and (via `splitmix64`) each chain's own RNG stream. `backend` runs the
+placement's rejection kernel (`CPU()` by default).
 """
 function SystemState(
-        batch::FrameworkBatch{F}, guest::Guest{F, N}, ncounts::AbstractVector{<:Integer};
+        batch::FrameworkBatch{F}, guest::Guest{F, N}, ncounts::AbstractVector{<:Integer}, ff::ForceField{F};
         T, seed::Integer = 0, backend = CPU()
     ) where {F, N}
     (
@@ -256,5 +257,9 @@ function SystemState(
     rng_counter = zeros(UInt64, nsys)
     accepted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
-    return SystemState(guest_offsets, refpoints, quat, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted, nsys)
+    st = SystemState(guest_offsets, refpoints, quat, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted, nsys)
+    for n in 1:nsys
+        st.energy[n] = total_energy(batch, st, guest, ff, n)
+    end
+    return st
 end

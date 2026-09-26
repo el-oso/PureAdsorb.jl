@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-26T22:19:15.080",
+    "gpu": "",
+    "backend": "cpu",
+    "precision": "f64",
+    "nk": 4587,
+    "nguests": 50,
+    "nmoves": 65536,
+    "avg_neighbors": 367.79139709472656,
+    "cutoff": 12.0,
+    "ewald_cutoff": 12.0,
+    "bench_seconds": 20,
+    "bench_samples": 10,
+    "commit": "80ea256",
+    "description": "Per-move real-space (host-guest + guest-guest LJ/Ewald-real) vs reciprocal-space (running structure-factor ΔU) cost, RUBTAK 3x3x3 with 50 CO2 guests, 65536 independent move proposals per kernel launch."
+  },
+  "realspace_times_s": [
+    1.1769858260000001,
+    1.161835191,
+    1.159036294,
+    1.165991464,
+    1.162034451,
+    1.175609248,
+    1.166104963,
+    1.180719343,
+    1.1810424320000001,
+    1.1706269850000002
+  ],
+  "recip_times_s": [
+    4.566010755000001,
+    4.5279020800000005,
+    4.512949924,
+    4.616635758,
+    4.532030021000001
+  ],
+  "real_per_move_s": 1.782784994506836e-5,
+  "recip_per_move_s": 6.915329011535645e-5
+}

@@ -19,6 +19,7 @@ include("reference.jl")
 include("batch.jl")
 include("widom.jl")
 include("state.jl")
+include("rng.jl")
 include("guest.jl")
 include("audit.jl")
 

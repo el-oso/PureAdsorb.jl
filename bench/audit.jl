@@ -106,6 +106,23 @@ results = vcat(
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
+    # Device-side RNG (`src/rng.jl`): the counter-based generator every future move kernel draws
+    # from, both precisions and both integer widths its callers use.
+    signature_findings(PureAdsorb.mulhi64, (UInt64, UInt64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.ChainRNG, (UInt64, Int, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.next_bits, (PureAdsorb.ChainRNG,); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.unit_from_bits, (UInt64, Type{Float64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.unit_from_bits, (UInt64, Type{Float32}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_uniform, (PureAdsorb.ChainRNG, Type{Float64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_uniform, (PureAdsorb.ChainRNG, Type{Float32}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_range, (PureAdsorb.ChainRNG, Int64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_range, (PureAdsorb.ChainRNG, Int32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_normal, (PureAdsorb.ChainRNG, Type{Float64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_normal, (PureAdsorb.ChainRNG, Type{Float32}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.shoemake_quaternion, (Float64, Float64, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.shoemake_quaternion, (Float32, Float32, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_quaternion, (PureAdsorb.ChainRNG, Type{Float64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.rand_quaternion, (PureAdsorb.ChainRNG, Type{Float32}); guarantees = (:typestable, :noalloc)),
 )
 StrictMode.format_findings(stdout, results; format = :text)
 exit(StrictMode.nfailures(results))

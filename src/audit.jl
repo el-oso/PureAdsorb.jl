@@ -1,6 +1,14 @@
 # A wrong incremental `ΔU` still produces a plausible-looking Markov chain that silently samples
 # the wrong distribution; recomputing the total energy from scratch periodically and comparing
-# it against the value accumulated from accepted `ΔU`s is what catches that.
+# it against the value accumulated from accepted `ΔU`s is what catches that. But `total_energy`
+# itself reads the reciprocal term off the running `state.Sk`, and `ΔU_recip` is identically the
+# change in `Σ_k pref·|Sk|²` under `Sk ← Sk + ΔS` for ANY `ΔS` — so a `ΔS` with the wrong sign,
+# phase, or guest leaves the running `Sk` and the energy accumulated from it self-consistently
+# wrong, and a check against `total_energy` alone cannot see it. The fix is to audit `Sk` first,
+# against a quantity `total_energy` never touches: `Sk` rebuilt from the poses themselves
+# (`guest_site_positions_charges`, `structure_factor`, the same construction `SystemState` uses).
+# Only once that element-wise check passes — and `state.Sk` has been overwritten with the
+# rebuilt, pose-consistent value — is it sound to recompute the energy from it and check that.
 
 """
     energy_audit_tolerance(accumulated::F, recomputed::F, nmoves::Integer) -> F
@@ -17,21 +25,67 @@ vanishing when the energy itself is near zero (e.g. a lightly loaded system).
 energy_audit_tolerance(accumulated::F, recomputed::F, nmoves::Integer) where {F} = nmoves * eps(F) * max(abs(accumulated), abs(recomputed), one(F))
 
 """
-    audit_energy!(batch, state, guest, ff, n, nmoves; tol = nothing) -> nothing
+    sk_audit_tolerance(running::Complex{F}, rebuilt::Complex{F}, nmoves::Integer) -> F
 
-Recompute system `n`'s total energy from scratch (`total_energy`) and compare it against
-`state.energy[n]`, the running value accumulated from `nmoves` accepted `ΔU`s since it was last
-set exactly (construction, or the previous call to this function). Throws an `ArgumentError`
-naming the system, the accumulated value, the recomputed value and the discrepancy when they
-disagree by more than `tol` (default `energy_audit_tolerance`) — a fail-fast check, never a
-warning, since a discrepancy here means the running total no longer tracks the true energy of
-the configuration at all. On success, resets `state.energy[n]` to the freshly recomputed value,
-so rounding drift never compounds past what a single audit interval can introduce.
+Rounding-error tolerance for `audit_energy!`'s element-wise check on `state.Sk`: the same
+argument as `energy_audit_tolerance`, applied per k-vector. Each accepted move adds one `ΔS[i]`
+(`reciprocal_move_delta!`) to the running `Sk[i]`, so `nmoves` accepted moves accumulate the same
+worst-case forward error bound for recursive summation, `nmoves * eps(F) * magnitude`,
+`magnitude` the larger of the running and freshly rebuilt magnitude at that k-vector, floored at
+`one(F)` so a k-vector near cancellation still gets a nonzero tolerance.
+"""
+sk_audit_tolerance(running::Complex{F}, rebuilt::Complex{F}, nmoves::Integer) where {F} = nmoves * eps(F) * max(abs(running), abs(rebuilt), one(F))
+
+"""
+    audit_energy!(batch, state, guest, ff, n, nmoves; tol = nothing, sk_tol = nothing) -> nothing
+
+Audit system `n` in two stages, in this order.
+
+First, rebuild `state.Sk`'s slice for system `n` from the current poses alone
+(`guest_site_positions_charges`, `structure_factor` — the same construction `SystemState`'s
+constructor uses) and compare it element-wise against the running value. Throws an
+`ArgumentError` naming the system, the k-vector index, the running and rebuilt values and the
+discrepancy when any element disagrees by more than `sk_tol` (default `sk_audit_tolerance`).
+This is the check that actually exercises the structure-factor update: `total_energy`'s
+reciprocal term is a function of `Sk` alone, so a `ΔS` with the wrong sign, phase or guest leaves
+`state.energy` and a `total_energy` recomputed from the same corrupted `Sk` self-consistently
+equal, and a comparison that skipped this stage would pass regardless. On success, overwrites
+`state.Sk`'s slice with the rebuilt value, which also clears any Float32 rounding drift instead
+of merely detecting it.
+
+Only then recompute system `n`'s total energy from scratch (`total_energy`, now reading the
+just-rebuilt `Sk`) and compare it against `state.energy[n]`, the running value accumulated from
+`nmoves` accepted `ΔU`s since it was last set exactly (construction, or the previous call to this
+function). Throws an `ArgumentError` naming the system, the accumulated value, the recomputed
+value and the discrepancy when they disagree by more than `tol` (default
+`energy_audit_tolerance`). On success, resets `state.energy[n]` to the freshly recomputed value.
+
+Both stages are fail-fast, never a warning: a discrepancy at either one means the running state
+no longer tracks the true configuration.
 """
 function audit_energy!(
         batch::FrameworkBatch{F}, state::SystemState{F}, guest::Guest{F}, ff::ForceField{F}, n::Integer, nmoves::Integer;
-        tol::Union{Nothing, F} = nothing
+        tol::Union{Nothing, F} = nothing, sk_tol::Union{Nothing, F} = nothing
     ) where {F}
+    gr = guest_range(state, n)
+    kr = kvec_range(state, n)
+    sitepos, siteq = guest_site_positions_charges(guest, state.refpoints, state.orientations, gr)
+    rebuilt_Sk = view(batch.Shost, kr) .+ structure_factor(view(batch.ks, kr), sitepos, siteq)
+    for (offset, kidx) in enumerate(kr)
+        running = state.Sk[kidx]
+        rebuilt = rebuilt_Sk[offset]
+        τk = something(sk_tol, sk_audit_tolerance(running, rebuilt, nmoves))
+        discrepancy = abs(rebuilt - running)
+        discrepancy <= τk || throw(
+            ArgumentError(
+                "energy audit failed for system $n ($F): structure factor at k-vector $offset disagrees with the " *
+                    "poses: running=$running, rebuilt=$rebuilt, discrepancy=$discrepancy exceeds tolerance $τk " *
+                    "over $nmoves accepted move(s) since the last audit"
+            )
+        )
+    end
+    state.Sk[kr] .= rebuilt_Sk
+
     recomputed = total_energy(batch, state, guest, ff, n)
     accumulated = state.energy[n]
     τ = something(tol, energy_audit_tolerance(accumulated, recomputed, nmoves))

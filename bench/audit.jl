@@ -106,6 +106,8 @@ results = vcat(
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.sk_audit_tolerance, (ComplexF64, ComplexF64, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.sk_audit_tolerance, (ComplexF32, ComplexF32, Int); guarantees = (:typestable, :noalloc)),
     # Device-side RNG (`src/rng.jl`): the counter-based generator every future move kernel draws
     # from, both precisions and both integer widths its callers use.
     signature_findings(PureAdsorb.mulhi64, (UInt64, UInt64); guarantees = (:typestable, :noalloc)),

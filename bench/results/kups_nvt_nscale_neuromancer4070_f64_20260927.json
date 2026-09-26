@@ -1,0 +1,86 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "kups-jax",
+    "precision": "f64",
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "cpu_governor": "powersave",
+    "date": "2026-09-27T01:36:39+02:00",
+    "config": "N independent 50-CO2/30A-cubic-box systems, host/empty.cif, exchange_prob=0, num_warmup_cycles=0",
+    "num_cycles": 200,
+    "reps": 2
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 10000,
+      "times_s": [
+        29.006014719,
+        26.442713535
+      ]
+    },
+    {
+      "nsys": 2,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 20000,
+      "times_s": [
+        32.704981608,
+        34.287590192
+      ]
+    },
+    {
+      "nsys": 4,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 40000,
+      "times_s": [
+        54.184799835,
+        43.356510759
+      ]
+    },
+    {
+      "nsys": 8,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 80000,
+      "times_s": [
+        77.615753639,
+        63.748837024
+      ]
+    },
+    {
+      "nsys": 16,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 160000,
+      "times_s": [
+        119.487274044,
+        103.717806426
+      ]
+    },
+    {
+      "nsys": 32,
+      "num_cycles": 200,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 320000,
+      "times_s": [
+        200.875799155,
+        188.228012546
+      ]
+    }
+  ],
+  "first_failure": {
+    "nsys": 64,
+    "error": "W0927 01:36:31.839210  293591 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 10.49GiB (rounded to 11259549952)requested by op  jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 10.49GiB. "
+  }
+}

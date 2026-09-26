@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "kups-jax",
+    "precision": "f64",
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "cpu_governor": "powersave",
+    "date": "2026-09-27T01:14:29+02:00",
+    "config": "50 CO2, 30A cubic box, host/empty.cif, exchange_prob=0, num_warmup_cycles=0, nsys=1",
+    "num_cycles_csv": "2000,10000,20000",
+    "reps": 3
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "num_cycles": 2000,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 100000,
+      "times_s": [
+        63.961638944,
+        62.519158372,
+        61.780882516
+      ]
+    },
+    {
+      "nsys": 1,
+      "num_cycles": 10000,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 500000,
+      "times_s": [
+        219.703327461,
+        218.577788255,
+        219.098065663
+      ]
+    },
+    {
+      "nsys": 1,
+      "num_cycles": 20000,
+      "num_warmup_cycles": 0,
+      "cycle_length": 50,
+      "nmoves": 1000000,
+      "times_s": [
+        411.479544005,
+        413.417427362,
+        406.827678112
+      ]
+    }
+  ]
+}

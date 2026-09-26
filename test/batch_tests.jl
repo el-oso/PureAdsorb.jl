@@ -79,6 +79,49 @@ end
     @test all(i -> abs(Sh_full[i]) < 1.0e-9, dropped)
 end
 
+@testitem "fullk=true stores every k-vector kvectors enumerates, sparse a subset with nothing lost" begin
+    for T in (Float64, Float32)
+        fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T = T)
+        ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = T)
+        g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = T)
+        sc = replicate(fw, (3, 3, 3))
+        ewald = EwaldParams(cutoff = T(12), precision = T(1.0e-6))
+        b_sparse = FrameworkBatch([sc], ff, g, ewald)
+        b_full = FrameworkBatch([sc], ff, g, ewald; fullk = true)
+        @test b_sparse.fullk == false
+        @test b_full.fullk == true
+
+        α = PureAdsorb.ewald_alpha(ewald.cutoff, ewald.precision)
+        kmax = PureAdsorb.ewald_kmax(α, ewald.precision)
+        ks_enum, = PureAdsorb.kvectors(sc.cell, kmax)
+        @test b_full.ks == ks_enum
+        @test allunique(b_full.ks)
+        @test length(b_sparse.ks) < length(b_full.ks)
+        @test issubset(b_sparse.ks, b_full.ks)
+    end
+end
+
+@testitem "full-k S_host agrees with the sparse one on the coupled subset, both precisions" begin
+    for T in (Float64, Float32)
+        fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T = T)
+        ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = T)
+        g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = T)
+        sc = replicate(fw, (3, 3, 3))
+        ewald = EwaldParams(cutoff = T(12), precision = T(1.0e-6))
+        b_sparse = FrameworkBatch([sc], ff, g, ewald)
+        b_full = FrameworkBatch([sc], ff, g, ewald; fullk = true)
+
+        α = PureAdsorb.ewald_alpha(ewald.cutoff, ewald.precision)
+        kmax = PureAdsorb.ewald_kmax(α, ewald.precision)
+        _, _, _, coeffs = PureAdsorb.full_ktables(sc.cell, PureAdsorb.cartesian(sc), sc.charges, α, kmax)
+        coupled = [all(iszero, mod.(c, sc.replication)) for c in coeffs]
+        @test length(b_full.ks) == length(coeffs)
+        @test b_full.ks[coupled] == b_sparse.ks
+        @test b_full.kprefactor[coupled] == b_sparse.kprefactor
+        @test b_full.Shost[coupled] == b_sparse.Shost
+    end
+end
+
 @testitem "an unreplicated framework keeps every k-vector" begin
     using StaticArrays
     L = 30.0

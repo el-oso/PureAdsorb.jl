@@ -11,11 +11,16 @@ sorted by cell-list cell (see below), not CIF order. `cutoff` (Å) truncates the
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each system's replication: those
 whose integer reciprocal-lattice coefficients are all divisible by the corresponding
 replication factor, since only those repeat identically across the copies making up the
-supercell and so carry a nonzero host structure factor. A framework's `replication` is taken
-on trust everywhere else, so `FrameworkBatch` checks it: on a sample of up to 32 of the
-*uncoupled* k-vectors, the framework's own host structure factor must be negligible, or the
-framework's atoms are not actually the translational copies `replication` claims and
-`FrameworkBatch` throws rather than silently dropping k-vectors and shifting energies.
+supercell and so carry a nonzero host structure factor. This sparse table is exact only when
+the host itself never moves and is the only source of `S(k)` — Milestone A's case. `fullk`
+records whether this batch instead stores every k-vector `kvectors` enumerates for each
+system's stored cell: with mobile guests, a guest's own structure factor is nonzero at every
+k, not only the host-coupled subset, so both the guest–host and guest–guest reciprocal terms
+need the full table. A framework's `replication` is taken on trust everywhere else, so
+`FrameworkBatch` checks it: on a sample of up to 32 of the *uncoupled* k-vectors, the
+framework's own host structure factor must be negligible, or the framework's atoms are not
+actually the translational copies `replication` claims and `FrameworkBatch` throws rather than
+silently dropping k-vectors and shifting energies.
 `self_term_halfrange[n]` (energy units) is half the max-min spread, over 64 fixed guest
 orientations, of the guest self term `KE Σ_k pref_k |S_g(k)|²` taken over the FULL (unfiltered)
 k set of system `n`; its mean over those orientations is folded into `constant_offset[n]` in
@@ -84,6 +89,7 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     kmin::VT
     cutoff::T
     ewald_cutoff::T
+    fullk::Bool
     nsys::Int
 end
 Adapt.@adapt_structure FrameworkBatch
@@ -132,7 +138,7 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
 end
 
 """
-    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 2) -> FrameworkBatch
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 2, fullk = false) -> FrameworkBatch
 
 Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
 parameters across all of them. Each framework must already be replicated large enough that its
@@ -148,6 +154,13 @@ scanned before a stencil that spans less than the whole grid. The default, 2 Å,
 `(2, 3, 4)` measured for RUBTAK 3×3×3 + CO2 on an RTX 3050 (see the efficiency design spec's E3
 measurements): 4.8 ms (Float64) / 0.8 ms (Float32) for a 65,536-insertion phase-0 launch, against
 123–143 KB/framework across the swept widths.
+
+`fullk` selects which k-vectors `ks`/`kprefactor`/`Shost` keep: `false` (the default, and the
+only path Milestone A's `widom` uses) keeps only the subset coupled to each system's
+replication, as described above; `true` keeps every k-vector `kvectors` enumerates for the
+system's stored cell, needed once guests are mobile (see `FrameworkBatch`'s docstring). A
+neutral guest still builds no reciprocal-space table either way, since its structure factor is
+identically zero regardless of which k-vectors are kept.
 
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
@@ -166,7 +179,7 @@ cell) needs the per-insertion sum, which this batch does not provide. Throws if
 """
 function FrameworkBatch(
         fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T, N}, ewald::EwaldParams{T};
-        cellwidth = 2
+        cellwidth = 2, fullk::Bool = false
     ) where {T, N}
     rc = max(ff.cutoff, ewald.cutoff)
     r_guest = maximum(norm, guest.sites)
@@ -261,9 +274,10 @@ function FrameworkBatch(
         # and its self term is exactly zero at every orientation
         if !neutral_guest
             coupled = [all(iszero, mod.(c, fw.replication)) for c in coeffs]
-            append!(ks, kv_full[coupled])
-            append!(kprefactor, kpref_full[coupled])
-            append!(Shost, Sh_full[coupled])
+            sel = fullk ? Colon() : coupled
+            append!(ks, kv_full[sel])
+            append!(kprefactor, kpref_full[sel])
+            append!(Shost, Sh_full[sel])
             samples = Vector{T}(undef, 64)
             for o in eachindex(samples, self_quats)
                 q = self_quats[o]
@@ -334,6 +348,6 @@ function FrameworkBatch(
         ncells, cell_offsets, cellgrid_offsets,
         sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig,
         Vector{SVector{3, T}}(guest.sites), Vector{T}(guest.charges), bs, kmin,
-        ff.cutoff, ewald.cutoff, length(fws)
+        ff.cutoff, ewald.cutoff, fullk, length(fws)
     )
 end

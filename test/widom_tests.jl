@@ -177,7 +177,7 @@ end
         b.ncells, b.cell_offsets, b.cellgrid_offsets,
         b.sigma, b.epsilon, b.compact_to_orig, b.guest_types, b.guest_types_orig,
         b.guest_sites_orig, b.guest_charges_orig, b.bs, b.kmin,
-        b.cutoff, b.ewald_cutoff, b.nsys
+        b.cutoff, b.ewald_cutoff, b.fullk, b.nsys
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
 end

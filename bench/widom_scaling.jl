@@ -88,7 +88,7 @@ function tiled_batch(backend, b::FrameworkBatch{T}, n::Integer) where {T}
         adapt(backend, b.compact_to_orig), adapt(backend, b.guest_types), adapt(backend, b.guest_types_orig),
         adapt(backend, b.guest_sites_orig), adapt(backend, b.guest_charges_orig),
         rep(b.bs), tile(backend, b.kmin, n),
-        b.cutoff, b.ewald_cutoff, Int(n),
+        b.cutoff, b.ewald_cutoff, b.fullk, Int(n),
     )
 end
 
@@ -129,7 +129,7 @@ for nsys in nsys_grid
         fill(b1.constant_offset[1], nsys), fill(b1.self_term_halfrange[1], nsys),
         fill(b1.ncells[1], nsys), b1.cell_offsets, b1.cellgrid_offsets, b1.sigma, b1.epsilon,
         b1.compact_to_orig, b1.guest_types, b1.guest_types_orig, b1.guest_sites_orig, b1.guest_charges_orig,
-        fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, nsys,
+        fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, b1.fullk, nsys,
     )
     rho2, reach0, ntypes_ = PureAdsorb.build_rejection_tables(rb_batch, g_compact, kT)   # warm-up: compile
     rb_bm = @be PureAdsorb.build_rejection_tables($rb_batch, $g_compact, $kT) seconds = 10 samples = 5 evals = 1

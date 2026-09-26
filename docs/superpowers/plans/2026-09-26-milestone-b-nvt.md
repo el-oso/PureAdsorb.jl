@@ -720,3 +720,30 @@ ragged data padded to a fixed capacity and masked — which is why sixteen frame
 across sequential moves, a per-work-item early exit at the cutoff, ragged per-system loops
 without padding, a random number generator fused into the energy kernel, or Float32 at all.
 Those asymmetries, not out-tuning them at their own game, are where the advantage is.
+
+## Sixteen-bit storage for host positions — candidate, unmeasured
+
+Half-precision *arithmetic* is not viable here. Float16 carries about eleven mantissa bits, so
+roughly 1e-3 relative error; against `kT = 0.0257 eV` that is about 0.04 kT of error per move on
+a 1 eV energy, eight times the Float32 figure that already needs validating. The reciprocal sum
+is worse: 4,587 terms with heavy cancellation accumulated at 1e-3 per term is meaningless.
+BFloat16, with eight mantissa bits, is worse again.
+
+Float16 is also the wrong sixteen-bit format for positions: eleven bits across a 44 Å cell is
+0.02 Å, and Lennard-Jones goes as r^-12, so at a 3 Å contact that is an 8% energy error.
+
+**Sixteen-bit fixed point does work.** Host atom positions are rigid and bounded by the cell, so
+each coordinate can be stored as a 16-bit integer fraction of the cell vector: 65,536 levels over
+44 Å is 0.0007 Å, finer than the CIF's own coordinates. Decode to the working precision in the
+kernel; arithmetic is unchanged.
+
+The payoff is memory traffic, which is where the second-opinion review located the real limit
+(about 10,700 global loads per work-item). Halving the host position array halves the dominant
+stream and doubles what fits in L2 — and once the host is deduplicated to one copy per framework
+(item 2 of the ranked plan), cutting 143 KB to 72 KB makes L2 residency comfortable rather than
+marginal.
+
+Ordering: worth nothing until the workgroup rewrite makes the kernel throughput-bound instead of
+latency-bound, so it sits behind items 1 and 2. Deciding measurement: bytes moved per move and
+cost per move before and after, on the restructured kernel, plus energy agreement against the
+Float64 positions to the existing 1e-10 oracle tolerance.

@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f64",
+    "julia": "1.13.0",
+    "date": "2026-09-26T20:40:00+02:00",
+    "description": "Whole-process wall time (date +%s.%N around the julia invocation) of PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID=1:10000 PA_REPS=1 julia --project=bench/gpu bench/widom_bench.jl: Julia startup, package load, kernel compile, and one warm Chairmarks sample, stated the same way as kUPS's whole-process wall time for a fair fixed-cost comparison."
+  },
+  "times_s": [
+    16.821097208,
+    16.184633664,
+    15.579926990
+  ]
+}

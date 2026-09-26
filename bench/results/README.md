@@ -55,6 +55,17 @@ julia --project=bench bench/plot_widom.jl
 | neuromancer | NVIDIA GeForce RTX 3050 6GB | cuda | f32 | `pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json` |
 | brutus | — | cpu | f64 | `pureadsorb_widom_brutus_cpu_f64_20260924_97efb80.json` |
 | brutus | Apple M6 (12 GPU cores) | metal | f32 | `pureadsorb_widom_brutus_metal_f32_20260924_53f8e40.json` |
+| neuromancer4070 | NVIDIA GeForce RTX 4070 12GB | cuda | f64 | `pureadsorb_widom_neuromancer4070_cuda_f64_20260926_b26cb8a.json` |
+| neuromancer4070 | NVIDIA GeForce RTX 4070 12GB | cuda | f32 | `pureadsorb_widom_neuromancer4070_cuda_f32_20260926_b26cb8a.json` |
+
+The RTX 4070 above replaced the RTX 3050 in the same Thunderbolt/USB4 eGPU enclosure slot on
+`neuromancer` (see the "RTX 4070 eGPU link" section below). Its rows carry `PA_HOST=neuromancer4070`
+rather than the bare `neuromancer` the 3050 rows use, so the filename's host token — which this
+file's self-describing-JSON convention keeps equal to `meta.host` throughout — also names the
+card, without adding a new field to the naming scheme. `CUDA.jl` needed no special handling to
+pick up the 4070: `Pkg.instantiate()` under `bench/gpu` and `CUDA.versioninfo()` both ran clean
+on the first attempt (driver 615.71.09, CUDA runtime 13.3.0, `sm_89`, 11.66 GiB free of 11.99 GiB
+total), unlike the AMDGPU 2.7.0 compile failure noted for the R9700 below.
 
 The commit-suffixed files above are each the latest for their (host, backend, precision) series;
 every earlier file for the same series stays committed but is not otherwise referenced
@@ -199,6 +210,109 @@ since they are derived from the already-committed `pureadsorb_widom_brutus_cpu_f
 timings plus this script's own selective-term measurements, which are exact function calls, not
 samples needing a distribution).
 
+## RTX 4070 (`neuromancer4070`)
+
+The RTX 4070 (12 GB) replaced the RTX 3050 (6 GB) in the same USB4 eGPU enclosure slot on
+`neuromancer`. `bench/widom_bench.jl`'s own grid (nsys 1 and 64; ninsert 10^4, 10^5, 10^6) ran at
+commit `b26cb8a`:
+
+| file | precision |
+|---|---|
+| `pureadsorb_widom_neuromancer4070_cuda_f64_20260926_b26cb8a.json` | f64 |
+| `pureadsorb_widom_neuromancer4070_cuda_f32_20260926_b26cb8a.json` | f32 |
+
+Marginal insertion rate (`t = intercept + ninsert/rate`, OLS over the median time at each
+`ninsert`, same fit as `plot_headtohead.jl`), with residuals against the fitted line at each
+point (the three-point grid spans two decades, so a straight-line fit does not track every point
+exactly — the residuals below are reported rather than hidden):
+
+| precision | nsys | intercept (s) | marginal rate (insertions/s) |
+|---|---|---|---|
+| f64 | 1 | 0.0436 | 264,973 |
+| f64 | 64 | 0.0448 | 263,806 |
+| f32 | 1 | 0.0052 | 3,812,315 |
+| f32 | 64 | 0.0067 | 3,799,434 |
+
+| precision | nsys | ninsert | t_median (s) | residual (s, %) |
+|---|---|---|---|---|
+| f64 | 1 | 10^4 | 0.12455 | +0.0433 (34.7%) |
+| f64 | 1 | 10^5 | 0.37339 | -0.0476 (-12.7%) |
+| f64 | 1 | 10^6 | 3.82185 | +0.0043 (0.11%) |
+| f64 | 64 | 10^4 | 0.12683 | +0.0441 (34.8%) |
+| f64 | 64 | 10^5 | 0.37543 | -0.0485 (-12.9%) |
+| f64 | 64 | 10^6 | 3.83992 | +0.0044 (0.12%) |
+| f32 | 1 | 10^4 | 0.00995 | +0.0022 (21.6%) |
+| f32 | 1 | 10^5 | 0.02904 | -0.0024 (-8.1%) |
+| f32 | 1 | 10^6 | 0.26770 | +0.0002 (0.08%) |
+| f32 | 64 | 10^4 | 0.01184 | +0.0025 (21.0%) |
+| f32 | 64 | 10^5 | 0.03031 | -0.0027 (-9.0%) |
+| f32 | 64 | 10^6 | 0.27017 | +0.0002 (0.09%) |
+
+The residual pattern (large and positive at `ninsert=10^4`, negative at `10^5`, near zero at
+`10^6`) is consistent across both precisions and both `nsys` values: the two-decade `ninsert`
+span gives the largest point most of the leverage in the fit, so the line undershoots at the
+smallest point and overshoots at the middle one even though the fit is dominated by, and most
+accurate at, the largest point.
+
+### PCIe/USB4 link and host-device bandwidth
+
+The 4070 sits behind a USB4 (not PCIe-native) enclosure, so its effective host-device bandwidth
+is set by the tunnel, not by the card's own PCIe generation. Measured, not inferred:
+
+- **Topology** (`lspci -tv`): `...-01.2-[60-be]----00.0-[61-be]----00.0-[62-be]--+-00.0 NVIDIA
+  RTX 4070 (+00.1 audio)`. Both upstream bridges (`60:00.0`, `61:00.0`) are "ASMedia Technology
+  Inc. Device 2461" (an ASM2464-class USB4-to-PCIe bridge). `boltctl list` shows the enclosure as
+  an "ASMedia 246x" USB4 peripheral, authorized, `rx speed: 40 Gb/s = 2 lanes * 20 Gb/s`, `tx
+  speed` the same — the enclosure negotiates the 40 Gb/s USB4 mode, not 80 Gb/s. This is a
+  different bridge chip (ASMedia) than the Intel JHL7440 Titan Ridge documented earlier for the
+  3050's enclosure; per confirmation from the machine's owner both enclosures are USB4, so this
+  is an ASMedia-vs-Intel USB4-controller difference, not a USB4-vs-Thunderbolt one. **No
+  bandwidth measurement exists from the old (3050) enclosure**, so no enclosure-to-enclosure
+  comparison of measured GB/s is possible here — only the current enclosure's numbers below are
+  measured.
+- **PCIe link state**: idle, `nvidia-smi --query-gpu=pcie.link.gen.current,pcie.link.width.current`
+  reports `1, 4` (matches the card's idle power-saving state). `pcie.link.gen.max`/`width.max`
+  report `4, 16` (the card's own native capability, not the tunnel's). Sampled every 0.1 s during
+  a sustained transfer/kernel load (the bandwidth probe below, `utilization.gpu` up to 97%): the
+  link rose to `2, 4` transiently and reached `4, 4` at peak load — **generation rises with load,
+  width never exceeds 4 lanes** regardless of load, consistent with the USB4 tunnel provisioning
+  a fixed 4-lane-equivalent path.
+- **Host-device bandwidth** (`bench/gpu`'s `CUDA.jl`, `copyto!` + explicit `CUDA.synchronize()`
+  inside the timed region — pinned-memory `copyto!` calls return before the transfer completes
+  otherwise, which gave nonsense multi-TB/s readings before this was added; `BLAS.set_num_threads(1)`
+  pinned first), at the sizes `widom`'s own per-chunk transfers actually use (chunk = 65,536
+  insertions, ~40.5% rejected so ~39,007 survivors reach the phase-1 copies; computed from
+  `src/widom.jl`'s `_widom` loop, not assumed):
+
+  | transfer | size | pageable | pinned |
+  |---|---|---|---|
+  | H2D `dsys` (Int32×chunk) | 256 KiB | 1.43 GB/s | 1.47 GB/s |
+  | H2D `drpos` (3×F64×chunk) | 1.5 MiB | 1.46 GB/s | 1.56 GB/s |
+  | H2D `dquat` (4×F64×chunk) | 2 MiB | 1.47 GB/s | 3.76 GB/s |
+  | H2D `dsurvivor` (Int32×nsurv) | 152.4 KiB | 1.38 GB/s | 1.43 GB/s |
+  | D2H `dflags` (UInt8×chunk) | 64 KiB | 1.31 GB/s | 1.39 GB/s |
+  | D2H `dΔU` (F64×nsurv) | 304.6 KiB | 1.43 GB/s | 1.59 GB/s |
+  | 32 MiB reference (large-transfer asymptote) | 32 MiB | 3.77-3.78 GB/s | 3.80-3.82 GB/s |
+
+  Pinned buys almost nothing here even at 32 MiB (3.8 GB/s either way): the ceiling is the USB4
+  tunnel's own throughput (40 Gb/s ≈ 5 GB/s theoretical; ~3.8 GB/s measured is ~76% of that), not
+  host-side staging overhead, which is what pinned memory normally buys back on a native PCIe
+  slot.
+- **Is transfer a bottleneck?** Summing `widom`'s actual per-chunk pageable transfers: Float64
+  moves 4,088,136 B host-to-device + 377,488 B device-to-host per chunk (1.335 ms combined,
+  measured); Float32 moves 2,253,128 B + 221,512 B (0.757 ms combined). Against the kernel-only
+  phase0+phase1 time at `nsys=1` from the table above the same benchmark run also recorded
+  (242.4 ms f64, 12.45 ms f32): **transfer is 0.55% of kernel time at f64 and 6.1% at f32 — not
+  the bottleneck at either precision on this card.** It is a small piece of a larger per-chunk gap
+  between kernel-only time and the real end-to-end `widom()` time: scaling the `ninsert=10^6`
+  end-to-end median down to one chunk-equivalent gives a total non-kernel overhead of ~8.0 ms/chunk
+  at f64 (3.2% of ~250 ms) and ~5.10 ms/chunk at f32 (29% of ~17.5 ms) — substantial at f32, as
+  expected once the kernel itself gets this fast. But the measured transfer time above accounts
+  for only ~0.76 ms of that 5.10 ms (~15%); the remaining ~4.3 ms/chunk is not PCIe/USB4 transfer
+  and was not decomposed further here — the likely candidates are the host-side RNG pose
+  generation, the phase-0 survivor compaction loop, and the Boltzmann-weight accumulation loop
+  that `_widom` also runs per chunk, but this is unmeasured, not asserted.
+
 ## Batch-size scaling
 
 `bench/widom_scaling.jl` measures kernel throughput against the number of frameworks in one
@@ -281,6 +395,21 @@ Results:
 | `kups_widom_timing_neuromancer_f64_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
 | `pureadsorb_widom_headtohead_neuromancer_f64_nsys{1,4}_ninsert{10000,100000,1000000}_20260919.json` | 1, 4 | 10^4, 10^5, 10^6 |
 | `pureadsorb_widom_processcost_neuromancer_f64_20260919.json` | 1 | 10^4 (single point, whole-process cost only) |
+| `kups_widom_timing_neuromancer4070_f64_20260926.json` | 1, 8 | 10^4, 10^5, 10^6 |
+| `pureadsorb_widom_headtohead_neuromancer4070_f64_nsys{1,8}_ninsert{10000,100000,1000000}_20260926_{b26cb8a,7761a19}.json` | 1, 8 | 10^4, 10^5, 10^6 |
+| `pureadsorb_widom_processcost_neuromancer4070_f64_20260926.json` | 1 | 10^4 (single point, whole-process cost only) |
+
+The RTX 4070 files above use `nsys=8` in place of `nsys=4` (its own kUPS memory ceiling — see
+below — is twice the 3050's) and are otherwise the same case, grid and method. One file,
+`pureadsorb_widom_headtohead_neuromancer4070_f64_nsys8_ninsert1000000_20260926_7761a19.json`,
+carries commit `7761a19` rather than `b26cb8a`: another agent committed an unrelated
+`docs/specs/` design-note file to this branch while the (multi-hour) head-to-head run was in
+progress, moving `HEAD` mid-run. That commit did not touch `src/` or `bench/`, so the code under
+test did not change; the filename simply records `HEAD` accurately at the moment that one file
+was written. `bench/run_headtohead.sh` was also fixed here to read the GPU name from
+`nvidia-smi` and to honor a `PA_HOST` override instead of hardcoding `"NVIDIA GeForce RTX 3050"`
+and `$(hostname)`, which had been silently mislabeling the `meta.gpu`/`meta.host` fields (fine
+while only one GPU had ever run this script; wrong the moment a second one did).
 
 `docs/src/benchmarks.md`'s current comparison reuses `kups_widom_timing_neuromancer_f64_20260919.json`
 (kUPS does not change between the two) against a later, separately run PureAdsorb series —
@@ -306,6 +435,26 @@ jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to al
 succeeds and is the batched point used above. PureAdsorb runs `nsys=64` without difficulty (see
 `pureadsorb_widom_neuromancer_cuda_f64_20260919.json`); the constraint is specific to kUPS's
 batched-state memory footprint on this card.
+
+### RTX 4070 (`neuromancer4070`, 12 GB): the ceiling rises to `nsys=8`
+
+Testing powers of two by hand at `ninsert=10000` the same way as above: `nsys ∈ {1, 2, 4, 8}` all
+complete their one requested cycle (confirmed by the `1/1` progress line and the harmless-only
+exit-1 signature below, not just a nonzero exit code). `nsys=16` fails during state construction,
+before any cycle is logged, with
+
+```
+jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 10.08GiB.
+```
+
+— the identical allocation size the 3050 reported at the same `nsys=16` above, since the batched
+state size depends only on the case and `nsys`, not the card; only the available headroom
+differs. `nsys=32` and `64` were not tested, per instructions to stop at the first genuine
+failure. **The 4070's larger memory doubles kUPS's usable batch from 4 to 8** — 10.08 GiB
+exceeding 12 GB of *effectively usable* memory even though it is less than the card's raw 12 GB
+is consistent with JAX/XLA's own allocator overhead and pool fragmentation (the log's own
+suggestion, `TF_GPU_ALLOCATOR=cuda_malloc_async`, points at exactly this), but that mechanism was
+not independently verified here.
 
 ### A `num_cycles=1` kUPS run exits 1, harmlessly
 
@@ -362,17 +511,68 @@ one warm sample, 3 repetitions:
 | kUPS (JAX) | ≈16.9–18.5 (regression intercept) | Python/JAX startup, XLA compilation |
 | PureAdsorb (CUDA) | ≈13.2–13.4 (whole-process wall time) | Julia startup, package load, kernel compile |
 
+### RTX 4070: marginal throughput
+
+Same method, `nsys ∈ {1, 8}` (8 being kUPS's own ceiling on this card), verified real by the same
+three checks as every kUPS point in this file: exit status, the harmless-only `OverflowError`
+signature, and a `1/1` completed-cycle line in every one of the 36 logs this run wrote
+(`bench/results/logs/kups_nsys{1,8}_ninsert{10000,100000,1000000}_{warmup,rep1..5}_20260926.log`,
+not committed) — zero `RESOURCE_EXHAUSTED` occurrences across all 36:
+
+| code | nsys | intercept (s) | marginal rate (insertions/s) | residuals (s, % of t_median) |
+|---|---|---|---|---|
+| kUPS (JAX) | 1 | 17.20 | 3,589 | 10^4: +0.49 (2.4%); 10^5: -0.54 (-1.2%); 10^6: +0.05 (0.02%) |
+| kUPS (JAX) | 8 | 20.49 | 10,942 | 10^4: -0.04 (-0.2%); 10^5: +0.05 (0.2%); 10^6: -0.004 (0.00%) |
+| PureAdsorb (CUDA f64, warm in-process) | 1 | 0.044 | 263,818 | 10^4: +0.044 (34.8%); 10^5: -0.048 (-12.9%); 10^6: +0.004 (0.11%) |
+| PureAdsorb (CUDA f64, warm in-process) | 8 | 0.045 | 263,169 | 10^4: +0.042 (33.7%); 10^5: -0.047 (-12.3%); 10^6: +0.004 (0.11%) |
+
+kUPS's residuals are tiny (≤2.4%) — its whole-process time is close to perfectly linear in
+`ninsert`, as expected once its own ~17-20 s fixed cost dominates the small end and its per-
+insertion rate dominates the large end evenly. PureAdsorb's larger relative residuals at
+`ninsert=10^4` repeat the same non-linearity already seen in its own three-point grid above (a
+two-decade span gives the largest point most of the fit's leverage); its intercept is two orders
+of magnitude smaller than kUPS's, consistent with "warm in-process" against kUPS's whole-process
+Python/JAX startup and compilation cost.
+
+Ratio (PureAdsorb marginal / kUPS marginal, same precision — both float64): **73.5×** at nsys=1,
+**24.1×** at kUPS's max batch (nsys=8; comparing against PureAdsorb's own nsys=8 fit above, not
+its nsys=64 one, so the ratio is apples-to-apples in nsys as well as precision). Using
+PureAdsorb's ordinary nsys=64 numbers from the "RTX 4070" section above against kUPS's nsys=8 (as
+the original nsys=4-vs-64 table above does) gives the same ratio to within 0.2% (24.11× vs
+24.05×), since PureAdsorb's own marginal rate barely depends on `nsys`.
+
+### RTX 4070: fixed cost per process
+
+Same method as the 3050 above:
+`PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID=1:10000 PA_REPS=1 PA_HOST=neuromancer4070 julia
+--project=bench/gpu bench/widom_bench.jl`, 3 repetitions:
+`pureadsorb_widom_processcost_neuromancer4070_f64_20260926.json` — 16.82 s, 16.18 s, 15.58 s
+(median 16.18 s). This one-off wall-clock measurement reuses the same `nsys=1, ninsert=10000`
+`PA_GRID` point the interleaved head-to-head run also writes to; the 5-sample head-to-head file
+for that point was saved and restored around these 3 single-sample runs so neither measurement
+overwrote the other's committed JSON.
+
+| code | fixed cost per process (s) | what it includes |
+|---|---|---|
+| kUPS (JAX) | ≈17.2–20.5 (regression intercept) | Python/JAX startup, XLA compilation |
+| PureAdsorb (CUDA) | ≈15.6–16.8 (whole-process wall time) | Julia startup, package load, kernel compile |
+
 ### Caveats
 
-- Single card, Thunderbolt eGPU enclosure (see the Machines section above), neuromancer's CPU
-  clock unpinned.
+- Single card, USB4 eGPU enclosure (see the Machines section and "RTX 4070 eGPU link" above),
+  neuromancer's CPU clock unpinned.
 - Float64 on a GeForce card: double-precision throughput is throttled relative to a datacenter
   part (see the Precision/Machines notes above); this affects both codes equally since both run
   float64 here.
 - kUPS forces float64 (`jax_enable_x64=True`) and was not run in float32 for this comparison;
-  PureAdsorb's float32 numbers are `pureadsorb_widom_neuromancer_cuda_f32_20260919.json`.
+  PureAdsorb's float32 numbers are `pureadsorb_widom_neuromancer_cuda_f32_20260919.json` (3050)
+  and `pureadsorb_widom_neuromancer4070_cuda_f32_20260926_b26cb8a.json` (4070).
 - `bench/run_headtohead.sh` sets the CPU governor to `performance` when writable; on this host
-  it was not (`powersave` throughout, recorded in each kUPS JSON's `meta.cpu_governor`).
+  it was not (`powersave` throughout, recorded in each kUPS JSON's `meta.cpu_governor`), for both
+  the 3050 and 4070 runs.
+- No host-device bandwidth or PCIe-link measurement exists from the 3050's enclosure, so the
+  4070's numbers in "RTX 4070 eGPU link" above cannot be compared enclosure-to-enclosure, only
+  reported on their own.
 
 `plot_widom.jl` regenerates `widom_throughput.png` from the committed JSON only (no benchmark
 runs); its kUPS series is plotted as the marginal rate above (`ninsert / (t - intercept)`), not

@@ -52,7 +52,12 @@ else
     echo "CPU governor not writable without sudo; staying at '$GOVERNOR' (recorded in meta)"
 fi
 
-KUPS_OUT="$HERE/results/kups_widom_timing_$(hostname)_f64_${DATE}.json"
+# PA_HOST distinguishes multiple GPUs on the same physical host in result filenames (e.g.
+# "neuromancer4070" vs "neuromancer" for an earlier card in the same eGPU enclosure slot),
+# matching widom_bench.jl's own PA_HOST convention; it defaults to the bare hostname.
+HOST="${PA_HOST:-$(hostname)}"
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo unknown)"
+KUPS_OUT="$HERE/results/kups_widom_timing_${HOST}_f64_${DATE}.json"
 KUPS_COMMIT="$(git -C "$KUPS" rev-parse HEAD)"
 JAX_VERSION="$(cd "$KUPS" && JULIA_GUARD=off uv run python -c 'import jax; print(jax.__version__)')"
 
@@ -117,7 +122,7 @@ for point in $GRID; do
     kups_samples+=("{\"nsys\":$nsys,\"ninsert\":$ninsert,\"backend\":\"kups-jax\",\"times_s\":$times_json}")
 
     echo "== PureAdsorb CUDA f64: nsys=$nsys ninsert=$ninsert =="
-    ( cd "$REPO" && PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID="$nsys:$ninsert" PA_REPS="$REPS" \
+    ( cd "$REPO" && PA_BACKEND=cuda PA_PRECISION=f64 PA_GRID="$nsys:$ninsert" PA_REPS="$REPS" PA_HOST="$HOST" \
         julia --project=bench/gpu bench/widom_bench.jl )
 done
 
@@ -133,7 +138,7 @@ else
 fi
 
 jq -n \
-    --arg host "$(hostname)" --arg gpu "NVIDIA GeForce RTX 3050" --arg backend "kups-jax" \
+    --arg host "$HOST" --arg gpu "$GPU_NAME" --arg backend "kups-jax" \
     --arg precision "f64" --arg jax "$JAX_VERSION" --arg kups_commit "$KUPS_COMMIT" \
     --arg governor "$GOVERNOR" --arg date "$(date -Iseconds)" --arg grid "$GRID" --argjson reps "$REPS" \
     --argjson prior "$prior_samples_json" --argjson new "$new_samples_json" \

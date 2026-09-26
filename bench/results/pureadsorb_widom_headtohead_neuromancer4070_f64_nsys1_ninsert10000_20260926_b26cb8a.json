@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "julia": "1.13.0",
+    "date": "2026-09-26T19:30:52.069",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f64",
+    "nthreads": 16,
+    "nsys_grid": [
+      1
+    ],
+    "ninsert_grid": [
+      10000
+    ],
+    "bench_seconds": 300,
+    "bench_samples": 5,
+    "kernel_chunk": 65536,
+    "cellwidth": 2.0,
+    "commit": "b26cb8a",
+    "batch_construction_s": 0.16635903700000002
+  },
+  "samples": [
+    {
+      "nsys": 1,
+      "ninsert": 10000,
+      "backend": "cuda",
+      "times_s": [
+        0.126421841,
+        0.126063706,
+        0.12592524400000002,
+        0.12614355600000002,
+        0.15532671
+      ]
+    }
+  ],
+  "kernel_only_s": []
+}

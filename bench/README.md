@@ -12,5 +12,6 @@ GPU throughput benchmarking (`widom_bench.jl` with `PA_BACKEND=cuda`/`rocm`) run
 
 `run_kups.sh` and `run_headtohead.sh` document how the kUPS reference numbers and head-to-head
 timings in `bench/results/` were produced, from a kUPS checkout outside this repo. Neither
-script is called by PureAdsorb or by any test. The head-to-head batches at `nsys = 4`, not 64:
-see `bench/results/README.md` for why.
+script is called by PureAdsorb or by any test. The head-to-head batches at kUPS's own memory
+ceiling, not 64 (`nsys = 4` on the RTX 3050, `nsys = 8` on the RTX 4070): see
+`bench/results/README.md` for why.

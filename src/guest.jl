@@ -186,6 +186,22 @@ function total_reciprocal_energy(kprefactor, Sk, Shost)
     return T(KE) * acc
 end
 
+# One k-vector's structure-factor change and its (unweighted, unscaled by `KE`) contribution to
+# `ΔU_recip`, given the guest's already-rotated old/new site positions (`guest_sites_at`):
+# shared by `reciprocal_move_delta!` and `reciprocal_move_delta_energy`, which differ only in
+# whether the per-k `ΔS` is kept.
+@inline function _reciprocal_move_delta_k(
+        k::SVector{3, T}, charges::SVector{N, T}, old_sites::SVector{N, SVector{3, T}}, new_sites::SVector{N, SVector{3, T}}, Sk_i::Complex{T}
+    ) where {N, T}
+    Sold = zero(Complex{T}); Snew = zero(Complex{T})
+    for s in 1:N
+        Sold += charges[s] * cis(dot(k, old_sites[s]))
+        Snew += charges[s] * cis(dot(k, new_sites[s]))
+    end
+    ds = Snew - Sold
+    return ds, 2 * real(conj(Sk_i) * ds) + abs2(ds)
+end
+
 """
     reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, ks, kprefactor, Sk) -> ΔU_recip
 
@@ -203,17 +219,13 @@ function reciprocal_move_delta!(
         ΔS, guest::Guest{T, N}, oldpos::SVector{3, T}, oldq::SVector{4, T}, newpos::SVector{3, T}, newq::SVector{4, T},
         ks, kprefactor, Sk
     ) where {T, N}
+    old_sites = guest_sites_at(guest, oldpos, oldq)
+    new_sites = guest_sites_at(guest, newpos, newq)
     ΔU = zero(T)
     for i in eachindex(ks)
-        k = ks[i]
-        Sold = zero(Complex{T}); Snew = zero(Complex{T})
-        for s in 1:N
-            Sold += guest.charges[s] * cis(dot(k, oldpos + rotate(oldq, guest.sites[s])))
-            Snew += guest.charges[s] * cis(dot(k, newpos + rotate(newq, guest.sites[s])))
-        end
-        ds = Snew - Sold
+        ds, contribution = _reciprocal_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Sk[i])
         ΔS[i] = ds
-        ΔU += kprefactor[i] * (2 * real(conj(Sk[i]) * ds) + abs2(ds))
+        ΔU += kprefactor[i] * contribution
     end
     return T(KE) * ΔU
 end
@@ -224,16 +236,12 @@ function reciprocal_move_delta_energy(
         guest::Guest{T, N}, oldpos::SVector{3, T}, oldq::SVector{4, T}, newpos::SVector{3, T}, newq::SVector{4, T},
         ks, kprefactor, Sk
     ) where {T, N}
+    old_sites = guest_sites_at(guest, oldpos, oldq)
+    new_sites = guest_sites_at(guest, newpos, newq)
     ΔU = zero(T)
     for i in eachindex(ks)
-        k = ks[i]
-        Sold = zero(Complex{T}); Snew = zero(Complex{T})
-        for s in 1:N
-            Sold += guest.charges[s] * cis(dot(k, oldpos + rotate(oldq, guest.sites[s])))
-            Snew += guest.charges[s] * cis(dot(k, newpos + rotate(newq, guest.sites[s])))
-        end
-        ds = Snew - Sold
-        ΔU += kprefactor[i] * (2 * real(conj(Sk[i]) * ds) + abs2(ds))
+        _, contribution = _reciprocal_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Sk[i])
+        ΔU += kprefactor[i] * contribution
     end
     return T(KE) * ΔU
 end

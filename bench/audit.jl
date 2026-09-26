@@ -98,6 +98,14 @@ results = vcat(
     signature_findings(PureAdsorb.guest_guest_move_delta, guest_guest_move_delta_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.reciprocal_move_delta_energy, reciprocal_move_delta_energy_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.reciprocal_move_delta_energy, reciprocal_move_delta_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(
+        PureAdsorb._reciprocal_move_delta_k, (SVector{3, Float64}, SVector{3, Float64}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, ComplexF64);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb._reciprocal_move_delta_k, (SVector{3, Float32}, SVector{3, Float32}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, ComplexF32);
+        guarantees = (:typestable, :noalloc)
+    ),
     signature_findings(PureAdsorb.reciprocal_move_delta!, reciprocal_move_delta_bang_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.reciprocal_move_delta!, reciprocal_move_delta_bang_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.guest_sites_at, guest_sites_at_types(Float64); guarantees = (:typestable, :noalloc)),

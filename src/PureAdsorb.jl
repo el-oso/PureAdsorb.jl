@@ -20,6 +20,7 @@ include("batch.jl")
 include("widom.jl")
 include("state.jl")
 include("guest.jl")
+include("audit.jl")
 
 export Framework, read_cif, replicate, ForceField, read_forcefield, Guest, read_guest,
     EwaldParams, FrameworkBatch, widom, WidomResult, SystemState

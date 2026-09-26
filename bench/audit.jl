@@ -104,6 +104,8 @@ results = vcat(
     signature_findings(PureAdsorb.guest_sites_at, guest_sites_at_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.energy_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.energy_audit_tolerance, (Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
 )
 StrictMode.format_findings(stdout, results; format = :text)
 exit(StrictMode.nfailures(results))

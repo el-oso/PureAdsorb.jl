@@ -26,8 +26,8 @@ constructor requires it.
 
 `energy` is a per-system running total, set at construction to `total_energy(batch, state,
 guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incrementally from
-accepted moves thereafter, checked periodically against a from-scratch recomputation (the
-energy audit).
+accepted moves thereafter, checked periodically against a from-scratch recomputation
+(`audit_energy!`).
 
 `rng_seed`/`rng_counter` are a per-chain seed (mixed from the constructor's `seed` and the
 chain's system index via `splitmix64`, so distinct chains from one `seed` get distinct,

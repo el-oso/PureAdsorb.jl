@@ -26,10 +26,26 @@ insertion_energy_types(::Type{T}) where {T} = (
 )
 const M3 = SMatrix{3, 3, Float64, 9}
 
-# Phase-0 kernel (`hardcore_kernel!`) callees not already covered by `insertion_energy`'s own
-# (`rotate`, `minimum_image`): the cell-list stencil and per-site home-cell primitives that only
-# phase 0 uses, since `insertion_energy` (phase 1) loops linearly over the system's atoms.
+# `SystemState`'s field types for a concrete precision, matching exactly what `SystemState`'s
+# own constructor produces (`src/state.jl`), for auditing its accessors without building a real
+# batch and state just to call `typeof` on them.
+systemstate_type(::Type{T}) where {T} = PureAdsorb.SystemState{
+    T, Vector{SVector{3, T}}, Vector{SVector{4, T}}, Vector{Int32}, Vector{Complex{T}}, Vector{T}, Vector{UInt64}, Vector{SVector{3, Int32}},
+}
+
+# `SystemState`'s accessors, which index into device arrays inside future kernels, and its
+# per-chain seed mix.
 results = vcat(
+    signature_findings(PureAdsorb.guest_range, (systemstate_type(Float64), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.guest_range, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.kvec_range, (systemstate_type(Float64), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.kvec_range, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.nguests, (systemstate_type(Float64), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.nguests, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.splitmix64, (UInt64, UInt64); guarantees = (:typestable, :noalloc)),
+    # Phase-0 kernel (`hardcore_kernel!`) callees not already covered by `insertion_energy`'s own
+    # (`rotate`, `minimum_image`): the cell-list stencil and per-site home-cell primitives that
+    # only phase 0 uses, since `insertion_energy` (phase 1) loops linearly over the system's atoms.
     signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.insertion_energy, insertion_energy_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.minimum_image, (M3, M3, SVector{3, Float64}); guarantees = (:typestable, :noalloc)),

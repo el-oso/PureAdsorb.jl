@@ -110,6 +110,30 @@ end
     end
 end
 
+@testitem "SystemState seeds a per-guest host-energy cache matching each guest's pose" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [3, 2], ff; T = 298.15, seed = 5)
+    N = length(g.sites)
+    guest_types = SVector{N, Int}(b.guest_types)
+    guest_compact = PureAdsorb.Guest{Float64, N}(g.sites, guest_types, g.charges, g.tc, g.pc, g.omega)
+    for n in 1:2
+        a0 = b.atom_offsets[n]; natoms = b.atom_offsets[n + 1] - a0
+        A = b.cells[n]; invA = b.invcells[n]; alpha = b.alphas[n]
+        for i in PureAdsorb.guest_range(st, n)
+            expected = PureAdsorb.host_guest_realspace_energy(
+                st.refpoints[i], st.orientations[i], guest_compact, b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff,
+                b.positions, b.types, b.charges, a0, natoms, A, invA, alpha
+            )
+            @test st.host_energy[i] == expected
+        end
+    end
+end
+
 @testitem "SystemState construction is reproducible for a fixed seed, independent runs" begin
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))

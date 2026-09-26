@@ -29,6 +29,16 @@ guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incr
 accepted moves thereafter, checked periodically against a from-scratch recomputation
 (`audit_energy!`).
 
+`host_energy` is a per-guest cache of guest `i`'s own host-guest real-space energy
+(`host_guest_realspace_energy`), index-matched to `refpoints`/`orientations`. The host is rigid,
+so that energy is a function of guest `i`'s own pose alone and is invalidated only by guest `i`'s
+own move: `guest_move_delta` (`src/guest.jl`) reads it instead of recomputing the guest's old
+host energy from scratch, halving a move's host scan, and returns the freshly computed new value
+for the caller to write back on acceptance — left untouched on rejection, since the pose did not
+change. `total_energy` never reads this cache; it recomputes every guest's host energy from
+poses, so a `host_energy` entry that falls out of step with the actual poses still shows up as a
+running total that no longer matches `total_energy`, caught by `audit_energy!`.
+
 `rng_seed`/`rng_counter` are a per-chain seed (mixed from the constructor's `seed` and the
 chain's system index via `splitmix64`, so distinct chains from one `seed` get distinct,
 reproducible values) and a per-chain draw counter, starting at zero: together they are the
@@ -48,6 +58,7 @@ struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM}
     k_offsets::VI
     Sk::VS
     energy::VE
+    host_energy::VE
     rng_seed::VU
     rng_counter::VU
     accepted::VM
@@ -57,21 +68,24 @@ end
 Adapt.@adapt_structure SystemState
 
 function SystemState(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted,
-        nsys
+        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
+        attempted, nsys
     )
     F = eltype(energy)
-    return SystemState{F}(guest_offsets, refpoints, orientations, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted, nsys)
+    return SystemState{F}(
+        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
+        attempted, nsys
+    )
 end
 
 function SystemState{F}(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted,
-        nsys
+        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
+        attempted, nsys
     ) where {F}
     return SystemState{
         F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed), typeof(accepted),
     }(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted, Int(nsys)
+        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys)
     )
 end
 
@@ -252,12 +266,29 @@ function SystemState(
         Sk[kr] .+= structure_factor(view(batch.ks, kr), sitepos, siteq)
     end
 
+    guest_types_c = SVector{N, Int}(batch.guest_types)
+    guest_compact = Guest{F, N}(guest.sites, guest_types_c, guest.charges, guest.tc, guest.pc, guest.omega)
+    host_energy = Vector{F}(undef, ntot)
+    for n in 1:nsys
+        a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
+        A = batch.cells[n]; invA = batch.invcells[n]; alpha = batch.alphas[n]
+        for i in (guest_offsets[n] + 1):guest_offsets[n + 1]
+            host_energy[i] = host_guest_realspace_energy(
+                refpoints[i], quat[i], guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
+                batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
+            )
+        end
+    end
+
     energy = zeros(F, nsys)
     rng_seed = [splitmix64(UInt64(seed), UInt64(n)) for n in 1:nsys]
     rng_counter = zeros(UInt64, nsys)
     accepted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
-    st = SystemState(guest_offsets, refpoints, quat, k_offsets, Sk, energy, rng_seed, rng_counter, accepted, attempted, nsys)
+    st = SystemState(
+        guest_offsets, refpoints, quat, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted, attempted,
+        nsys
+    )
     for n in 1:nsys
         st.energy[n] = total_energy(batch, st, guest, ff, n)
     end

@@ -302,15 +302,25 @@ total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T}, f
     [total_energy(batch, state, guest, ff, n) for n in 1:batch.nsys]
 
 """
-    guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS) -> ΔU
+    guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS) -> (ΔU, host_energy_new)
 
 Total energy change from moving guest `i` (a global index into `state.refpoints`/
 `state.orientations`) of system `n` to pose `(newpos, newq)`, writing the k-indexed
 structure-factor change into `ΔS` (`reciprocal_move_delta!`; apply it to `state.Sk` on
-acceptance). Equal, to accumulated rounding, to the difference of two `total_energy` calls
+acceptance) and returning guest `i`'s freshly computed host-guest real-space energy at the new
+pose. `ΔU` is equal, to accumulated rounding, to the difference of two `total_energy` calls
 before and after applying the move — the per-guest constant terms (tail correction, self energy,
 exclusion, net charge) do not depend on any pose and so are absent here, exactly as they cancel
 in that difference.
+
+Reads guest `i`'s OLD host-guest energy from `state.host_energy[i]` (`SystemState`'s per-guest
+cache) instead of recomputing it, since the host is rigid and that value is still correct as long
+as guest `i` has not moved since it was last written — halving the host scan a move needs against
+recomputing both poses from scratch. `host_energy_new` is the caller's to apply, on the same
+acceptance-conditional basis as `ΔS`: write it into `state.host_energy[i]` on acceptance, leave
+the cache untouched on rejection. `total_energy` never reads `host_energy`, so a caller that fails
+to keep the cache in step with the poses still gets caught by `audit_energy!`, which recomputes
+every guest's host energy from poses alone.
 """
 function guest_move_delta(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, n::Integer, i::Integer,
@@ -322,10 +332,7 @@ function guest_move_delta(
     guest_types = SVector{N, Int}(batch.guest_types)
     guest_compact = Guest{T, N}(guest.sites, guest_types, guest.charges, guest.tc, guest.pc, guest.omega)
 
-    e_old = host_guest_realspace_energy(
-        oldpos, oldq, guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
-        batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
-    )
+    e_old = state.host_energy[i]
     e_new = host_guest_realspace_energy(
         newpos, newq, guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
@@ -337,7 +344,7 @@ function guest_move_delta(
     )
     kr = kvec_range(state, n)
     ΔU_recip = reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, kr), view(batch.kprefactor, kr), view(state.Sk, kr))
-    return (e_new - e_old) + ΔU_gg + ΔU_recip
+    return (e_new - e_old) + ΔU_gg + ΔU_recip, e_new
 end
 
 # Real-space (LJ + Ewald) move ΔU for a batch of independent proposals, one work-item per

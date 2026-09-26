@@ -19,7 +19,7 @@
             oldpos = state.refpoints[i]
             newpos = oldpos + SVector{3, F}(randn(rng, F, 3))
             newq = normalize(SVector{4, F}(rand(rng, F, 4) .- F(0.5)))
-            ΔU = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS)
+            ΔU, host_energy_new = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS)
             accept = ΔU <= zero(F) || rand(rng) < exp(-Float64(ΔU) / Float64(kT))
             if accept
                 naccept += 1
@@ -27,6 +27,7 @@
                 state.refpoints[i] = newpos
                 state.orientations[i] = newq
                 state.Sk[kr] .+= ΔS
+                state.host_energy[i] = host_energy_new
                 state.energy[n] += ΔU
             end
         end
@@ -117,7 +118,7 @@ end
         oldpos = state.refpoints[i]; oldq = state.orientations[i]
         kr = PureAdsorb.kvec_range(state, n)
         ΔS_true = zeros(Complex{F}, length(kr))
-        ΔU_true = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS_true)
+        ΔU_true, host_energy_new = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS_true)
         ΔU_recip_true = PureAdsorb.reciprocal_move_delta!(
             zeros(Complex{F}, length(kr)), guest, oldpos, oldq, newpos, newq,
             view(batch.ks, kr), view(batch.kprefactor, kr), view(state.Sk, kr)
@@ -131,6 +132,7 @@ end
         # and `Sk` now disagree, but `Sk` and `state.energy` stay self-consistent with each other.
         state.refpoints[i] = newpos
         state.orientations[i] = newq
+        state.host_energy[i] = host_energy_new
         state.Sk[kr] .+= ΔS_wrong
         state.energy[n] += (ΔU_true - ΔU_recip_true) + ΔU_recip_wrong
         return nothing
@@ -200,7 +202,7 @@ end
         oldpos = state.refpoints[i]; oldq = state.orientations[i]
         kr = PureAdsorb.kvec_range(state, n)
         ΔS_true = zeros(Complex{F}, length(kr))
-        ΔU_true = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS_true)
+        ΔU_true, host_energy_new = PureAdsorb.guest_move_delta(batch, state, guest, n, i, newpos, newq, ΔS_true)
         ΔU_recip_true = PureAdsorb.reciprocal_move_delta!(
             zeros(Complex{F}, length(kr)), guest, oldpos, oldq, newpos, newq,
             view(batch.ks, kr), view(batch.kprefactor, kr), view(state.Sk, kr)
@@ -213,6 +215,7 @@ end
         )
         state.refpoints[i] = newpos
         state.orientations[i] = newq
+        state.host_energy[i] = host_energy_new
         state.Sk[kr] .+= ΔS_phase
         state.energy[n] += (ΔU_true - ΔU_recip_true) + ΔU_recip_phase
         return nothing
@@ -236,7 +239,7 @@ end
         )
         oldpos_j = state.refpoints[j]; oldq_j = state.orientations[j]
         ΔS_j_true = zeros(Complex{F}, length(kr))
-        ΔU_true_j = PureAdsorb.guest_move_delta(batch, state, guest, n, j, newpos_j, newq_j, ΔS_j_true)
+        ΔU_true_j, host_energy_new_j = PureAdsorb.guest_move_delta(batch, state, guest, n, j, newpos_j, newq_j, ΔS_j_true)
         ΔU_recip_true_j = PureAdsorb.reciprocal_move_delta!(
             zeros(Complex{F}, length(kr)), guest, oldpos_j, oldq_j, newpos_j, newq_j,
             view(batch.ks, kr), view(batch.kprefactor, kr), view(state.Sk, kr)
@@ -245,6 +248,7 @@ end
         # Guest i's pose is left untouched; only guest j's actually moves.
         state.refpoints[j] = newpos_j
         state.orientations[j] = newq_j
+        state.host_energy[j] = host_energy_new_j
         state.Sk[kr] .+= ΔS_i
         state.energy[n] += ΔU_realspace_j + ΔU_recip_i
         return nothing
@@ -341,6 +345,38 @@ end
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
     @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
+end
+
+@testitem "audit_energy! catches a stale host-energy cache entry" begin
+    using Random, StaticArrays, LinearAlgebra
+    # `guest_move_delta` never mutates `state.host_energy` itself; a caller that reads a move's
+    # returned new value but forgets to write it back (or writes a wrong one) leaves the cache
+    # out of step with the guest's actual pose. `total_energy` never reads the cache, so the next
+    # move computed from that guest folds a wrong `ΔU` into the running total, caught here.
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald; fullk = true)
+    st = PureAdsorb.SystemState(b, g, [6], ff; T = 298.15, seed = 21)
+    n = 1
+    i = first(PureAdsorb.guest_range(st, n))
+    st.host_energy[i] += 1.0   # stale by 1 eV, far above any rounding tolerance
+
+    rng = Xoshiro(7)
+    kr = PureAdsorb.kvec_range(st, n)
+    ΔS = zeros(ComplexF64, length(kr))
+    newpos = st.refpoints[i] + SVector{3, Float64}(randn(rng, 3))
+    newq = normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
+    ΔU, host_energy_new = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
+    st.refpoints[i] = newpos
+    st.orientations[i] = newq
+    st.Sk[kr] .+= ΔS
+    st.host_energy[i] = host_energy_new   # the cache is fixed going forward...
+    st.energy[n] += ΔU                    # ...but the running energy already absorbed the stale ΔU
+
+    @test_throws "energy audit failed" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
 @testitem "energy_audit_tolerance scales with nmoves and precision" begin

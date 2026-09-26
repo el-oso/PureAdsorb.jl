@@ -181,7 +181,7 @@ end
         else   # reinsertion: fresh uniform position and orientation
             b.cells[n] * SVector{3, Float64}(rand(rng, 3)), normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
         end
-        ΔU = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
+        ΔU, = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
         st2 = deepcopy(st)
         st2.refpoints[i] = newpos
         st2.orientations[i] = newq
@@ -218,7 +218,7 @@ end
         oldpos = st.refpoints[i]; oldq = st.orientations[i]
         newpos = oldpos + SVector{3, Float32}(randn(rng, Float32, 3))
         newq = normalize(SVector{4, Float32}(rand(rng, Float32, 4) .- 0.5f0))
-        ΔU = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
+        ΔU, = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
         st2 = deepcopy(st)
         st2.refpoints[i] = newpos
         st2.orientations[i] = newq

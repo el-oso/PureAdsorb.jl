@@ -472,3 +472,57 @@ Genuinely unresolved, not just under-read: §6, whether kUPS's key-threading is 
 reproducible independent of batch size, is a property of JAX's PRNG internals that kUPS's own
 source neither states nor tests — do not assume it without an independent check against JAX's
 documented semantics (or verify empirically).
+
+## Rulings on the task 1 findings
+
+**R1 — the Ewald exclusion is not a contradiction; keep ours.** Both codes are correct and give
+the same total, because the exclusion term must match whatever the real-space sum did. kUPS
+includes intramolecular pairs in its real-space sum at `erfc(αr)/r` and subtracts the full
+`q_i q_j / r`; PureAdsorb omits them from the real-space sum and subtracts only the reciprocal
+sum's leftover `q_i q_j erf(αr)/r`. Since `erf = 1 − erfc` identically, `erf(αr)/r` and
+`(1 − erfc(αr))/r` are the same number, and the two schemes differ only in bookkeeping. This
+pairing is already implemented and documented (`src/ewald.jl:174-176`, `docs/src/theory.md:219`).
+The equivalence does require every intramolecular distance to lie inside the real-space cutoff
+(1.16 Å against 12 Å for CO2); **add an assertion** rather than leaving it as an assumption.
+
+**R2 — tail correction scales as N², superseding spec §3.1.** kUPS uses `N²`, which is also the
+standard mean-field form: the correction integrates a uniform pair density beyond the cutoff, and
+that counts `N²` rather than the exact pair count `N(N−1)/2`. The difference is 2% at `N = 50`,
+large enough to show up in a comparison. Use `N²` and say so in the docstring.
+
+**R3 — adopt kUPS's proposal shapes, superseding spec §2.2's table.** Translation displacements
+are Gaussian, not uniform in a cube; rotations are a uniform random quaternion raised to a
+fractional power, not a small perturbation of a fixed form. Both are symmetric, so the acceptance
+rule is unchanged and the spec's *requirement* (symmetry, verified) stands. Matching their shapes
+keeps acceptance rates comparable, which makes a disagreement easier to localize.
+
+**R4 — we adapt step sizes during warmup only, and freeze for production. This is a deliberate
+divergence from "reproduces kUPS" and needs the owner's sign-off.** kUPS's scheduler targets 50%
+acceptance and never stops: the same compiled propagator runs in warmup and production and writes
+back an updated step width on every call. Adapting from the chain's own history without ever
+freezing means the chain is not exactly reversible and does not exactly sample the target
+distribution. The bias is usually small and shrinks as the step width settles, but it is real, and
+this project prefers an exact result to a matching one. Freezing after warmup costs nothing here
+because we compare equilibrium averages, not trajectories.
+
+**R5 — the milestone's headline combination has no kUPS counterpart; validate it in pieces.**
+kUPS ships no configuration that runs N-guest NVT and Widom together: its Widom entry point uses
+a different config class from the one that runs the NVT example, and the only Widom example has
+`N = 0`. So the comparison splits:
+- B1 compares the *chain*, through the mean energy of 50 CO2 in the empty box, which is a direct
+  test of guest–guest Lennard-Jones and Ewald with no host contribution at all;
+- B0 compares the *estimator*, exactly, against Milestone A, which is already validated against
+  kUPS;
+- what neither covers is the test particle seeing the other guests. That piece gets a
+  brute-force reference (direct lattice sum at a large cutoff) rather than a kUPS comparison.
+State this limit in the docs rather than implying the whole milestone was cross-validated.
+
+**R6 — build our RNG so the question in §6 does not arise.** Use explicit counter-based
+per-chain streams keyed by (seed, chain index, cycle, move index). That is reproducible
+independent of batch size and chunking by construction, so nothing depends on resolving how
+JAX's threefry behaves across shapes.
+
+**R7 — test the overlap case explicitly.** kUPS has no designed branch for a non-finite or
+zero-probability proposal; rejection of an overlapping insertion falls out of IEEE-754 comparison
+semantics. Relying on that by accident is exactly the kind of thing this project does not do: add
+a test that a proposal with infinite energy is rejected, and make the code path deliberate.

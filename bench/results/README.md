@@ -771,3 +771,29 @@ CPU, so per-item cost is set by the work itself regardless of how many independe
 launch. This is a useful cross-check, not a competing production path: CPU cost per move at any
 chain count (~380 us) is already far above even the GPU's un-saturated `nsys=1` regime's
 steady-state trend, let alone its `nsys=4096` figure (78.3 us).
+
+## kUPS NVT (canonical Monte Carlo) throughput
+
+`bench/run_kups_nvt.sh` runs kUPS's shipped `examples/nvt_co2_pressure_test.yaml` case as a
+reference stopwatch: 50 CO2 in a 30 Å cubic box whose only host site is non-interacting
+(`host/empty.cif`), `exchange_prob: 0`. Two modes, `timing` and `nscale`. One cycle repeats the
+propagator `max(particle_count, min_cycle_length)` times, so with 50 guests and
+`min_cycle_length: 1` a cycle is 50 move attempts per system; total attempts are
+`nsys × num_cycles × 50`, confirmed against the HDF5 output.
+
+RTX 4070, Float64, kUPS commit `e183c9a`:
+
+| File | Result |
+|---|---|
+| `kups_nvt_timing_neuromancer4070_f64_20260927.json` | 2,580 moves/s at one system, intercept 24.3 s, fit residuals under 1% |
+| `kups_nvt_nscale_neuromancer4070_f64_20260927.json` | cost per move for 1–32 systems; 64 systems fails with `RESOURCE_EXHAUSTED` at 10.49 GiB |
+
+Batching does not help kUPS. Once the 24.3 s startup is removed, aggregate throughput at 32
+systems is about 1,880 moves/s — lower than at a single system — so **2,580 moves/s is their peak
+on this card**, and 32 systems is their ceiling for this case.
+
+The runs do real work: acceptance rates are 54.6% translation, 70.7% rotation and 38.2%
+reinsertion, and per-system acceptance differs at fixed seed, confirming independent chains.
+
+Caveat: our own GPU tests ran during the `nscale` sweep, and repeat spread there is 6–20%. The
+single-system fit was clean and is unaffected.

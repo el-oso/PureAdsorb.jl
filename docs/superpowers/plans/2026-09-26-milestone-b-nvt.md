@@ -637,3 +637,86 @@ the visit-versus-pair split is measured on the move kernel specifically.
 3. *Chain sweep.* Sweep the number of systems with one chain each and a private `Sk` per chain,
    reporting cost per move against chain count. This is the production shape, and the number it
    produces decides whether any of the kernel work is worth doing.
+
+## Second-opinion review, 2026-09-27 — corrections and the ranked plan
+
+An independent review read the source, the kUPS source and every measurement. It corrected two
+things this plan asserts and found two structural defects nobody had looked for.
+
+### Correction to spec §3.2 — E1's sparsity is only half lost
+
+The design says guests force the full k-vector set because their structure factors are nonzero
+everywhere. That is right for the guest–guest term `|S_g|²` and **wrong for the host–guest cross
+term**, which is `2·Re(conj(S_host)·ΔS)` and still vanishes wherever `S_host` does. The two
+therefore split:
+
+- host–guest cross term: the 190 replication-coupled k-vectors, at the host's `α`, exactly as
+  Milestone A already does;
+- guest–guest: its own Ewald sum at its own `α_gg`, whose real-space cutoff may run out to half
+  the supercell's perpendicular length (about 17.5 Å here against 12 Å), so `k_max` and hence
+  `n_k` shrink with it — roughly 1,480 k-vectors.
+
+Net k-work per move: about 1,670 against 4,587, a factor of 2.7, changing no physics. The
+cross term of two charge sets splits exactly under Ewald with no self term; the self, exclusion
+and net-charge terms attach to the guest–guest sum at `α_gg`.
+
+### Defect 1 — the host is stored once per system
+
+`FrameworkBatch` recomputes and stores `Shost`, the orientation-averaged self term, the hard-core
+bound and `kmin` for every system, even when every system holds the same framework. At 4,096
+systems that is 4,096 identical copies: about 586 MB on the device and fourteen million `cis`
+evaluations per system at build time. This is the whole of the 0.18 s per system build cost.
+A `framework_of` indirection with a per-framework memoized build takes the build from 756 s to
+seconds and the device footprint to 143 KB, which is small enough to stay in L2 where every
+workgroup reads it.
+
+### Defect 2 — Float64 on a GeForce is a hardware mismatch, and the CPU sweep never ran threaded
+
+An RTX 4070 delivers roughly 0.46 TFLOPS of double precision; this laptop's CPU delivers about
+0.6. The measured CPU aggregate already matches or beats the GPU at every chain count. The flat
+CPU curve in the chain sweep (367–382 ns/move from 1 to 1,024 systems) is the signature of the
+KernelAbstractions CPU backend running the whole sweep in one workgroup — **the CPU has never
+been measured threaded on the chain shape**, so that row is not yet evidence of anything.
+
+Direction: Float64 on the threaded CPU backend, Float32 on the GPU. The open question is whether
+Float32 rounding in `ΔU` biases acceptance; the estimate is about 0.005 kT per move, which the
+B1 comparison of `⟨U⟩` in Float32 against Float64 will settle.
+
+### The curve's shape was diagnostic and nobody read it
+
+Cost per move that keeps falling without plateauing is the signature of a latency-bound kernel,
+not of insufficient work. The throughput floor for this move is about 0.15 µs; 8.24 µs at 4,096
+chains is fifty times off it, and 5.79 ms at one chain is four orders off. Both are the same
+defect.
+
+### Ranked plan
+
+| # | Item | Physics | Expected | Deciding measurement |
+|---|---|---|---|---|
+| 0 | Measure kUPS NVT at one system | — | sets the target | µs per move |
+| 1 | Workgroup per move, strided atoms and k, `@localmem` tree reduction | exact | 5.79 ms → 10–30 µs at one chain; 8.24 → 1–2 µs at 4,096 | chain sweep rerun |
+| 2 | `framework_of` indirection, per-framework memoized build | exact | build 756 s → seconds; host bytes ÷4,096 | `t_build`, bytes, 4,096-chain cost |
+| 3 | Float64 on the threaded CPU, Float32 on GPU | exact | CPU ~50 µs/move aggregate | CPU sweep with real threading; Float32 vs Float64 `⟨U⟩` in σ |
+| 4 | Split `Sk`: host at 190 k, guest–guest at `α_gg` | exact to precision | k-work 2.7× | lattice-sum reference at 1e-10 |
+| 5 | Factorized phase tables replacing `cis` | exact | 2–3× on the reciprocal term | swap methodology; `ΔU_recip` agreement |
+| 6 | Persistent chains, `Sk` in registers, several moves per launch | exact | removes per-move launch and sync | empty-kernel launch cost first |
+| 7 | Unit-cell energy grids, tricubic, clamped wall | **changes the energy model — gated** | host term → ~0 | grid-vs-exact over 10⁵ poses; μ_ex shift in σ |
+| 8 | Per-voxel image list (exact fallback to 7) | exact | re-measure first | visit-vs-pair on the new kernel |
+
+Rejected: multiple-try Metropolis (preserves the distribution but buys effective samples, not
+throughput, and only when the device is already idle); waste recycling (a variance lever, not a
+throughput one); rejection-free and n-fold-way methods (need a finite event set, which continuous
+rigid-body moves do not have); event-chain Monte Carlo (exact and better-mixing, but inherently
+sequential and its Ewald treatment is a research project).
+
+**Every share measured so far — the `cis` fraction, the visit-versus-pair split — was measured on
+the kernel item 1 replaces. Re-derive them on the new kernel; do not carry them forward.**
+
+### Where a durable advantage lives
+
+Each stage of a kUPS move is a separate kernel and a separate round trip through memory, with
+ragged data padded to a fixed capacity and masked — which is why sixteen frameworks attempt a
+10 GiB allocation. A traced array language cannot express chain state resident in registers
+across sequential moves, a per-work-item early exit at the cutoff, ragged per-system loops
+without padding, a random number generator fused into the energy kernel, or Float32 at all.
+Those asymmetries, not out-tuning them at their own game, are where the advantage is.

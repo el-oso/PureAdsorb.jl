@@ -1,9 +1,9 @@
 # PureAdsorb.jl Milestone B (NVT Monte Carlo) Implementation Plan
 
 Design: `docs/superpowers/specs/2026-09-26-milestone-b-nvt.md` (approved 2026-09-26).
-Status: draft. One change to the approved design needs sign-off before task 1 starts.
+Status: approved 2026-09-26, including the change to the validation target recorded below.
 
-## Change to the approved design — needs approval
+## Change to the approved design — approved
 
 The design names kUPS `examples/mcmc_widom.yaml` as the validation target. **That example sets
 `init_adsorbates: [0]`.** It runs Widom insertion into an empty framework, which is Milestone A;

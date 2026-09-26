@@ -569,3 +569,71 @@ JAX's threefry behaves across shapes.
 zero-probability proposal; rejection of an overlapping insertion falls out of IEEE-754 comparison
 semantics. Relying on that by accident is exactly the kind of thing this project does not do: add
 a test that a proposal with infinite energy is rejected, and make the code path deliberate.
+
+## Measured: the reciprocal sum does not dominate on GPU
+
+`bench/results/pureadsorb_guestmove_*_20260926_80ea256.json`, RUBTAK 3×3×3 with 50 CO2,
+`nk = 4587`, 65,536 move proposals per launch:
+
+| Backend | Precision | Real-space (ns/move) | Reciprocal (ns/move) | Reciprocal share |
+|---|---|---|---|---|
+| RTX 4070 | Float32 | 733 | 364 | 33% |
+| RTX 4070 | Float64 | 11,149 | 6,806 | 38% |
+| CPU | Float64 | 17,828 | 69,153 | 79% |
+
+**This refutes the amendment's premise on the backend production runs on.** Real space is roughly
+twice the reciprocal sum on the GPU; only on the CPU does the reciprocal term dominate. The
+Amdahl ceilings follow directly: a reciprocal sum reduced to zero cost buys 1.50× (Float32) and
+1.61× (Float64) on the GPU. Every Ewald-side lever, α included, is bidding for that ceiling, so
+lever 1 of the amendment is demoted to last.
+
+**Caveat on the measurement itself.** It uses a batch of ONE framework with 65,536 independent
+proposals sharing a single `Sk`, which is an L1 broadcast, not a chain. It therefore measures
+kernel cost at full occupancy — what roughly sixty-five thousand concurrent chains would see —
+and says nothing about a realistic batch. The ratio is sound because both kernels were measured
+the same way; the absolute numbers are not the production figure.
+
+## Rulings from the throughput design panel (2026-09-26)
+
+A read-only panel of seventeen agents (four readers, four designs, eight adversarial judges, one
+synthesis) examined the measurement above. Its findings, ruled on:
+
+**P1 — the energy audit is blind to the error it exists to catch. Fix before anything else.**
+`audit_energy!` compares the running energy against `total_energy`, but `total_energy` draws its
+reciprocal term from the same running `Sk`. Since `ΔU_recip` is identically the change in
+`Σ_k pref·|Sk|²` under `Sk ← Sk + ΔS` for *any* `ΔS`, a `ΔS` with the wrong sign, phase or guest
+leaves both quantities self-consistently wrong and the audit passes. The task 8 test that caught
+a "corrupted ΔU" perturbed a scalar, not a structure factor. The audit must rebuild `Sk` from the
+poses, compare element-wise, **overwrite** `state.Sk`, and only then recompute the energy and
+reset `state.energy` — in that order, or it certifies a value derived from the thing under test.
+Overwriting also removes Float32 drift rather than merely detecting it.
+
+**P2 — a per-guest host-energy cache is an unconditional win, about 1.45×.** The host is rigid,
+so guest `i`'s host interaction depends only on its own pose and is invalidated only by its own
+move; a move then scans the host once instead of twice. Host–guest work is about 97% of the
+real-space outer loop (2 poses × 3078 atoms × 3 sites, against 2 × 49 × 9 for guest–guest). It is
+exact arithmetic on an exact identity, and self-checking, because `total_energy` recomputes from
+poses and never reads the cache.
+
+**P3 — hoist the rotations out of the k-loop.** `reciprocal_move_delta!` and
+`reciprocal_move_delta_energy` call `rotate` inside `for i in eachindex(ks)`, where
+`host_guest_realspace_energy` hoists it. LLVM very likely does this already, but "very likely" is
+not a measurement, and it contaminates every reciprocal number until settled.
+
+**P4 — a neighbour list is worth about 1.18×, not 4×, and is not approved.** Only 368 of 3078
+atoms fall inside the cutoff, which looks like an 8.4× redundancy, but a min-image visit costs
+about 42 ps against 519 ps for an in-cutoff pair, so removing visits removes little. A cell list
+is dead outright by geometry: the supercell is 36.1 Å across against a 12 Å cutoff, so
+cutoff-sized cells give a 3×3×3 grid whose stencil is the whole box. Do not build either until
+the visit-versus-pair split is measured on the move kernel specifically.
+
+**P5 — three measurements gate task 5, and none of them is optional.**
+1. *Transcendental fraction.* In a bench-local copy, replace `cis(x)` with a deliberately wrong
+   `Complex(1 − x²/2, x)` of comparable cost and re-run. The ratio is the sincos fraction. Run it
+   after P3 or it measures unhoisted rotations.
+2. *Visit versus pair.* Decompose the move kernel's real-space half by setting the Ewald cutoff,
+   then both cutoffs, near zero and differencing. This decides P4. The existing E2b shares come
+   from an insertion kernel on a different card and must not be borrowed.
+3. *Chain sweep.* Sweep the number of systems with one chain each and a private `Sk` per chain,
+   reporting cost per move against chain count. This is the production shape, and the number it
+   produces decides whether any of the kernel work is worth doing.

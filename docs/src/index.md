@@ -55,9 +55,10 @@ res[1].K_H, res[1].mu_ex, res[1].q_st, res[1].K_H_err
 
 | Host | Hardware | Backend |
 |---|---|---|
-| neuromancer | CPU | KernelAbstractions CPU backend |
+| any | CPU | KernelAbstractions CPU backend |
 | galen | AMD Radeon AI PRO R9700 (ROCm) | AMDGPU.jl |
-| neuromancer | NVIDIA GeForce RTX 3050 6 GB (Thunderbolt eGPU) | CUDA.jl |
+| neuromancer | NVIDIA GeForce RTX 4070 12 GB (USB4 eGPU) | CUDA.jl |
+| brutus | Apple M6 (Metal, Float32 only — Apple GPUs have no double precision) | Metal.jl |
 
 See [Theory](theory.md) for the physics, [Design](design.md) for the architecture,
 [Validation](validation.md) for the test oracles and the kUPS comparison, and

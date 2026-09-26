@@ -147,6 +147,49 @@ within combined statistical error, reported as a number of combined standard err
 Measure the reciprocal-versus-real-space split **before** proposing any optimization. Benchmark
 on the 4070 and the R9700, save JSON, and extend the docs with the theory and the results.
 
+## Amendment — throughput is a requirement, not an outcome (owner, 2026-09-26)
+
+Milestone B is judged on moves per second as well as on correctness. This is a change in kind:
+the plan as written measured cost at task 10 and left optimization to a later stage. It does not
+license guessing — measurement still precedes design — but it does mean the cost measurement
+moves early and the structure is chosen with the measurement in hand.
+
+**The dominant cost is known by construction.** A move changes one guest, so the real-space work
+touches only its neighbors, while the reciprocal update touches every k-vector:
+`ΔU_recip = Σ_k pref_k (2 Re[conj(S) ΔS] + |ΔS|²)`. At 4587 k-vectors against roughly 360
+neighbors inside the cutoff, the reciprocal sum is expected to dominate a move outright. That
+expectation is a hypothesis, not a finding, and task 3 must measure the split before task 5
+commits to a kernel structure.
+
+**Consequent changes to the task order:**
+- Task 3 gains a requirement: measure per-move reciprocal cost against real-space cost, both
+  precisions, on the 4070 and the R9700, and record it in `bench/results/`. This measurement,
+  not task 10's, is what the design responds to.
+- Task 5 must not be designed until that number exists.
+
+**Levers, in the order they should be considered.** None is approved; each needs its own
+measurement and, where it changes the physics, the owner's sign-off.
+1. **Choose α to minimize total work.** The Ewald splitting parameter trades real-space against
+   reciprocal work at fixed accuracy: raising α shrinks the real-space cutoff's reach and grows
+   `n_k`, lowering it does the reverse. kUPS picks α from a closed form in the real cutoff and
+   the precision, with no reference to cost. We are free to pick the α that minimizes *our*
+   measured cost at the same accuracy, which is a legitimate optimization and changes no physics.
+   This is the first thing to try because it is free and principled.
+2. **Amortize the launch.** Several moves per chain per kernel launch, which is sound because
+   moves within a chain are sequential anyway and the batch is what provides parallelism.
+3. **Exploit the structure of ΔS.** For a translation, the phase factors of the moved guest's
+   sites change by a common factor per k-vector; for a rotation, the reference point is
+   unchanged. Whether either admits a cheaper update than recomputing the guest's structure
+   factor is a question for the measurement, not for assertion here.
+4. **A different electrostatics scheme** (Wolf or damped shifted force) would make guest–guest
+   electrostatics O(N) with no reciprocal sum at all. It changes the physics and therefore breaks
+   exact comparability with kUPS, so it belongs in the design's Milestone D as an accelerator
+   gated by measurement, never as a silent substitution.
+
+**What throughput does not license.** Not `@inbounds` without a measurement and a bounds-checked
+test; not dropping the energy audit; not weakening the validation ladder. A fast chain that
+samples the wrong distribution is worth nothing, and the audit is what tells the two apart.
+
 ## Open questions carried from the design
 
 - Whether Float32 is sound for a long chain; the energy audit answers it.

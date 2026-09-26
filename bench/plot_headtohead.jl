@@ -1,5 +1,5 @@
 # Draws bench/results/widom_vs_kups.png: marginal insertion rate, kUPS vs PureAdsorb, on the
-# same RTX 3050 — no benchmark runs here, only the three committed JSON files named below.
+# same RTX 4070 eGPU — no benchmark runs here, only the committed JSON files named below.
 # PA_PLOT_OUT overrides the output path, e.g. to write the docs copy:
 #   PA_PLOT_OUT=docs/src/assets/widom_vs_kups.png julia --project=bench bench/plot_headtohead.jl
 #
@@ -30,14 +30,36 @@ function rates_by_nsys(path)
     return out
 end
 
-kups = rates_by_nsys(joinpath(resultsdir, "kups_widom_timing_neuromancer_f64_20260919.json"))
-pa_f64 = rates_by_nsys(joinpath(resultsdir, "pureadsorb_widom_neuromancer_cuda_f64_20260920_e903fac.json"))
-pa_f32 = rates_by_nsys(joinpath(resultsdir, "pureadsorb_widom_neuromancer_cuda_f32_20260920_e903fac.json"))
+# Each head-to-head file holds one (nsys, ninsert) point (5 reps); combine the three ninsert
+# points for a given nsys into one fit, the same way as rates_by_nsys above.
+function rate_from_points(paths)
+    ninsert = Float64[]
+    t = Float64[]
+    for path in paths
+        s = only(JSON.parsefile(path)["samples"])
+        push!(ninsert, s["ninsert"])
+        push!(t, median(Float64.(s["times_s"])))
+    end
+    return fit_rate(ninsert, t)
+end
+
+kups = rates_by_nsys(joinpath(resultsdir, "kups_widom_timing_neuromancer4070_f64_20260926.json"))
+pa_f64 = rates_by_nsys(joinpath(resultsdir, "pureadsorb_widom_neuromancer4070_cuda_f64_20260926_b26cb8a.json"))
+pa_f32 = rates_by_nsys(joinpath(resultsdir, "pureadsorb_widom_neuromancer4070_cuda_f32_20260926_b26cb8a.json"))
+pa_f64_1fw_ht = rate_from_points(
+    joinpath.(
+        resultsdir, [
+            "pureadsorb_widom_headtohead_neuromancer4070_f64_nsys1_ninsert10000_20260926_b26cb8a.json",
+            "pureadsorb_widom_headtohead_neuromancer4070_f64_nsys1_ninsert100000_20260926_b26cb8a.json",
+            "pureadsorb_widom_headtohead_neuromancer4070_f64_nsys1_ninsert1000000_20260926_b26cb8a.json",
+        ]
+    )
+)
 
 bars = [
     ("kUPS Float64, 1 fw", kups[1], :kups),
-    ("kUPS Float64, 4 fw", kups[4], :kups),
-    ("PureAdsorb Float64, 1 fw", pa_f64[1], :pa64),
+    ("kUPS Float64, 8 fw", kups[8], :kups),
+    ("PureAdsorb Float64, 1 fw", pa_f64_1fw_ht, :pa64),
     ("PureAdsorb Float64, 64 fw", pa_f64[64], :pa64),
     ("PureAdsorb Float32, 1 fw", pa_f32[1], :pa32),
     ("PureAdsorb Float32, 64 fw", pa_f32[64], :pa32),
@@ -48,7 +70,7 @@ colors = Dict(:kups => Makie.wong_colors()[6], :pa64 => Makie.wong_colors()[1], 
 fig = Figure(size = (800, 420))
 ax = Axis(
     fig[1, 1]; xlabel = "marginal insertions / s (OLS fit)", xscale = log10,
-    yticks = (eachindex(bars), first.(bars)), title = "Widom marginal insertion rate: PureAdsorb vs kUPS, RTX 3050"
+    yticks = (eachindex(bars), first.(bars)), title = "Widom marginal insertion rate: PureAdsorb vs kUPS, RTX 4070"
 )
 rates = [b[2] for b in bars]
 barplot!(ax, eachindex(bars), rates; direction = :x, color = [colors[b[3]] for b in bars])

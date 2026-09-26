@@ -642,3 +642,132 @@ anything on the reciprocal side, and should profile before choosing between them
   applied yet.
 - `avg_neighbors` uses the LJ/Ewald cutoff jointly (`max(cutoff, ewald_cutoff)`), not the two
   cutoffs separately, so it is an upper bound on either individual neighbor count.
+
+## Rotation hoist and the three throughput-panel measurements (P3, P5)
+
+Three measurements the throughput design panel required before task 5 designs a move kernel
+(P5.1-P5.3), run after hoisting the guest-site rotation out of the reciprocal k-loop (P3,
+`src/guest.jl`). The hoist itself is measured first, since P5.1 must run after it or it measures
+unhoisted rotations.
+
+### P3 — the rotation hoist was not already done by LLVM
+
+`reciprocal_move_delta!`/`reciprocal_move_delta_energy` called `rotate(oldq/newq, guest.sites[s])`
+inside the k-loop; `host_guest_realspace_energy` already hoisted the analogous computation.
+Measured single-CPU-call `reciprocal_move_delta_energy` (RUBTAK 3x3x3 + 50 CO2, `Chairmarks.@be`,
+`seconds=8`), before and after hoisting into a shared `guest_sites_at` call plus a new
+`_reciprocal_move_delta_k` helper (same session, so before/after share the same compiled
+environment):
+
+| Precision | Before (median) | After (median) | Speedup |
+|---|---|---|---|
+| Float64 | 604.8 us | 265.5 us | **2.28x** |
+| Float32 | 550.7 us | 213.9 us | **2.57x** |
+
+LLVM had NOT already hoisted this — the plan's own "LLVM very likely does this already" was
+wrong for this kernel, by a wide margin. Bit-identical output was verified against a literal,
+un-hoisted reimplementation of the formula before trusting the benchmark. Not saved as a
+`bench/results/*.json` file (a same-session A/B, not a reproducible standalone artifact); the
+commit message for the hoist (`0eba49b`) records the same numbers.
+
+### P5.1 — transcendental (sincos) fraction
+
+`bench/sincos_fraction_bench.jl`, run with `PA_BACKEND=cuda julia --project=bench/gpu
+bench/sincos_fraction_bench.jl` (GPU runs of any `bench/*.jl` script need `--project=bench/gpu`,
+not `--project=bench`, per "Running on a GPU host" below). Same RUBTAK 3x3x3 + 50 CO2 setup and
+65,536-shared-`Sk` proposal batch as the guest-move bench above, comparing `recip_move_kernel!`
+(the real, post-hoist kernel) against a bench-local copy with `cis(x)` replaced by
+`Complex(one(T) - x*x/2, x)` — deliberately wrong, same memory traffic and a comparable flop
+count, isolating the cost of the transcendental evaluation itself.
+
+| Precision | Real (ns/move) | Fake-cis (ns/move) | Sincos fraction | File |
+|---|---|---|---|---|
+| Float64 | 4,076 | 1,334 | **67.3%** | `pureadsorb_sincosfraction_neuromancer4070_cuda_f64_20260926_0eba49b.json` |
+| Float32 | 157 | 39.6 | **74.8%** | `pureadsorb_sincosfraction_neuromancer4070_cuda_f32_20260926_0eba49b.json` |
+
+Two-thirds to three-quarters of the (post-hoist) reciprocal kernel's own cost is the `cis`
+evaluation itself, at both precisions. The post-hoist real numbers here (4,076 / 157 ns/move) are
+themselves already far below the pre-hoist `recip` figures in the guest-move table above
+(6,806 / 364 ns/move), matching P3's measured 2.28x/2.57x directly.
+
+### P5.2 — visit versus in-cutoff pair arithmetic
+
+`bench/visit_vs_pair_bench.jl`. `realspace_move_kernel!` (unmodified) run against three copies
+of the same batch differing only in `cutoff`/`ewald_cutoff` (same alpha, k-table, sigma/epsilon,
+atoms, cells): the real cutoffs, the Ewald cutoff collapsed to `1e-6` Å (LJ arithmetic only), and
+both cutoffs collapsed to `1e-6` Å (visits only — no pair arithmetic can pass either branch).
+Differencing isolates visit cost from LJ and Ewald in-cutoff arithmetic.
+
+| Precision | Full (ns/move) | Ewald-cutoff-0 (ns/move) | Both-cutoffs-0 = visit (ns/move) | LJ arith | Ewald arith | Visit fraction | File |
+|---|---|---|---|---|---|---|---|
+| Float64 | 11,151 | 3,053 | 1,665 | 1,388 | 8,098 | **14.9%** | `pureadsorb_visitvspair_neuromancer4070_cuda_f64_20260926_0eba49b.json` |
+| Float32 | 732 | 477 | 299 | 178 | 255 | **40.8%** | `pureadsorb_visitvspair_neuromancer4070_cuda_f32_20260926_0eba49b.json` |
+
+At Float64 the visit (distance/min-image) cost is a small minority (15%) of the real-space
+kernel's own cost; Ewald in-cutoff arithmetic dominates (73%). At Float32 the split is closer to
+even (41% visit, 24% LJ, 35% Ewald) since the arithmetic itself is cheaper relative to the fixed
+per-visit distance/min-image cost. Either way, removing visits alone (a neighbour list) caps the
+achievable speedup on this kernel at `1/(1-0.149) = 1.18x` (Float64) or `1/(1-0.408) = 1.69x`
+(Float32) even before accounting for the list's own construction and traversal overhead —
+consistent with P4's own estimate (~1.18x) and with the ruling that a neighbour list is not
+approved for this milestone.
+
+### P5.3 — chain sweep: cost per move against chain count (the production shape)
+
+`bench/chain_sweep_bench.jl`. Unlike every other measurement in this file, this builds `PA_NSYS`
+**independent** systems (each RUBTAK 3x3x3 + 50 CO2, its own private slice of `Sk` — no sharing)
+and launches exactly ONE move proposal per system per kernel call (`ndrange = nsys`). This is what
+a real batch of chains looks like at the kernel-launch level, as opposed to the guest-move table's
+single framework broadcasting 65,536 shared-`Sk` proposals into one launch (an L1 broadcast, not a
+chain — see that table's own caveat). Batch construction (`FrameworkBatch` + `SystemState`) is
+CPU-bound regardless of KernelAbstractions backend and dominates wall time at large chain counts
+(`t_build` below); it is excluded from the reported per-move cost, which times only the kernel
+launches.
+
+RTX 4070, both precisions, real+recip per-move cost against chain count:
+
+| nsys | t_build (s) | Float64 real (ns/move) | Float64 recip (ns/move) | Float64 total (ns/move) | Float32 total (ns/move) |
+|---|---|---|---|---|---|
+| 1 | 2.6 | 33,691,828 | 11,188,014 | 44,879,842 | 5,792,970 |
+| 64 | 8-12 | 727,048 | 198,524 | 925,572 | 203,674 |
+| 256 | 33-47 | 367,125 | 172,504 | 539,628 | 85,691 |
+| 1,024 | 134-188 | 183,252 | 129,685 | 312,937 | 33,524 |
+| 4,096 | 536-756 | 45,770 | 32,516 | 78,286 | 8,244 |
+
+Files: `pureadsorb_chainsweep_neuromancer4070_cuda_f64_20260927_0eba49b.json`,
+`pureadsorb_chainsweep_neuromancer4070_cuda_f32_20260927_0eba49b.json`.
+
+**Occupancy has not saturated at 4,096 chains, at either precision.** Cost per move keeps
+falling all the way to the largest chain count measured — no plateau appears in this range. At
+`nsys=1` the per-move cost is dominated by CUDA kernel-launch overhead amortized over a single
+work-item (tens of milliseconds); it falls by roughly three orders of magnitude by `nsys=4096`
+and is still falling. Even at 4,096 chains, the measured cost (78.3 us/move Float64, 8.2 us/move
+Float32) remains **4.4x (Float64) / 7.5x (Float32) above** the guest-move table's idealized
+65,536-shared-`Sk` figure (18.0 us/move Float64, 1.10 us/move Float32) — confirming that
+benchmark's own caveat that it measures full-occupancy kernel cost, not a realistic batch. **This
+is the number that decides whether the rest of this milestone's kernel optimization work is
+worth doing, and the answer is: not yet clear from this range** — a chain count large enough to
+saturate this GPU's occupancy was not reached, so task 5's move-kernel design should either
+target chain counts closer to (or past) 4,096, or accept that a production run at more modest
+chain counts (tens to low hundreds, closer to what an actual adsorption simulation would run)
+pays a per-move cost several times higher than any of the single-kernel numbers measured
+elsewhere in this file.
+
+CPU, Float64 only, reduced to `{1, 64, 256, 1024}` (`nsys=4096`'s ~750s build cost, measured on
+GPU above, was not judged "cheap" to repeat on CPU as well):
+
+| nsys | t_build (s) | real (ns/move) | recip (ns/move) | total (ns/move) |
+|---|---|---|---|---|
+| 1 | 2.5 | 112,186 | 254,875 | 367,061 |
+| 64 | 11.7 | 119,152 | 261,711 | 380,863 |
+| 256 | 46.3 | 120,625 | 261,523 | 382,148 |
+| 1,024 | 185.8 | 120,775 | 261,168 | 381,943 |
+
+File: `pureadsorb_chainsweep_neuromancer_cpu_f64_20260927_0eba49b.json`.
+
+**CPU cost per move is flat across the whole sweep** (367-382 us/move, within noise), unlike the
+GPU curve above: there is no kernel-launch overhead to amortize and no notion of occupancy on
+CPU, so per-item cost is set by the work itself regardless of how many independent chains share a
+launch. This is a useful cross-check, not a competing production path: CPU cost per move at any
+chain count (~380 us) is already far above even the GPU's un-saturated `nsys=1` regime's
+steady-state trend, let alone its `nsys=4096` figure (78.3 us).

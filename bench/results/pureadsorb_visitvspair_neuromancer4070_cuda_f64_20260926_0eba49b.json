@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "julia": "1.13.0",
+    "date": "2026-09-26T23:46:01.392",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f64",
+    "nk": 4587,
+    "nguests": 50,
+    "nmoves": 65536,
+    "cutoff": 12.0,
+    "ewald_cutoff": 12.0,
+    "bench_seconds": 20,
+    "bench_samples": 10,
+    "commit": "0eba49b",
+    "description": "P5.2: realspace_move_kernel! per-move cost at the real cutoffs, at the Ewald cutoff collapsed to near zero, and at both cutoffs collapsed to near zero, on RUBTAK 3x3x3 + 50 CO2. Differencing the three isolates the visit (distance/min-image) cost from LJ and Ewald in-cutoff pair arithmetic."
+  },
+  "full_times_s": [
+    0.7307247720000001,
+    0.730792509,
+    0.7306280500000001,
+    0.7307613810000001,
+    0.7309799130000001,
+    0.730936802,
+    0.7306565140000001,
+    0.730924931,
+    0.730920953,
+    0.7306345240000001
+  ],
+  "ewald0_times_s": [
+    0.20018259600000002,
+    0.20009956,
+    0.200074823,
+    0.200079623,
+    0.20001786600000002,
+    0.200046951,
+    0.200012707,
+    0.200110431,
+    0.200084111,
+    0.20002571100000002
+  ],
+  "both0_times_s": [
+    0.109132687,
+    0.109248726,
+    0.109169447,
+    0.109105717,
+    0.10909623900000001,
+    0.109101709,
+    0.10913102400000001,
+    0.109103983,
+    0.10912915000000001,
+    0.10917667
+  ],
+  "full_per_move": 1.1150771255493166e-5,
+  "ewald0_per_move": 3.052936141967774e-6,
+  "both0_per_move": 1.6651929779052737e-6,
+  "visit_per_move": 1.6651929779052737e-6,
+  "lj_arith_per_move": 1.3877431640625002e-6,
+  "ewald_arith_per_move": 8.097835113525391e-6,
+  "total_arith_per_move": 9.485578277587892e-6
+}

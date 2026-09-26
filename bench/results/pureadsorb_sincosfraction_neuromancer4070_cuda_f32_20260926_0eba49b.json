@@ -1,0 +1,44 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "julia": "1.13.0",
+    "date": "2026-09-26T23:44:07.856",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f32",
+    "nk": 4587,
+    "nguests": 50,
+    "nmoves": 65536,
+    "bench_seconds": 20,
+    "bench_samples": 10,
+    "commit": "0eba49b",
+    "description": "P5.1: reciprocal move kernel per-move cost with the real cis(x) versus a deliberately wrong, comparable-cost Complex(1-x^2/2, x) in its place, both post-hoist (src/guest.jl). The relative difference is the transcendental (sincos) fraction of the reciprocal kernel's own cost."
+  },
+  "real_times_s": [
+    0.112797854,
+    0.017063146,
+    0.010280077,
+    0.010294935,
+    0.010338427,
+    0.010250962,
+    0.010261733,
+    0.010280979,
+    0.01031894,
+    0.010296007000000001
+  ],
+  "fake_times_s": [
+    0.002647809,
+    0.002625746,
+    0.002599057,
+    0.0025880960000000002,
+    0.002616349,
+    0.0025864430000000003,
+    0.002586463,
+    0.0026171510000000003,
+    0.0025851710000000003,
+    0.002586633
+  ],
+  "real_per_move_s": 1.5709642028808594e-7,
+  "fake_per_move_s": 3.957483673095703e-8,
+  "sincos_fraction": 0.7480856873862304
+}

@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "julia": "1.13.0",
+    "date": "2026-09-27T21:40:54.367",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f64",
+    "nguests": 10,
+    "capacity": 40,
+    "nsys_list": [
+      1,
+      8
+    ],
+    "bench_seconds": 10,
+    "bench_samples": 10,
+    "commit": "9917bf5",
+    "tag": "task10",
+    "description": "Job 1: mc_insert!/mc_delete! per-call cost against chain count, after giving the exchange kernels mc_step!'s workgroup-per-chain + nblocks_per_chain fan-out. RUBTAK 3x3x3 + CO2, 10 initial guests/system, capacity 40. nblocks_per_chain is PureAdsorb.default_nblocks_per_chain(F, nsys)."
+  },
+  "insert_results": [
+    {
+      "nsys": 1,
+      "nblocks_per_chain": 256,
+      "t_build": 3.041159578,
+      "times_s": [
+        0.00020489500000000002,
+        0.000210286,
+        0.000197962,
+        0.00018877500000000002,
+        0.00023038300000000002,
+        0.000188215,
+        0.000230134,
+        0.000226206,
+        0.000174749,
+        0.00018595000000000002
+      ],
+      "per_call_s": 0.00020142850000000003
+    },
+    {
+      "nsys": 8,
+      "nblocks_per_chain": 32,
+      "t_build": 0.191883249,
+      "times_s": [
+        0.00027701200000000004,
+        0.000352694,
+        0.00033809700000000004,
+        0.00024983000000000004,
+        0.000268255,
+        0.000346913,
+        0.00024964000000000003,
+        0.00034421800000000003,
+        0.00025564100000000003,
+        0.00034206300000000003
+      ],
+      "per_call_s": 0.00030755450000000004
+    }
+  ],
+  "delete_results": [
+    {
+      "nsys": 1,
+      "nblocks_per_chain": 256,
+      "t_build": 0.167135691,
+      "times_s": [
+        0.000142798,
+        0.000141576,
+        0.00013932200000000002,
+        0.000139262,
+        0.000139693,
+        0.000141196,
+        0.00013710800000000002,
+        0.00014215700000000001,
+        0.00013639700000000002,
+        0.00013876100000000002
+      ],
+      "per_call_s": 0.0001395075
+    },
+    {
+      "nsys": 8,
+      "nblocks_per_chain": 32,
+      "t_build": 0.199879022,
+      "times_s": [
+        0.00019598800000000002,
+        0.000191981,
+        0.00018985800000000002,
+        0.000190339,
+        0.000194396,
+        0.00019052900000000002,
+        0.000194797,
+        0.00019970600000000002,
+        0.000193164,
+        0.000197552
+      ],
+      "per_call_s": 0.00019378
+    }
+  ]
+}

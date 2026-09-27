@@ -1249,3 +1249,70 @@ element-symbol labels by geometric/topological role — both are exactly the "ha
 structure without saying exactly what was done" the plan rules out, so neither was attempted. Per
 the plan's own contingency, this half of task 9 is reported as blocked rather than worked around:
 **no RASPA IRMOF-1 methane isotherm comparison was run.**
+
+## Task 10: GCMC throughput against kUPS, and per-system memory
+
+`docs/src/benchmarks.md`'s "GCMC (grand canonical) exchange moves" section is the summary; this
+records the two things behind it that are not already covered elsewhere in this file.
+
+**`bench/gpu/exchange_bench.jl`'s own committed numbers
+(`pureadsorb_exchange_percall_neuromancer4070_cuda_f64_{before,after}_5918449.json`, 18.7 ms and
+12.8 ms per call) are not cited in the docs.** That script calls `mc_exchange!` (the insert/delete
+coin-flip wrapper) directly, and its untimed warm-up loop reseeds `rng = Xoshiro(1)` fresh on
+every iteration rather than advancing one shared stream — the same fixed seed every time, so the
+0.5 s wall-clock warm-up window only ever exercises whichever one of `mc_insert!`/`mc_delete!`
+that fixed seed's coin flip happens to pick. `bench/gpu/units_overhead_bench.jl`'s own header
+(written independently, while diagnosing a different benchmark) documents this exact trap —
+"`mc_exchange!`'s own insert/delete coin flip needing BOTH kernel variants pre-compiled before
+timing either one" — and measures its effect directly: with only the coin flip to rely on, every
+one of ten `@be` samples read 1.9-3.2 ms uniformly (not one slow outlier), against 167 us once
+both branches are explicitly warmed first. `exchange_bench.jl`'s own two numbers, both an order of
+magnitude above `mc_insert!`/`mc_delete!`'s real per-call cost (below), are consistent with
+carrying the same artifact (that script also predates the workgroup fan-out entirely, so its
+"before"/"after" pair measures a different code change — removing a per-call
+`adapt(CPU(), batch)` — not the fan-out this section otherwise reports on). Rather than re-measure
+`exchange_bench.jl` itself, the throughput comparison uses `bench/gpu/exchange_workgroup_bench.jl`
+instead, which was already built the correct way: its entire timed closure comes from one
+function's (`run_one`) local, typed arguments, and it explicitly calls both `mc_insert!` and
+`mc_delete!` once, untimed, before any warm-up loop starts.
+
+**nsys=8 (kUPS's own GCMC ceiling, below) was added to `exchange_workgroup_bench.jl`'s sweep**
+(it previously covered 1/64/256 only) via `PA_NSYS_LIST="1,8"`, RTX 4070, commit `9917bf5`, same
+case as the existing workgroup-fan-out measurement (RUBTAK 3×3×3 + CO2, 10 initial guests/chain,
+capacity 40, fugacity 2e4 Pa):
+
+| precision | move | nsys | us/call | us/move (÷nsys) |
+|---|---|---|---|---|
+| Float64 | insert | 1 | 201.43 | 201.43 |
+| Float64 | insert | 8 | 307.55 | 38.44 |
+| Float64 | delete | 1 | 139.51 | 139.51 |
+| Float64 | delete | 8 | 193.78 | 24.22 |
+| Float32 | insert | 1 | 155.84 | 155.84 |
+| Float32 | insert | 8 | 202.37 | 25.30 |
+| Float32 | delete | 1 | 103.36 | 103.36 |
+| Float32 | delete | 8 | 134.75 | 16.84 |
+
+The nsys=1 rows (170.5/129.6 us mean exchange cost, Float64/Float32) sit a few percent from the
+already-committed `..._after_20260927_f4a0503.json` nsys=1 rows (161.4/132.2 us mean) — run-to-run
+noise of the same scale `units_overhead_bench.jl`'s own repeated-measurement note documents for
+this kernel (a 57.6 us spread across four repeated Float64 measurements there), not a change in
+`mc_insert!`/`mc_delete!` themselves: that file's `commit: f4a0503` records HEAD at the moment the
+benchmark ran, when the workgroup fan-out existed only as the working-tree diff its own "before"
+row came from via `git stash` (this file's own note on that benchmark); the fan-out landed
+immediately afterward as `873c9ed`, and `git diff 873c9ed 9917bf5 -- src/moves.jl` is empty, so
+`mc_insert!`/`mc_delete!`'s code at the current commit is identical to what the "after" file
+measured. Files:
+`pureadsorb_exchange_workgroup_neuromancer4070_cuda_{f64,f32}_task10_20260927_9917bf5.json`.
+
+**PureAdsorb's own per-system GCMC device footprint**, `bench/gpu/gcmc_memory_bench.jl`: computed
+analytically from `SystemState`'s own field lengths and element sizes (the same
+length-times-`sizeof` pattern `bench/widom_scaling.jl`'s `bytes_per_system` and
+`bench/gpu/cellwidth_sweep.jl`'s `bytes_per_framework` already use for `FrameworkBatch`), at the
+isotherm run's own capacity (200) and RUBTAK 3×3×3's full k-vector table (`fullk = true`, nk =
+4587, required once any guest is present): **122,952 B (Float64)**, **61,500 B (Float32)** —
+`Sk` plus `sk_abs_accum` (both sized by the full k-vector table, not `capacity`) account for
+110,088 B of the Float64 total. Against kUPS's own GCMC memory ceiling above (13.18 GiB requested
+at nsys=16, treated as the whole 16-system batch per the existing Widom "Memory" section's own
+"the batched-state allocation itself doubles with `nsys`" finding): roughly 13.18 GiB / 16 ≈ 885
+MB/system for kUPS, against 120.1 KiB/system (Float64) for PureAdsorb — about 7,200× less. File:
+`pureadsorb_gcmc_memory_neuromancer_20260927_9917bf5.json`.

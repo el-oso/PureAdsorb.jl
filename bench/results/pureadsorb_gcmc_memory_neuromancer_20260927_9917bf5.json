@@ -1,0 +1,13 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-27T21:40:16.195",
+    "capacity": 200,
+    "nk": 4587,
+    "commit": "9917bf5",
+    "description": "Job 1 (task 10): SystemState's own per-system device footprint (RUBTAK 3x3x3 + CO2, fullk=true), computed analytically from field lengths -- refpoints/orientations/host_energy scale with capacity, Sk/sk_abs_accum scale with the full k-vector table."
+  },
+  "bytes_per_system_f64": 122952,
+  "bytes_per_system_f32": 61500
+}

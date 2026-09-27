@@ -156,6 +156,121 @@ PureAdsorb's own per-framework device footprint (RUBTAK 3×3×3 + CO2, default `
 `bench/results/pureadsorb_widom_scaling_galen_rocm_f64_run256_20260920_a4c86a7.json` and the
 `f32` file alongside it.
 
+## GCMC (grand canonical) exchange moves, RTX 4070 12 GB
+
+`mc_insert!`/`mc_delete!` are the μVT exchange moves task 5's driver mixes 50/50 into a GCMC
+chain (`bench/results/README.md`'s "μVT exchange moves: workgroup fan-out" section has the
+kernel-level detail). kUPS runs its own exchange moves through the same `mcmc_rigid.py` chain
+its NVT case uses, but has no dedicated single-move GCMC timing sweep of its own — only the
+memory-ceiling sweep below and one accuracy validation run (`docs/src/validation.md`'s C4). This
+comparison therefore reuses kUPS's own NVT peak rate, 387.6 µs/move (the NVT section above), as
+the best available kUPS reference for the cost of one Metropolis attempt on this card: kUPS's
+batching never beats its own single-system rate, so that one number is its ceiling for any move
+type on this card, not only translation.
+
+**One number here needs a caveat before the table.** `bench/gpu/exchange_bench.jl`'s own
+committed numbers (`pureadsorb_exchange_percall_*.json`) are not cited below: that script issues
+`mc_exchange!` from top-level script variables and, in its warm-up loop, reseeds `Xoshiro(1)`
+fresh on every call — the same fixed seed every time — so its 0.5 s wall-clock warm-up window
+only ever compiles whichever one of `mc_insert!`/`mc_delete!` that fixed seed's coin flip picks.
+`bench/gpu/units_overhead_bench.jl`'s own header independently documents both failure modes (a
+closure over non-`const` top-level globals, and this exact missing-branch-compile trap) and
+measures the second one inflating a genuinely ~167 µs/call cost to a uniform 1.9-3.2 ms/call
+across every sample. `exchange_bench.jl`'s numbers (12.8-18.7 ms/call, an order of magnitude
+above the table below) are consistent with carrying the same artifact. Rather than re-measure
+that script, the table below uses `bench/gpu/exchange_workgroup_bench.jl` instead, which builds
+its entire timed closure from one function's (`run_one`) local, typed arguments and explicitly
+pre-compiles both `mc_insert!` and `mc_delete!` before any warm-up call — the pattern
+`units_overhead_bench.jl` converged on. Its nsys=1/64/256 numbers are already committed
+(`pureadsorb_exchange_workgroup_*_after_*.json`); nsys=8 (kUPS's own GCMC ceiling, below) was
+added here with the same script, same card, same day, RUBTAK 3×3×3 + CO2, 10 initial
+guests/chain, capacity 40, fugacity 2e4 Pa:
+
+| Precision | Chains | Insert (µs/move) | Delete (µs/move) | Mean exchange (µs/move) | Ratio to kUPS (387.6 µs/move) |
+|---|---|---|---|---|---|
+| Float64 | 1   | 201.4 | 139.5 | 170.5 | 2.3× |
+| Float64 | 8   | 38.4  | 24.2  | 31.3  | 12.4× |
+| Float64 | 64  | 12.8  | 7.6   | 10.2  | 38.0× |
+| Float64 | 256 | 9.9   | 6.3   | 8.1   | 47.9× |
+| Float32 | 1   | 155.8 | 103.4 | 129.6 | 3.0× |
+| Float32 | 8   | 25.3  | 16.8  | 21.1  | 18.4× |
+| Float32 | 64  | 3.2   | 1.9   | 2.6   | 150.9× |
+| Float32 | 256 | 1.2   | 0.7   | 0.9   | 409.6× |
+
+"Chains" above is `nsys`; the µs/move columns are each row's own `mc_insert!`/`mc_delete!`
+per-call cost divided by `nsys`, since one call advances every chain in the batch by one move.
+The nsys=1/8 rows are `pureadsorb_exchange_workgroup_neuromancer4070_cuda_{f64,f32}_task10_20260927_9917bf5.json`
+(this run); nsys=64/256 are the already-committed
+`pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_after_20260927_f4a0503.json` — a
+different commit and a slightly different `PA_HOST` string (the earlier run left `PA_HOST`
+unset), so the nsys=1 mean exchange cost above (170.5 µs Float64, 129.6 µs Float32) differs from
+that file's own nsys=1 mean (161.4 µs Float64, 132.2 µs Float32) by a few percent — run-to-run
+noise of the same scale `units_overhead_bench.jl`'s own repeated-measurement note already
+documents for this kernel, not a change in `mc_insert!`/`mc_delete!` themselves
+(`bench/results/README.md`'s task 10 section has the commit-history detail).
+
+**The exchange advantage over kUPS is real but much smaller than NVT's, and the batched rows
+above must not be read as contradicting that.** At one chain — the only batch size directly
+comparable to kUPS's own single-system rate without any batching helping either code — PureAdsorb
+is 2.3-3.0× kUPS, not the 36× (Float64, 1,024 chains) the NVT table above reaches. The reason is
+structural, not incidental: an NVT translation reuses `host_energy`'s cached guest-host term and
+only needs `ΔS(k)` for the one moved guest, while an insertion has no prior pose to cache against
+and must sum a brand-new guest's interaction against every host atom (`insertion_energy`'s full
+scan) plus the full k-vector reciprocal sum from scratch — `docs/src/theory.md`'s "Guest–guest
+energy" and "The running structure factor" sections describe the cache NVT moves get and
+insertion cannot. The batched rows (38-48× at Float64, up to 410× at Float32) show PureAdsorb's
+own batching benefit, which is real, but kUPS's GCMC ceiling of 8 chains (below) means no
+same-batch-size comparison beyond nsys=8 is possible against kUPS at all — those larger-batch
+rows are PureAdsorb against itself, included for context, not part of the head-to-head ratio.
+
+## A GCMC isotherm: CO2 in RUBTAK 3x3x3
+
+`run_isotherm!` (`src/isotherm.jl`) builds one batch of 50 log-spaced pressure points (100 Pa to
+1e5 Pa) times 4 replicas — 200 systems, one shared framework — and runs 700 cycles (200 warmup +
+500 production) as a single GCMC call. Build time is 0.28 s (framework deduplication keeps it
+close to one framework's own setup cost regardless of `nsys`); the run itself takes 151 s.
+
+![CO2 in RUBTAK 3x3x3 isotherm: loading vs pressure](assets/isotherm_co2_rubtak.png)
+
+Loading rises monotonically at every point, from 0.40 guests at 100 Pa to 101.7 guests at 1e5 Pa:
+Henry-linear (`loading/pressure` flat at 0.0037-0.0040 guests/Pa) over the bottom six points, and
+clearly sub-linear (falling to 0.0010-0.0016 guests/Pa) over the top six — a Type-I saturation
+curve. The batch-wide capacity (200) is never approached: the worst-case occupancy across all 50
+pressures is 136/200 (68%), at the highest pressure. Full detail, including the near-plateau
+between 3.7e4 and 8.7e4 Pa (inside statistical error, not a real non-monotonicity), is in
+`bench/results/README.md`'s "A real isotherm" section; the source data is
+`bench/results/pureadsorb_isotherm_co2_rubtak_neuromancer_cuda_f64_20260927_873c9ed.json`.
+
+## GCMC memory
+
+kUPS batches a GCMC chain's state across all `nsys` systems into one compiled step, same as its
+NVT/Widom cases above, but a GCMC batch additionally reserves `max_num_adsorbates` buffer slots
+per system (auto-estimated from the ideal-gas reservoir occupancy), so its memory ceiling is
+worse than either of those: `bench/run_kups_gcmc.sh nscale` runs `nsys ∈ {1, 2, 4, 8}`
+successfully on this 12 GiB card and fails at `nsys=16` requesting 13.18 GiB — **8 systems**,
+against 32 for kUPS's own NVT case and no failure at all for PureAdsorb's own Widom case on this
+card (both established above). Treating that 13.18 GiB request as the whole 16-system batch
+(consistent with "the batched-state allocation itself doubles with `nsys`", established in the
+Widom "Memory" section above) gives kUPS's own per-system footprint as roughly
+13.18 GiB / 16 ≈ 885 MB.
+
+PureAdsorb's own per-system device footprint is a `SystemState`'s own arrays — computed
+analytically from field lengths and element sizes, the same pattern the Widom "Memory" section
+above uses for `FrameworkBatch`'s per-framework footprint — at the isotherm run's own capacity
+(200) and RUBTAK 3×3×3's full k-vector table (`fullk = true`, required once any guest is
+present, nk = 4587):
+
+| Precision | Bytes/system | kUPS bytes/system (estimate) | Ratio |
+|---|---|---|---|
+| Float64 | 122,952 (120.1 KiB) | ≈885 MB | ≈7,200× less |
+| Float32 | 61,500 (60.1 KiB) | ≈885 MB (kUPS forces float64) | ≈14,400× less |
+
+`Sk` and `sk_abs_accum` — sized by the full k-vector table, not `capacity` — are most of this:
+4587 k-vectors × (`Complex{F}` + `F`) is 110,088 B of the 122,952 B Float64 total. This is why
+PureAdsorb runs the whole 200-system isotherm above without difficulty on the same card where
+kUPS's own GCMC case fails at 16: `bench/gpu/gcmc_memory_bench.jl`,
+`bench/results/pureadsorb_gcmc_memory_neuromancer_20260927_9917bf5.json`.
+
 ## Reproducing
 
 ```bash
@@ -191,6 +306,23 @@ KUPS=~/src/kups PA_HOST=neuromancer4070 bench/run_kups_nvt.sh nscale
 # Regenerate the NVT figure above from the committed JSON only
 julia --project=bench bench/plot_nvt_vs_kups.jl
 PA_PLOT_OUT=docs/src/assets/nvt_vs_kups.png julia --project=bench bench/plot_nvt_vs_kups.jl
+
+# GCMC exchange move cost, PureAdsorb (add PA_NSYS_LIST="1,8" to reproduce the kUPS-comparable rows)
+PA_HOST=neuromancer4070 PA_BACKEND=cuda PA_PRECISION=f64 PA_NSYS_LIST="1,8" julia --project=bench/gpu bench/gpu/exchange_workgroup_bench.jl
+PA_HOST=neuromancer4070 PA_BACKEND=cuda PA_PRECISION=f32 PA_NSYS_LIST="1,8" julia --project=bench/gpu bench/gpu/exchange_workgroup_bench.jl
+
+# kUPS GCMC memory ceiling (needs a kUPS checkout outside this repo, at commit e183c9a)
+KUPS=~/src/kups PA_HOST=neuromancer4070 bench/run_kups_gcmc.sh nscale 200 64
+
+# PureAdsorb's own per-system GCMC memory footprint (no GPU needed)
+julia --project=bench/gpu bench/gpu/gcmc_memory_bench.jl
+
+# The isotherm (Milestone C task 6); regenerating the run itself needs the RTX 4070 and ~3 minutes
+PA_HOST=neuromancer4070 PA_BACKEND=cuda PA_PRECISION=f64 julia --project=bench/gpu bench/gpu/isotherm_bench.jl
+
+# Regenerate the isotherm figure above from the committed JSON only
+julia --project=bench bench/plot_isotherm.jl
+PA_PLOT_OUT=docs/src/assets/isotherm_co2_rubtak.png julia --project=bench bench/plot_isotherm.jl
 ```
 
 See `bench/results/README.md` for every other measurement recorded in this repository (CPU and

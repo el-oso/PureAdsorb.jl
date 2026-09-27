@@ -224,20 +224,26 @@ function run_gcmc!(
     cycles_since_audit = Ref(0)
 
     # See `run_nvt!`'s own `run_audit!`: the sync dance `audit_energy!` needs since it recomputes
-    # with plain host indexing. `occupancy` is synced here in ADDITION to `run_nvt!`'s own set of
-    # fields, since GCMC (unlike NVT) can change it; `audit_energy!` only reads it (the
-    # occupancy-vs-capacity check), never corrects it, so no push-back is needed for it as there is
-    # for `Sk`/`energy`. `nmoves` (the audit tolerance's accumulated-move count) adds the exchange
-    # acceptances tracked above to `state.accepted`'s own NVT-move total: `mc_insert_kernel!`/
-    # `mc_delete_kernel!` add to `energy_abs_accum`/`sk_abs_accum` on every accepted exchange move
-    # exactly as `decide_move_kernel!` does for NVT moves, so omitting them here would silently
-    # undercount `nmoves` and make the audit tolerance too tight whenever exchange ran.
+    # with plain host indexing, including the two-way `sk_abs_accum`/`energy_abs_accum` sync that
+    # function's own comment explains (pull the device's true running sums in before sizing the
+    # tolerance; push the audit's zeroed values back out so `dst`'s own accumulators restart from
+    # zero instead of growing forever underneath a host copy nothing re-reads). `occupancy` is
+    # synced here in ADDITION to `run_nvt!`'s own set of fields, since GCMC (unlike NVT) can change
+    # it; `audit_energy!` only reads it (the occupancy-vs-capacity check), never corrects it, so no
+    # push-back is needed for it as there is for `Sk`/`energy`/`sk_abs_accum`/`energy_abs_accum`.
+    # `nmoves` (the audit tolerance's accumulated-move count) adds the exchange acceptances tracked
+    # above to `state.accepted`'s own NVT-move total: `mc_insert_kernel!`/`mc_delete_kernel!` add to
+    # `energy_abs_accum`/`sk_abs_accum` on every accepted exchange move exactly as
+    # `decide_move_kernel!` does for NVT moves, so omitting them here would silently undercount
+    # `nmoves` and make the audit tolerance too tight whenever exchange ran.
     function run_audit!()
         copyto!(state.refpoints, dst.refpoints)
         copyto!(state.orientations, dst.orientations)
         copyto!(state.occupancy, dst.occupancy)
         copyto!(state.Sk, dst.Sk)
+        copyto!(state.sk_abs_accum, dst.sk_abs_accum)
         copyto!(state.energy, dst.energy)
+        copyto!(state.energy_abs_accum, dst.energy_abs_accum)
         copyto!(state.host_energy, dst.host_energy)
         copyto!(state.accepted, dst.accepted)
         for n in 1:nsys
@@ -249,7 +255,9 @@ function run_gcmc!(
             last_exchange_accepted[n] = exchange_accepted[n]
         end
         copyto!(dst.Sk, state.Sk)
+        copyto!(dst.sk_abs_accum, state.sk_abs_accum)
         copyto!(dst.energy, state.energy)
+        copyto!(dst.energy_abs_accum, state.energy_abs_accum)
         cycles_since_audit[] = 0
         return nothing
     end

@@ -258,12 +258,25 @@ function run_nvt!(
     # system, then pushes any correction `audit_energy!` made back to `dst` — the sync dance
     # `audit_energy!` needs since it recomputes energies/structure factors with plain host
     # indexing (`total_energy`, `structure_factor`), which is a no-op copy when `backend == CPU()`
-    # and `dst` already aliases `state`'s own arrays.
+    # and `dst` already aliases `state`'s own arrays. `sk_abs_accum`/`energy_abs_accum` are synced
+    # in BOTH directions, unlike `Sk`/`energy`'s pull-then-push: `apply_sk_kernel!`/
+    # `decide_move_kernel!` keep adding to `dst`'s copies on every accepted move on `backend`, so
+    # the tolerance `audit_energy!` computes needs the device's true running sums pulled in first,
+    # and the zeroed values a passing audit leaves on `state` need pushing back so `dst`'s own
+    # accumulators restart from zero rather than continuing to grow forever underneath a host copy
+    # that is never read again. Omitting either half leaves `state.sk_abs_accum`/`energy_abs_accum`
+    # pinned at their CPU-side value (zero, on the first audit) while `backend`'s own accumulate
+    # without bound, so `audit_energy!`'s tolerance is sized from a value orders of magnitude
+    # smaller than the moves it is meant to cover — a false positive on `backend != CPU()`, where
+    # `dst` is a genuinely separate allocation, invisible on `CPU()` only because `adapt(CPU(), ...)`
+    # aliases `state`'s own arrays instead of copying them.
     function run_audit!()
         copyto!(state.refpoints, dst.refpoints)
         copyto!(state.orientations, dst.orientations)
         copyto!(state.Sk, dst.Sk)
+        copyto!(state.sk_abs_accum, dst.sk_abs_accum)
         copyto!(state.energy, dst.energy)
+        copyto!(state.energy_abs_accum, dst.energy_abs_accum)
         copyto!(state.host_energy, dst.host_energy)
         copyto!(state.accepted, dst.accepted)
         for n in 1:nsys
@@ -273,7 +286,9 @@ function run_nvt!(
             last_accepted[n] = total_accepted
         end
         copyto!(dst.Sk, state.Sk)
+        copyto!(dst.sk_abs_accum, state.sk_abs_accum)
         copyto!(dst.energy, state.energy)
+        copyto!(dst.energy_abs_accum, state.energy_abs_accum)
         cycles_since_audit[] = 0
         return nothing
     end

@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "description": "audit_energy! false-positive rate on CUDA, before and after fixing the missing sk_abs_accum/energy_abs_accum device->host sync in run_nvt!/run_gcmc!'s run_audit! and adding a term-count-scaled recompute magnitude to energy_audit_tolerance",
+    "host": "neuromancer",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "base_commit": "7f1032f",
+    "system": "RUBTAK-3x3x3 + CO2 (trappe.yaml), T=298.15 K, ncount=6 guests/system, step_trans=step_rot=0.3, nblocks_per_chain=1",
+    "protocol": "mc_step! (translation/rotation/reinsertion, drawn uniformly, no exchange moves) driven directly on CUDABackend() for a fixed number of accepted moves per system (checkpoints below), replayed per fresh (state seed, movetype seed) pair; nsys=32 replica chains per run give 32 independent trials per seed. 'buggy' tolerance uses energy_abs_accum=0 (what run_audit! actually read before the fix, since it was never synced from the device); 'full' tolerance uses the synced energy_abs_accum plus the new occ*bs[fw]-scaled recompute magnitude.",
+    "root_cause": "run_nvt!'s and run_gcmc!'s run_audit! never copied state.sk_abs_accum/energy_abs_accum from the device-resident dst before calling audit_energy!, so on any backend where dst is a separate allocation from state (CUDA, ROCm -- not CPU, where adapt(CPU(), state) aliases state's own arrays) the tolerance was sized from a host copy pinned at its all-zero construction value instead of the real, device-accumulated running sum -- floored to nmoves*eps(F)*1 regardless of how large the true accumulated |ΔU| actually was.",
+    "secondary_fix": "energy_audit_tolerance's recompute-side magnitude did not scale with the number of terms total_energy sums (host-guest pairs + guest-guest pairs + reciprocal), unlike the existing sk_audit_tolerance check's nterms_rebuild factor; audit_energy! now also passes max(|accumulated|, |recomputed|, (occ + occ*(occ-1)/2) * batch.bs[fw]) as the magnitude, reusing the existing hardcore_bound-derived batch.bs[fw] as a rigorous per-guest term-magnitude bound."
+  },
+  "false_positive_rate": {
+    "Float64": {
+      "seeds": 7,
+      "trials_per_checkpoint": 224,
+      "checkpoints": {
+        "1000": {"before_fail": 83, "before_fail_pct": 37.1, "before_max_ratio": 11.61, "after_fail": 0, "after_max_ratio": 0.002542},
+        "5000": {"before_fail": 11, "before_fail_pct": 4.9, "before_max_ratio": 2.447, "after_fail": 0, "after_max_ratio": 0.0005296},
+        "20000": {"before_fail": 0, "before_fail_pct": 0.0, "before_max_ratio": 0.6439, "after_fail": 0, "after_max_ratio": 0.0001128}
+      },
+      "overall_fail_pct_before": 13.99,
+      "overall_fail_pct_after": 0.0
+    },
+    "Float32": {
+      "seeds": 8,
+      "trials_per_checkpoint": 256,
+      "checkpoints": {
+        "1000": {"before_fail": 100, "before_fail_pct": 39.1, "before_max_ratio": 14.84, "after_fail": 0, "after_max_ratio": 0.001854},
+        "5000": {"before_fail": 24, "before_fail_pct": 9.4, "before_max_ratio": 2.973, "after_fail": 0, "after_max_ratio": 0.0003628},
+        "20000": {"before_fail": 0, "before_fail_pct": 0.0, "before_max_ratio": 0.7358, "after_fail": 0, "after_max_ratio": 9.152e-5}
+      },
+      "overall_fail_pct_before": 16.15,
+      "overall_fail_pct_after": 0.0
+    }
+  },
+  "characterization": {
+    "discrepancy_scaling": "the recomputed-vs-accumulated energy discrepancy itself (not the tolerance) stays roughly flat in magnitude (order 1e-13 to 1e-12 eV for this system) across nmoves from ~50 to 20000 once abs_accum is correctly synced -- it is not a running accumulation that grows with move count. The pre-fix false positives instead come entirely from the tolerance being undersized (energy_abs_accum read as 0 on the host), which self-heals at high nmoves purely because the OTHER tolerance term (nmoves*eps(F)*1) eventually outgrows the fixed discrepancy -- explaining why failures concentrate at low-to-moderate nmoves (37-39% at 1000) and vanish by nmoves=20000 (0%) even without any fix.",
+    "bias_or_random_walk": "neither cleanly: a direct run_nvt! reproduction (state seed=77, movetype seed=5, ncount=6, n_audit=100) showed the true energy_abs_accum reaching 5872.9 eV over 220 accepted moves (average |ΔU|~26.7 eV/move) from a handful of large equilibration-relaxation moves early in the chain, not from many small per-move terms -- so the real accumulated Σ|ΔU| is dominated by a few large-magnitude events, consistent with the docstring's own point that the running total can sit far below the sum of magnitudes that produced it."
+  },
+  "corruption_tests_still_throw": {
+    "method": "julia_run_testitems, full suite (196 items) plus cold Pkg.test() under --check-bounds=yes",
+    "full_suite": "196/196 passed, 0 failed, 0 errored",
+    "cold_pkg_test": "4,131,961 assertions passed, 0 failed, 4m42s",
+    "note": "includes every audit_energy! corruption test (wrong sign, wrong phase, wrong guest, corrupted scalar ΔU both precisions, stale host-energy cache, occupancy-exceeds-capacity) -- all still throw"
+  }
+}

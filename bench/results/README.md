@@ -1062,16 +1062,46 @@ is wasteful at the low end (reserved memory only, since every energy loop is bou
 occupancy, not capacity) without ever saturating at the high end. The capacity diagnostic did
 **not** fire.
 
-**A pre-existing numerical finding, found while building this isotherm, not fixed by it**:
-`audit_energy!`'s tolerance (Higham's bound for a running sum of `nmoves` accepted terms) is
-occasionally too tight once `nmoves` reaches the low thousands on a CUDA-driven chain, because
-the "running" state is accumulated by GPU kernels while `audit_energy!`'s rebuild runs on the
-host — a small, structural CPU/GPU rounding gap Higham's bound does not budget for. Reproduced
-independent of Milestone C's own work: a plain `run_nvt!` chain (no exchange moves, task 5's
-unmodified NVT kernels) on CUDA trips the SAME check at a comparable move count (1606 moves,
-discrepancy 3.4x the tolerance). Every dedicated correctness test in the suite (moderate move
-counts, `Pkg.test()` under `--check-bounds=yes`) passes; `isotherm_bench.jl` simply does not
-audit mid-run for this one large physics run (`n_audit` set past the run's end), rather than
-risk tripping a pre-existing tolerance edge case unrelated to what it is producing.
+**A pre-existing numerical finding, found while building this isotherm — now fixed** (below):
+`audit_energy!`'s tolerance was occasionally too tight once `nmoves` reached the low thousands on
+a CUDA-driven chain. The root cause was not a rounding-bound gap: `run_nvt!`/`run_gcmc!`'s
+`run_audit!` never copied `state.sk_abs_accum`/`energy_abs_accum` from the device before sizing the
+tolerance, so it was computed from an all-zero host copy instead of the real, device-accumulated
+running sum, on every backend where `dst` is not the same allocation as `state` (CUDA, ROCm — not
+`CPU()`). `isotherm_bench.jl` still sets `n_audit` past this run's end, since a mid-run audit
+under any tolerance is orthogonal to what this benchmark measures.
 
 File: `pureadsorb_isotherm_co2_rubtak_neuromancer_cuda_f64_20260927_873c9ed.json`.
+
+## Audit tolerance false-positive rate (CUDA), before/after the sync fix
+
+Reproduced independent of Milestone C's own work: a plain `run_nvt!` chain (no exchange moves,
+unmodified NVT kernels) on CUDA trips `audit_energy!` because `run_audit!` sizes the tolerance from
+an unsynced (always-zero) `energy_abs_accum`, floored at `nmoves*eps(F)*1` regardless of the real
+accumulated `Σ|ΔU|`. Fixed by (1) syncing `sk_abs_accum`/`energy_abs_accum` device↔host in both
+`run_nvt!`'s and `run_gcmc!`'s `run_audit!`, exactly as `Sk`/`energy` already are, and (2) scaling
+the energy check's recompute-side magnitude by `total_energy`'s own term count
+(`occ + occ*(occ-1)/2`) times `batch.bs[fw]` (the existing `hardcore_bound` per-guest term-magnitude
+bound), matching the structure-factor check's existing `nterms_rebuild` scaling.
+
+Measured false-positive rate over a sweep of fresh seeds (RUBTAK-3x3x3 + CO2, 298.15 K, `nsys=32`
+replica chains per seed, `mc_step!` driven directly on `CUDABackend()`), at 1,000/5,000/20,000
+accepted moves per system:
+
+| | before (buggy sync) | after (both fixes) |
+|---|---|---|
+| Float64 (7 seeds, 672 trials) | 13.99% overall (37.1% at 1,000 moves), max ratio 11.6× tolerance | 0%, max ratio 0.0025× |
+| Float32 (8 seeds, 768 trials) | 16.15% overall (39.1% at 1,000 moves), max ratio 14.8× tolerance | 0%, max ratio 0.0019× |
+
+The false positives concentrate at low-to-moderate `nmoves` and vanish by 20,000 even without any
+fix, because the buggy tolerance's other term (`nmoves*eps(F)*1`) eventually outgrows the fixed
+(non-accumulating) discrepancy on its own — the discrepancy itself stays flat at order
+1e-13–1e-12 eV across this whole range once `energy_abs_accum` is correctly synced, rather than
+growing with move count; a direct reproduction (RUBTAK-3x3x3+CO2, state seed 77, movetype seed 5)
+showed the true `energy_abs_accum` reaching 5872.9 eV over 220 accepted moves from a handful of
+large early-equilibration moves, not from many small per-move terms. Every existing corruption
+test (wrong sign, wrong phase, wrong guest, corrupted `ΔU` both precisions, stale host-energy
+cache, occupancy-exceeds-capacity) still throws: full suite 196/196, cold `Pkg.test()` under
+`--check-bounds=yes` 4,131,961 assertions, both clean.
+
+File: `pureadsorb_audit_tolerance_falsepositive_neuromancer4070_cuda_20260927_7f1032f.json`.

@@ -22,7 +22,10 @@
 # (`SystemState.sk_abs_accum`/`energy_abs_accum`). Separately, the FROM-SCRATCH recomputation each
 # comparison checks against (`total_energy`, or `structure_factor`'s rebuild of one k-vector) is
 # itself a sum of several terms, so it carries its own one-off rounding of order `eps(F) *
-# magnitude` regardless of `nmoves` — the running total's accumulated error and the rebuild's own
+# magnitude` regardless of `nmoves` — `magnitude` here is already the CALLER's own term-count-scaled
+# estimate of that recomputation's Σ|term| (`audit_energy!`'s `rebuild_magnitude`/
+# `recompute_magnitude`), not the recomputed value's own size, for the same reason `abs_accum` is
+# not the running total's own size. The running total's accumulated error and the rebuild's own
 # rounding are separate sources and neither term above stands in for the other. Both terms are
 # floored at `one(F)` so a near-zero accumulation or magnitude still gets a nonzero tolerance.
 _accumulation_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
@@ -33,9 +36,11 @@ _accumulation_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
 
 Rounding-error tolerance for `audit_energy!`'s comparison of `state.energy[n]` (accumulated from
 `nmoves` accepted `ΔU`s) against a from-scratch recomputation: `abs_accum` is the running `Σ|ΔU|`
-over those moves (`SystemState.energy_abs_accum`), `magnitude` the larger of the accumulated and
-freshly recomputed energy — see this file's `_accumulation_tolerance` for the two-term
-derivation.
+over those moves (`SystemState.energy_abs_accum`), `magnitude` the recompute-side scale — the
+larger of the accumulated and freshly recomputed energy, or `total_energy`'s own term count times
+`batch.bs[fw]` when that is larger (`audit_energy!`'s own computation), since that recomputation's
+rounding grows with both the number of terms it sums and their magnitude — see this file's
+`_accumulation_tolerance` for the two-term derivation.
 """
 energy_audit_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
     _accumulation_tolerance(abs_accum, magnitude, nmoves)
@@ -133,7 +138,20 @@ function audit_energy!(
 
     recomputed = total_energy(batch, state, guest, ff, n)
     accumulated = state.energy[n]
-    τ = something(tol, energy_audit_tolerance(state.energy_abs_accum[n], max(abs(accumulated), abs(recomputed)), nmoves))
+    # `total_energy` sums every one of `occ` guests' host-guest terms plus every guest-guest PAIR's
+    # terms (`occ*(occ-1)/2` of them) plus the reciprocal sum, so — exactly as `nterms_rebuild`
+    # scales the structure-factor check above — its own one-off rounding scales with that term
+    # count, not with the recomputed energy's magnitude alone: two configurations at the same net
+    # energy can be a sum of two small, nearly-cancelling terms or of many large ones, and only the
+    # latter carries much rounding. `batch.bs[fw]` is already a rigorous bound on everything a
+    # single guest's own host-real-space-plus-reciprocal-cross energy sums to (`hardcore_bound`,
+    # built for the same force field and cutoffs this recomputation uses), so `occ` guests' host
+    # terms and each guest-guest pair (a same-cutoff sum over strictly fewer site pairs than one
+    # guest's own host scan) are each bounded by that same `batch.bs[fw]` scale.
+    fw = batch.framework_of[n]
+    nterms_energy = occ + (occ * (occ - 1)) ÷ 2
+    recompute_magnitude = max(abs(accumulated), abs(recomputed), F(nterms_energy) * batch.bs[fw])
+    τ = something(tol, energy_audit_tolerance(state.energy_abs_accum[n], recompute_magnitude, nmoves))
     discrepancy = abs(recomputed - accumulated)
     discrepancy <= τ || throw(
         ArgumentError(

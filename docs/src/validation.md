@@ -222,15 +222,22 @@ correction (C2, above, covers that). All three quantities agree within 1 combine
 nscale`), worse than its 32-system NVT ceiling for a comparable case — bounding what a batched
 throughput comparison could even attempt.
 
-**RASPA IRMOF-1 methane isotherm: not attempted.** PureAdsorb's `read_cif` requires space group P1
-and a populated `_atom_site_charge` column. Three independent, unmodified public IRMOF-1 CIFs were
-checked (RASPA2's own canonical file, `numat/EQeq`, `SimonEnsemble/PorousMaterials.jl`): none has
-both — the RASPA2 file is `F m -3 m` with no charges, and the two P1 files also carry no charges
-(IRMOF-1's usual force fields assign charge per atom type/role, not per atom in the CIF). Producing
-a compliant file would mean either symmetry-expanding the non-P1 file or matching a separate
-literature charge table onto bare element-symbol labels by geometric role — exactly the kind of
-unstated structure hand-conversion this milestone's plan rules out, so it was not attempted, and no
-comparison against the published RASPA isotherm was run.
+**IRMOF-1 structure now loads; the RASPA methane isotherm comparison is not attempted.**
+`read_cif` symmetry-expands a non-P1 CIF to P1 from its own `_symmetry_equiv_pos_as_xyz` or
+`_space_group_symop_operation_xyz` operation list (refusing, rather than guessing, when a file
+gives only a space-group name and no operation list) and accepts a `charges` keyword — a
+`label => charge` map — for the common case where a material's force field assigns charge per
+crystallographic role rather than per atom in the CIF. RASPA2's own canonical IRMOF-1 CIF
+(`data/raspa2_IRMOF-1.cif`, space group `F m -3 m`, #225, 192 listed operations) now loads: 424
+atoms (Zn32 O104 C192 H96, matching Z=8 formula units of Zn4O(BDC)3), density 0.593 g/cm3
+(published range ~0.59-0.61 g/cm3), and every expanded atom matches one in
+`SimonEnsemble/PorousMaterials.jl`'s independently-published, already-P1 IRMOF-1 CIF
+(`data/pm_IRMOF-1.cif`) within 1e-3 fractional units.
+
+The methane-in-IRMOF-1 isotherm against RASPA's published numbers was not run: it needs a
+citable per-crystallographic-role partial-charge set for IRMOF-1 and framework Lennard-Jones
+parameters (Zn, the bridging and carboxylate oxygens, the two carbon roles, H) added to
+`data/trappe.yaml`, neither of which this pass sourced.
 
 Every number above and its provenance is in `bench/results/README.md` and the JSON/test files it
 cites.

@@ -1,3 +1,11 @@
 RUBTAK.cif, trappe.yaml and co2.yaml are copied unchanged from the kUPS
 examples (https://github.com/cusp-ai-oss/kups, commit e183c9a),
 Copyright 2024-2026 Cusp AI, licensed under the Apache License 2.0.
+
+raspa2_IRMOF-1.cif is copied unchanged from RASPA2's own structure
+library (https://github.com/iRASPA/RASPA2, structures/mofs/cif/IRMOF-1.cif),
+Copyright David Dubbeldam, licensed under the MIT License.
+
+pm_IRMOF-1.cif is copied unchanged from PorousMaterials.jl
+(https://github.com/SimonEnsemble/PorousMaterials.jl, viz/IRMOF-1.cif),
+Copyright the PorousMaterials.jl contributors, licensed under the MIT License.

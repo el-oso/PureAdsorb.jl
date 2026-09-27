@@ -27,22 +27,97 @@ natoms(fw::Framework) = length(fw.frac)
 total_charge(fw::Framework) = sum(fw.charges)
 cartesian(fw::Framework) = [fw.cell * f for f in fw.frac]
 
-"""
-    read_cif(path; T = Float64) -> Framework{T}
+# Parses one CIF symmetry-operation string ("x,y,z", "-x+1/2,y,-z+1/2", "1/2-y,1/2+x,z", ...)
+# into a function `frac::SVector{3} -> SVector{3}` applying it, wrapped into [0, 1). Each of the
+# three comma-separated terms is a signed sum of `a*var` (var one of x, y, z; `a` an optional
+# leading fraction or integer, default 1) and constant fraction/integer pieces; CIF never nests
+# parentheses or uses any other operator here, so a fixed-width regex over signed tokens is exact.
+function parse_symop(expr::AbstractString)
+    coeff = zeros(Rational{Int}, 3, 3)
+    const_term = zeros(Rational{Int}, 3)
+    varidx = Dict('x' => 1, 'y' => 2, 'z' => 3)
+    for (row, term) in enumerate(split(replace(expr, " " => ""), ','))
+        for m in eachmatch(r"([+-]?\d*/?\d*)([xyz])|([+-]?\d+/\d+|[+-]?\d+)(?![xyz])", term)
+            if !isnothing(m.captures[2])
+                coefstr, var = m.captures[1], m.captures[2][1]
+                a = isempty(coefstr) || coefstr == "+" ? one(Rational{Int}) :
+                    coefstr == "-" ? -one(Rational{Int}) : parse_frac(coefstr)
+                coeff[row, varidx[var]] += a
+            else
+                const_term[row] += parse_frac(m.captures[3])
+            end
+        end
+    end
+    A = SMatrix{3, 3}(coeff)
+    b = SVector{3}(const_term)
+    return frac -> wrap_frac.(A * frac + b)
+end
+parse_frac(s::AbstractString) = occursin('/', s) ? (parts = split(s, '/'); parse(Int, parts[1]) // parse(Int, parts[2])) : Rational{Int}(parse(Int, s))
 
-Read a minimal CIF: one data block, space group P1 only, one `_atom_site` loop with fractional
-coordinates and an `_atom_site_charge` column (partial charges, in e, are required). Anything
-else in the file is rejected rather than guessed.
+# Expands the asymmetric unit `frac`/`labels`/`symbols`/`charges` under every operation in `ops`
+# to P1, dropping images that coincide (within `tol` fractional units, periodic) with one already
+# kept — a symmetry-equivalent position generated more than once (an atom on a special Wyckoff
+# position, or the identity operation itself) contributes exactly one atom, not one per operation.
+function expand_symmetry(ops, frac::Vector{SVector{3, T}}, labels, symbols, charges; tol = T(1.0e-3)) where {T}
+    efrac = SVector{3, T}[]; elabels = String[]; esymbols = String[]; echarges = T[]
+    periodic_close(a, b) = all(d -> (d = abs(d - round(d)); d < tol), a - b)
+    for a in eachindex(frac)
+        for op in ops
+            p = op(frac[a])
+            any(q -> periodic_close(q, p), efrac) && continue
+            push!(efrac, p); push!(elabels, labels[a]); push!(esymbols, symbols[a]); push!(echarges, charges[a])
+        end
+    end
+    return efrac, elabels, esymbols, echarges
+end
+
 """
-function read_cif(path::AbstractString; T = Float64)
+    read_cif(path; T = Float64, charges = nothing) -> Framework{T}
+
+Read a CIF: one data block, one `_atom_site` loop with fractional coordinates. Symmetry
+operations (`_symmetry_equiv_pos_as_xyz` or `_space_group_symop_operation_xyz`, whichever loop
+the file has) expand the asymmetric unit to P1, deduplicating positions that coincide within
+1e-3 fractional units — a file with neither loop is accepted only when its H-M space-group name
+is literally `P1` (the implicit, one-operation case), and refused (naming the space group) for
+any other name, rather than guessing a symmetry table from it.
+
+Partial charges (e) come from the file's own `_atom_site_charge` column when present and
+`charges` is not given; `charges`, when given, is a `label => charge` mapping (this class of
+material typically assigns charges per crystallographic role via a force field, not per atom in
+the CIF) that supplies every expanded atom's charge by its original asymmetric-unit label,
+overriding any in-file column. Throws if neither source gives every atom a charge, naming
+whichever labels `charges` is missing.
+"""
+function read_cif(path::AbstractString; T = Float64, charges::Union{Nothing, AbstractDict{<:AbstractString, <:Real}} = nothing)
     lines = strip.(readlines(path))
     getval(key) = begin
         i = findfirst(l -> startswith(l, key * " ") || startswith(l, key * "\t"), lines)
         isnothing(i) && throw(ArgumentError("CIF is missing $key"))
         strip(lines[i][(length(key) + 1):end])
     end
-    sg = strip(getval("_symmetry_space_group_name_H-M"), ['\'', '"'])
-    replace(sg, " " => "") == "P1" || throw(ArgumentError("only P1 CIF files are supported, got space group $sg"))
+    loop_strings(header) = begin
+        i = findfirst(==(header), lines)
+        isnothing(i) && return nothing
+        i += 1
+        out = String[]
+        while i <= length(lines) && !isempty(lines[i]) && !startswith(lines[i], "_") && !startswith(lines[i], "loop_")
+            push!(out, strip(lines[i], ['\'', '"'])); i += 1
+        end
+        return out
+    end
+    opstrings = loop_strings("_symmetry_equiv_pos_as_xyz")
+    isnothing(opstrings) && (opstrings = loop_strings("_space_group_symop_operation_xyz"))
+    if isnothing(opstrings)
+        sg = strip(getval("_symmetry_space_group_name_H-M"), ['\'', '"'])
+        replace(sg, " " => "") == "P1" || throw(
+            ArgumentError(
+                "space group $sg has no _symmetry_equiv_pos_as_xyz or _space_group_symop_operation_xyz loop to " *
+                    "expand to P1, and its name is not literally P1; refusing rather than guessing a symmetry table"
+            )
+        )
+        opstrings = ["x,y,z"]
+    end
+    ops = parse_symop.(opstrings)
     keys6 = ("_cell_length_a", "_cell_length_b", "_cell_length_c", "_cell_angle_alpha", "_cell_angle_beta", "_cell_angle_gamma")
     cell = cell_matrix(ntuple(i -> parse(T, getval(keys6[i])), 6)...)
     hstart = findfirst(==("_atom_site_label"), lines)
@@ -52,20 +127,30 @@ function read_cif(path::AbstractString; T = Float64)
     while i <= length(lines) && startswith(lines[i], "_atom_site_")
         push!(cols, lines[i]); i += 1
     end
-    "_atom_site_charge" in cols || throw(ArgumentError("CIF has no _atom_site_charge column; partial charges are required"))
+    has_charge_column = "_atom_site_charge" in cols
+    isnothing(charges) && !has_charge_column &&
+        throw(ArgumentError("CIF has no _atom_site_charge column; partial charges are required (pass `charges` to supply them instead)"))
     col(name) = findfirst(==(name), cols)
     cx, cy, cz, cq = col("_atom_site_fract_x"), col("_atom_site_fract_y"), col("_atom_site_fract_z"), col("_atom_site_charge")
     cl, cs = col("_atom_site_label"), col("_atom_site_type_symbol")
     any(isnothing, (cx, cy, cz, cl, cs)) && throw(ArgumentError("CIF atom_site loop lacks label, type_symbol or fractional coordinates"))
-    frac = SVector{3, T}[]; labels = String[]; symbols = String[]; charges = T[]
+    frac = SVector{3, T}[]; labels = String[]; symbols = String[]; asu_charges = T[]
     while i <= length(lines) && !isempty(lines[i]) && !startswith(lines[i], "_") && !startswith(lines[i], "loop_")
         f = split(lines[i])
         length(f) == length(cols) || throw(ArgumentError("CIF atom row has $(length(f)) fields, header has $(length(cols))"))
         push!(frac, SVector(parse(T, f[cx]), parse(T, f[cy]), parse(T, f[cz])))
-        push!(labels, String(f[cl])); push!(symbols, String(f[cs])); push!(charges, parse(T, f[cq]))
+        label = String(f[cl])
+        push!(labels, label); push!(symbols, String(f[cs]))
+        if !isnothing(charges)
+            haskey(charges, label) || throw(ArgumentError("read_cif: `charges` has no entry for atom label \"$label\""))
+            push!(asu_charges, T(charges[label]))
+        else
+            push!(asu_charges, parse(T, f[cq]))
+        end
         i += 1
     end
-    return Framework{T}(cell, frac, labels, symbols, charges)
+    efrac, elabels, esymbols, echarges = expand_symmetry(ops, frac, labels, symbols, asu_charges)
+    return Framework{T}(cell, efrac, elabels, esymbols, echarges)
 end
 
 """

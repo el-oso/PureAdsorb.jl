@@ -238,6 +238,45 @@ function total_reciprocal_energy(kprefactor, Sk, Shost)
     return T(KE) * acc
 end
 
+"""
+    cross_reciprocal_energy(kprefactor, Sk, Shost) -> energy
+
+Host-guest cross reciprocal-space energy alone, `KE Σ_k pref_k · 2 Re(conj(Shost(k))·Sguest(k))`,
+`Sguest = Sk - Shost` recovered from the running total `Sk` (a system's own slice) and the host's
+own structure factor `Shost`, both sliced to the same k-vectors. Unlike `total_reciprocal_energy`,
+this omits the guest self term `|Sguest|²` entirely, which is what makes it exact on a table
+restricted to the k-vectors coupled to the host's replication — the cross term vanishes wherever
+`Shost` does (theory.md's "Which k-vectors each term needs"), but `|Sguest|²` generally does not,
+so `total_reciprocal_energy`'s combined formula would be wrong there. `FrameworkBatch`'s guest-guest
+table (`ks_gg`/`kprefactor_gg`, `SystemState.Sk_gg`) supplies the guest self term separately, via
+`self_reciprocal_energy`, over the k-vectors the cross term does not need.
+"""
+function cross_reciprocal_energy(kprefactor, Sk, Shost)
+    T = eltype(kprefactor)
+    acc = zero(T)
+    for i in eachindex(kprefactor, Sk, Shost)
+        acc += kprefactor[i] * 2 * real(conj(Shost[i]) * (Sk[i] - Shost[i]))
+    end
+    return T(KE) * acc
+end
+
+"""
+    self_reciprocal_energy(kprefactor, Sk) -> energy
+
+Guest-only reciprocal-space energy `KE Σ_k pref_k |Sk(k)|²`, `Sk` here a purely guest structure
+factor (no host term to subtract, unlike `total_reciprocal_energy`) on a table that carries no
+host contribution at all — `FrameworkBatch`'s guest-guest table (`SystemState.Sk_gg` on
+`batch.ks_gg`/`batch.kprefactor_gg`).
+"""
+function self_reciprocal_energy(kprefactor, Sk)
+    T = eltype(kprefactor)
+    acc = zero(T)
+    for i in eachindex(kprefactor, Sk)
+        acc += kprefactor[i] * abs2(Sk[i])
+    end
+    return T(KE) * acc
+end
+
 # One k-vector's structure-factor change and its (unweighted, unscaled by `KE`) contribution to
 # `ΔU_recip`, given the guest's already-rotated old/new site positions (`guest_sites_at`):
 # shared by `reciprocal_move_delta!` and `reciprocal_move_delta_energy`, which differ only in
@@ -252,6 +291,46 @@ end
     end
     ds = Snew - Sold
     return ds, 2 * real(conj(Sk_i) * ds) + abs2(ds)
+end
+
+# The cross-table counterpart of `_reciprocal_move_delta_k`: `Shost_i` is constant (the host does
+# not move), so `Δ[2 Re(conj(Shost)·Sguest)] = 2 Re(conj(Shost)·ds)` exactly, with no `|ds|²` term
+# — unlike `_reciprocal_move_delta_k`'s target `|Sk|²`, which is quadratic in the moving quantity
+# itself, `2 Re(conj(Shost)·Sguest)` is only linear in it.
+@inline function _cross_move_delta_k(
+        k::SVector{3, T}, charges::SVector{N, T}, old_sites::SVector{N, SVector{3, T}}, new_sites::SVector{N, SVector{3, T}}, Shost_i::Complex{T}
+    ) where {N, T}
+    Sold = zero(Complex{T}); Snew = zero(Complex{T})
+    for s in 1:N
+        Sold += charges[s] * cis(dot(k, old_sites[s]))
+        Snew += charges[s] * cis(dot(k, new_sites[s]))
+    end
+    ds = Snew - Sold
+    return ds, 2 * real(conj(Shost_i) * ds)
+end
+
+"""
+    reciprocal_cross_delta!(ΔS, guest, oldpos, oldq, newpos, newq, ks, kprefactor, Shost) -> ΔU_cross
+
+`reciprocal_move_delta!`'s cross-only counterpart, for the sparse (host-coupled) table under
+`has_ewald_split`: writes `ΔS[i] = S_i^new(k_i) − S_i^old(k_i)` exactly as `reciprocal_move_delta!`
+does (`ΔS` is guest-only either way, so `Sk`'s own update on acceptance, `Sk .+= ΔS`, is unchanged),
+and returns `ΔU_cross = KE Σ_k pref_k · 2 Re[conj(Shost) ΔS]` — `cross_reciprocal_energy`'s own
+formula, differentiated with respect to one guest's move.
+"""
+function reciprocal_cross_delta!(
+        ΔS, guest::Guest{T, N}, oldpos::SVector{3, T}, oldq::SVector{4, T}, newpos::SVector{3, T}, newq::SVector{4, T},
+        ks, kprefactor, Shost
+    ) where {T, N}
+    old_sites = guest_sites_at(guest, oldpos, oldq)
+    new_sites = guest_sites_at(guest, newpos, newq)
+    ΔU = zero(T)
+    for i in eachindex(ks)
+        ds, contribution = _cross_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Shost[i])
+        ΔS[i] = ds
+        ΔU += kprefactor[i] * contribution
+    end
+    return T(KE) * ΔU
 end
 
 """
@@ -331,14 +410,30 @@ function total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Gu
         )
     end
 
+    # With `has_ewald_split(batch)`, every guest-guest quantity (real-space screened Coulomb,
+    # self energy, intramolecular exclusion, and the guest-charge piece of the net-charge
+    # correction) attaches to the guest-guest splitting parameter `alpha_gg`/`ewald_cutoff_gg`
+    # rather than the host's own — `alpha_gg`/`ewald_cutoff_gg` equal `alpha`/`batch.ewald_cutoff`
+    # when the batch has no split, so this is a no-op change there.
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
+
     E_lj_gg, E_sr_gg = guest_guest_energy(
-        guest, state.refpoints, state.orientations, gr, batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+        guest, state.refpoints, state.orientations, gr, batch.sigma, batch.epsilon, guest_types, batch.cutoff, ewald_cutoff_gg, A, invA, alpha_gg
     )
     E += E_lj_gg + T(KE) * E_sr_gg
 
-    E += total_reciprocal_energy(view(batch.kprefactor, krb), view(state.Sk, kr), view(batch.Shost, krb))
+    if split
+        E += cross_reciprocal_energy(view(batch.kprefactor, krb), view(state.Sk, kr), view(batch.Shost, krb))
+        krb_gg = batch_kvec_gg_range(batch, n)
+        kr_gg = kvec_gg_range(state, n)
+        E += self_reciprocal_energy(view(batch.kprefactor_gg, krb_gg), view(state.Sk_gg, kr_gg))
+    else
+        E += total_reciprocal_energy(view(batch.kprefactor, krb), view(state.Sk, kr), view(batch.Shost, krb))
+    end
 
-    gself, gexcl = guest_self_terms(guest, alpha, batch.ewald_cutoff)
+    gself, gexcl = guest_self_terms(guest, alpha_gg, ewald_cutoff_gg)
     E += Ng * T(KE) * (gself + gexcl)
 
     ntypes_ff = length(ff.names)
@@ -354,7 +449,17 @@ function total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Gu
 
     Qh = sum(view(batch.charges, (a0 + 1):(a0 + natoms)))
     Qg = sum(guest.charges)
-    E += -T(KE) * T(π) / (2 * batch.volumes[fw] * alpha^2) * ((Qh + Ng * Qg)^2 - Qh^2)
+    if split
+        # The net-charge (k=0) correction for adding `Ng` guests of total charge `Ng*Qg` splits
+        # exactly as `(Qh + Ng*Qg)² - Qh² = 2·Qh·(Ng·Qg) + (Ng·Qg)²` does: the cross piece
+        # (bilinear in the host's and the guests' charge) attaches to `alpha`, matching
+        # `cross_reciprocal_energy`'s own splitting parameter; the guest-self piece (quadratic in
+        # the guests' charge alone) attaches to `alpha_gg`, matching `self_reciprocal_energy`'s.
+        E += -T(KE) * T(π) / (batch.volumes[fw] * alpha^2) * Qh * (Ng * Qg)
+        E += -T(KE) * T(π) / (2 * batch.volumes[fw] * alpha_gg^2) * (Ng * Qg)^2
+    else
+        E += -T(KE) * T(π) / (2 * batch.volumes[fw] * alpha^2) * ((Qh + Ng * Qg)^2 - Qh^2)
+    end
 
     return E
 end
@@ -383,10 +488,20 @@ acceptance-conditional basis as `ΔS`: write it into `state.host_energy[i]` on a
 the cache untouched on rejection. `total_energy` never reads `host_energy`, so a caller that fails
 to keep the cache in step with the poses still gets caught by `audit_energy!`, which recomputes
 every guest's host energy from poses alone.
+
+When `has_ewald_split(batch)`, the reciprocal-space change splits the same way `total_energy`
+does: `ΔS` (sized to `batch_kvec_range(batch, n)`) still updates `state.Sk` exactly as before —
+`Sk .+= ΔS` on acceptance — but via the cross-only formula (`reciprocal_cross_delta!`) rather
+than `reciprocal_move_delta!`'s self-quadratic one, since `ks` is then the coupled subset alone.
+`ΔS_gg`, sized to `batch_kvec_gg_range(batch, n)`, is then required and carries the guest-guest
+table's own structure-factor change for the caller to apply to `state.Sk_gg` (`Sk_gg .+= ΔS_gg`)
+on acceptance, via `reciprocal_move_delta!`'s ordinary formula. `ΔS_gg` is ignored (and may be
+left `nothing`) when `!has_ewald_split(batch)`; guest-guest real-space terms (LJ and screened
+Coulomb) attach to `alpha_gg`/`ewald_cutoff_gg` there too, matching `total_energy`.
 """
 function guest_move_delta(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, n::Integer, i::Integer,
-        newpos::SVector{3, T}, newq::SVector{4, T}, ΔS
+        newpos::SVector{3, T}, newq::SVector{4, T}, ΔS; ΔS_gg = nothing
     ) where {T, N}
     oldpos = state.refpoints[i]; oldq = state.orientations[i]
     fw = batch.framework_of[n]
@@ -401,13 +516,33 @@ function guest_move_delta(
         batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
     )
     gr = guest_range(state, n)
+
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
     ΔU_gg = guest_guest_move_delta(
         guest, state.refpoints, state.orientations, gr, i, oldpos, oldq, newpos, newq,
-        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, ewald_cutoff_gg, A, invA, alpha_gg
     )
+
     kr = kvec_range(state, n)
     krb = batch_kvec_range(batch, n)
-    ΔU_recip = reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, krb), view(batch.kprefactor, krb), view(state.Sk, kr))
+    if split
+        isnothing(ΔS_gg) && throw(
+            ArgumentError("guest_move_delta: batch has an Ewald split (has_ewald_split(batch)); ΔS_gg is required")
+        )
+        ΔU_cross = reciprocal_cross_delta!(
+            ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, krb), view(batch.kprefactor, krb), view(batch.Shost, krb)
+        )
+        krb_gg = batch_kvec_gg_range(batch, n)
+        kr_gg = kvec_gg_range(state, n)
+        ΔU_self = reciprocal_move_delta!(
+            ΔS_gg, guest, oldpos, oldq, newpos, newq, view(batch.ks_gg, krb_gg), view(batch.kprefactor_gg, krb_gg), view(state.Sk_gg, kr_gg)
+        )
+        ΔU_recip = ΔU_cross + ΔU_self
+    else
+        ΔU_recip = reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, krb), view(batch.kprefactor, krb), view(state.Sk, kr))
+    end
     return (e_new - e_old) + ΔU_gg + ΔU_recip, e_new
 end
 

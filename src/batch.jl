@@ -101,6 +101,37 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     fullk::Bool
     nsys::Int
     framework_of::VI
+    alphas_gg::VT
+    ewald_cutoff_gg::T
+    ks_gg::VK
+    kprefactor_gg::VT
+    k_gg_offsets::VI
+    split_gg::Bool
+end
+
+"""
+    has_ewald_split(batch::FrameworkBatch) -> Bool
+
+`true` when `batch` was built with a distinct guest-guest Ewald splitting parameter (`ewald_gg`
+at construction), `false` when the guest-guest reciprocal term is folded into
+`ks`/`kprefactor`/`Shost` as it always was before this capability existed. A stored flag rather
+than `ewald_cutoff_gg != ewald_cutoff`: the latter would misreport `false` for the degenerate
+(but legal) case of an explicit `ewald_gg` whose cutoff happens to equal the host's own, even
+though `ks` is then restricted to the coupled subset and needs `ks_gg`'s contribution to be
+complete.
+"""
+has_ewald_split(batch::FrameworkBatch) = batch.split_gg
+
+"""
+    batch_kvec_gg_range(batch, n) -> UnitRange
+
+System `n`'s framework's slice of `ks_gg`/`kprefactor_gg`, resolved through `batch.framework_of`
+exactly as `batch_kvec_range` resolves the cross table's slice. Empty for every system when
+`!has_ewald_split(batch)`.
+"""
+function batch_kvec_gg_range(batch::FrameworkBatch, n::Integer)
+    fw = batch.framework_of[n]
+    return (batch.k_gg_offsets[fw] + 1):batch.k_gg_offsets[fw + 1]
 end
 Adapt.@adapt_structure FrameworkBatch
 
@@ -195,7 +226,8 @@ function verify_replication(n::Integer, fw::Framework{T}, kv_full, coeffs, Sh_fu
 end
 
 """
-    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 2, fullk = false) -> FrameworkBatch
+    FrameworkBatch(fws, ff::ForceField, guest::Guest, ewald::EwaldParams; cellwidth = 2, fullk = false,
+                   ewald_gg = nothing) -> FrameworkBatch
 
 Assemble a batch from host frameworks `fws`, sharing one force field, guest and set of Ewald
 parameters across all of them. Each framework must already be replicated large enough that its
@@ -219,6 +251,27 @@ system's stored cell, needed once guests are mobile (see `FrameworkBatch`'s docs
 neutral guest still builds no reciprocal-space table either way, since its structure factor is
 identically zero regardless of which k-vectors are kept.
 
+`ewald_gg`, when given, splits the guest reciprocal-space work in two: `ks`/`kprefactor`/`Shost`
+then always hold only the replication-coupled subset (the host-guest cross term
+`2 Re(conj(Shost)·Sguest)` needs nothing else, since it vanishes wherever `Shost` does), and a
+second table `ks_gg`/`kprefactor_gg` — every k-vector `kvectors` enumerates at `ewald_gg`'s own
+splitting parameter `alphas_gg`/`ewald_cutoff_gg`, no coupling filter — carries the guest-guest
+term `|Sguest(k)|²`, which is nonzero at every k regardless of host replication. `ewald_gg`'s own
+real-space cutoff is typically wider than `ewald.cutoff`, which lets `ewald_alpha` choose a
+smaller `alphas_gg` and therefore a smaller k-space cutoff for that second table; `total_energy`
+and `guest_move_delta` (`src/guest.jl`) attach the guest self, exclusion and net-charge terms to
+`alphas_gg`/`ewald_cutoff_gg` rather than to the host's own, since those terms belong to the
+guest-guest decomposition. `fullk=true` is incompatible with `ewald_gg` (it would leave `ks`
+ambiguous between "the cross table" and "the old single combined table") and throws. Throws if
+`alphas_gg · ewald_gg.cutoff` exceeds `PAIR_ERFC_XMAX`, the same guard as the host's own
+splitting parameter. Throws if any framework's minimum image does not exceed
+`2 * (max(ff.cutoff, ewald_gg.cutoff) + r_guest)`, naming the framework and the required
+replication: a wider `ewald_gg.cutoff` tightens this bound past what `ewald.cutoff` alone would
+require. `ewald_cutoff_gg`/`alphas_gg` equal `ewald.cutoff`/`alphas` when `ewald_gg` is omitted
+(`has_ewald_split` is then `false`), and `ks_gg`/`kprefactor_gg` are empty, so every
+split-specific loop elsewhere in the package contributes nothing and existing behavior is
+unchanged.
+
 `constant_offset[n]` collects every pose-independent term of inserting `guest` into system `n`:
 the tail-correction change, the guest self-energy, its intramolecular exclusion (using the same
 erfc_dev convention as `ewald_energy`'s E_excl, since the guest is rigid this is
@@ -236,8 +289,11 @@ cell) needs the per-insertion sum, which this batch does not provide. Throws if
 """
 function FrameworkBatch(
         fws::AbstractVector{<:Framework{T}}, ff::ForceField{T}, guest::Guest{T, N}, ewald::EwaldParams{T};
-        cellwidth = 2, fullk::Bool = false
+        cellwidth = 2, fullk::Bool = false, ewald_gg::Union{Nothing, EwaldParams{T}} = nothing
     ) where {T, N}
+    fullk && !isnothing(ewald_gg) && throw(
+        ArgumentError("FrameworkBatch: fullk=true is incompatible with ewald_gg; ewald_gg always keeps ks/Shost restricted to the coupled subset")
+    )
     rc = max(ff.cutoff, ewald.cutoff)
     r_guest = maximum(norm, guest.sites)
     rc_guard = rc + r_guest
@@ -272,6 +328,7 @@ function FrameworkBatch(
     invcells = SMatrix{3, 3, T, 9}[]
     volumes = T[]
     alphas = T[]
+    alphas_gg = T[]
     ks = SVector{3, T}[]
     kprefactor = T[]
     Shost = Complex{T}[]
@@ -296,6 +353,23 @@ function FrameworkBatch(
     )
     kmax = ewald_kmax(α, ewald.precision)
     neutral_guest = all(iszero, guest.charges)
+
+    # `ewald_gg`'s own splitting parameter for the guest-guest reciprocal term (theory.md's
+    # "Which k-vectors each term needs"). Absent, `alpha_gg`/`ewald_cutoff_gg` equal the host's
+    # own so every guest-guest real-space call below is unaffected and `ks_gg` stays empty.
+    ewald_for_gg = something(ewald_gg, ewald)
+    alpha_gg = isnothing(ewald_gg) ? α : ewald_alpha(ewald_gg.cutoff, ewald_gg.precision)
+    alpha_gg * ewald_for_gg.cutoff <= PAIR_ERFC_XMAX || throw(
+        ArgumentError(
+            "ewald_gg: α_gg·ewald_gg.cutoff = $(alpha_gg * ewald_for_gg.cutoff) exceeds PAIR_ERFC_XMAX = $PAIR_ERFC_XMAX: " *
+                "the guest-guest screened-Coulomb series is only fitted up to that bound; loosen ewald_gg.precision " *
+                "or shorten ewald_gg.cutoff to bring α_gg·ewald_gg.cutoff back under $PAIR_ERFC_XMAX"
+        )
+    )
+    kmax_gg = isnothing(ewald_gg) ? kmax : ewald_kmax(alpha_gg, ewald_gg.precision)
+    ks_gg = SVector{3, T}[]
+    kprefactor_gg = T[]
+    k_gg_offsets = Int32[0]
     # One fixed set of orientations, shared across every framework in the batch: the guest
     # self term depends only on orientation, so two frameworks built from the same cell and
     # guest must get the same self-term samples.
@@ -324,6 +398,17 @@ function FrameworkBatch(
                     "replicate it by $m first"
             )
         )
+        if !isnothing(ewald_gg)
+            rc_gg = max(ff.cutoff, ewald_gg.cutoff)
+            rc_guard_gg = rc_gg + r_guest
+            m_gg = min_multiplicity(fw.cell, rc_guard_gg)
+            m_gg == (1, 1, 1) || throw(
+                ArgumentError(
+                    "framework $n is too small for ewald_gg.cutoff=$(ewald_gg.cutoff) plus guest reach $r_guest = " *
+                        "$rc_guard_gg; replicate it by $m_gg first"
+                )
+            )
+        end
         A = fw.cell
         L = perpendicular_lengths(A)
         n_grid = grid_dims(L, w)
@@ -342,12 +427,24 @@ function FrameworkBatch(
         push!(invcells, inv(A))
         push!(volumes, V)
         push!(alphas, α)
+        push!(alphas_gg, alpha_gg)
         # Verifying a claimed `replication` needs the full k-vector table even for a neutral
         # guest, which otherwise builds no reciprocal-space table at all.
         if !neutral_guest || fw.replication != (1, 1, 1)
             kv_full, kpref_full, Sh_full, coeffs = full_ktables(A, pos, fw.charges, α, kmax)
             fw.replication == (1, 1, 1) || verify_replication(n, fw, kv_full, coeffs, Sh_full)
         end
+        # The guest-guest table is unconditional on replication (it carries no host structure
+        # factor to verify) and, unlike `ks`, is a fresh enumeration at `alpha_gg`/`kmax_gg`
+        # rather than a subset of `kv_full`: `ewald_gg` generally differs from `ewald`, so its
+        # k-vector table is a different grid, not a slice of the host's.
+        if !neutral_guest && !isnothing(ewald_gg)
+            ks_gg_fw, w_gg_fw, = kvectors(A, kmax_gg)
+            kpref_gg_fw = [w_gg_fw[i] * pk(dot(ks_gg_fw[i], ks_gg_fw[i]), alpha_gg, V) for i in eachindex(ks_gg_fw, w_gg_fw)]
+            append!(ks_gg, ks_gg_fw)
+            append!(kprefactor_gg, kpref_gg_fw)
+        end
+        push!(k_gg_offsets, Int32(length(ks_gg)))
         self_mean = zero(T)
         # a guest without charges has no Coulomb terms, so no reciprocal-space table is built
         # and its self term is exactly zero at every orientation
@@ -427,6 +524,7 @@ function FrameworkBatch(
         ncells, cell_offsets, cellgrid_offsets,
         sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig,
         Vector{SVector{3, T}}(guest.sites), Vector{T}(guest.charges), bs, kmin,
-        ff.cutoff, ewald.cutoff, fullk, length(fws), framework_of
+        ff.cutoff, ewald.cutoff, fullk, length(fws), framework_of,
+        alphas_gg, ewald_for_gg.cutoff, ks_gg, kprefactor_gg, k_gg_offsets, !isnothing(ewald_gg)
     )
 end

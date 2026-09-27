@@ -140,6 +140,22 @@ results = vcat(
     signature_findings(PureAdsorb.guest_sites_at, guest_sites_at_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.total_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    # The guest-guest Ewald split (`has_ewald_split`, `src/guest.jl`): the cross-only and
+    # self-only reciprocal-energy formulas each of `ks`/`ks_gg` uses.
+    signature_findings(PureAdsorb.cross_reciprocal_energy, total_reciprocal_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.cross_reciprocal_energy, total_reciprocal_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.self_reciprocal_energy, (Vector{Float64}, Vector{ComplexF64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.self_reciprocal_energy, (Vector{Float32}, Vector{ComplexF32}); guarantees = (:typestable, :noalloc)),
+    signature_findings(
+        PureAdsorb._cross_move_delta_k, (SVector{3, Float64}, SVector{3, Float64}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, ComplexF64);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb._cross_move_delta_k, (SVector{3, Float32}, SVector{3, Float32}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, ComplexF32);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(PureAdsorb.reciprocal_cross_delta!, reciprocal_move_delta_bang_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_cross_delta!, reciprocal_move_delta_bang_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.sk_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),

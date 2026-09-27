@@ -44,8 +44,16 @@ guest-guest pair loop, or RNG guest selection may read as live.
 (`FrameworkBatch`'s docstring), since a shared host still has independent guests per system, so
 `batch_kvec_range` resolves a system's framework's slice of `batch`'s deduplicated tables while
 `kvec_range` resolves that system's own slice of `Sk` here. This is correct only when that batch
-was built with `fullk = true`: a guest's own structure factor is nonzero at every k, not only the
-host-coupled subset the sparse (Milestone A) path keeps, so the constructor requires it.
+was built with `fullk = true`, or with `ewald_gg` (`has_ewald_split`): either keeps `ks` covering
+every k-vector the guest-guest term needs, `fullk` by keeping the whole table there and
+`ewald_gg` by moving the guest-guest piece to its own `ks_gg` table instead (below); the
+constructor requires one or the other.
+
+`k_gg_offsets` (`kvec_gg_range`) is the same layout for `Sk_gg`, the running GUEST-ONLY
+structure factor (no `Shost` term — the guest-guest table carries no host contribution at all)
+on `batch.ks_gg`; both stay empty when `!has_ewald_split(batch)`, so every guest-guest-table sum
+elsewhere in the package contributes nothing and `Sk` alone (as above) carries the whole
+reciprocal-space picture, exactly as before this capability existed.
 
 `energy` is a per-system running total, set at construction to `total_energy(batch, state,
 guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incrementally from
@@ -102,30 +110,41 @@ struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM, VA, VO}
     accepted::VM
     attempted::VM
     nsys::Int
+    k_gg_offsets::VI
+    Sk_gg::VS
 end
 Adapt.@adapt_structure SystemState
 
+"""
+    kvec_gg_range(state::SystemState, n::Integer) -> UnitRange
+
+System `n`'s slice of `Sk_gg`, the running guest-only structure factor on the batch's
+guest-guest table (`FrameworkBatch.ks_gg`) — empty for every system when the batch was built
+without `ewald_gg` (`!has_ewald_split`).
+"""
+kvec_gg_range(state::SystemState, n::Integer) = (state.k_gg_offsets[n] + 1):state.k_gg_offsets[n + 1]
+
 function SystemState(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
     )
     F = eltype(energy)
     return SystemState{F}(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
     )
 end
 
 function SystemState{F}(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
     ) where {F}
     return SystemState{
         F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed),
         typeof(accepted), typeof(sk_abs_accum), typeof(occupancy),
     }(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys)
+        host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys), k_gg_offsets, Sk_gg
     )
 end
 
@@ -339,11 +358,11 @@ function SystemState(
                 "batch types=$(batch.guest_types_orig), sites=$(batch.guest_sites_orig), charges=$(batch.guest_charges_orig)"
         )
     )
-    batch.fullk || throw(
+    (batch.fullk || has_ewald_split(batch)) || throw(
         ArgumentError(
-            "SystemState needs a FrameworkBatch built with fullk=true: a guest's structure factor " *
-                "is nonzero at every k-vector, not only the host-coupled subset the sparse " *
-                "(Milestone A) path keeps"
+            "SystemState needs a FrameworkBatch built with fullk=true or ewald_gg set: a guest's " *
+                "structure factor is nonzero at every k-vector, not only the host-coupled subset the " *
+                "sparse (Milestone A) path keeps, and one of the two is what supplies it"
         )
     )
     nsys = batch.nsys
@@ -413,6 +432,24 @@ function SystemState(
         Sk[kr] .+= structure_factor(view(batch.ks, krb), sitepos, siteq)
     end
 
+    # `Sk_gg` mirrors `Sk`'s construction on the guest-guest table (`batch.ks_gg`), but with no
+    # `Shost` term to seed from — the guest-guest table carries no host contribution at all.
+    # Empty (`k_gg_offsets[end] == 0`) when `!has_ewald_split(batch)`.
+    k_gg_offsets = Vector{Int32}(undef, nsys + 1)
+    k_gg_offsets[1] = 0
+    for n in 1:nsys
+        k_gg_offsets[n + 1] = k_gg_offsets[n] + Int32(length(batch_kvec_gg_range(batch, n)))
+    end
+    Sk_gg = zeros(Complex{F}, k_gg_offsets[end])
+    for n in 1:nsys
+        kr_gg = (k_gg_offsets[n] + 1):k_gg_offsets[n + 1]
+        krb_gg = batch_kvec_gg_range(batch, n)
+        gr = (guest_offsets[n] + 1):(guest_offsets[n] + occupancy[n])
+        (isempty(kr_gg) || isempty(gr)) && continue
+        sitepos, siteq = guest_site_positions_charges(guest, refpoints, orientations, gr)
+        Sk_gg[kr_gg] .= structure_factor(view(batch.ks_gg, krb_gg), sitepos, siteq)
+    end
+
     guest_types_c = SVector{N, Int}(batch.guest_types)
     guest_compact = Guest{F, N}(guest.sites, guest_types_c, guest.charges, guest.tc, guest.pc, guest.omega)
     host_energy = zeros(F, ntot)
@@ -437,7 +474,7 @@ function SystemState(
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     st = SystemState(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
     )
     for n in 1:nsys
         st.energy[n] = total_energy(batch, st, guest, ff, n)

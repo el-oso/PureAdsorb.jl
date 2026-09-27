@@ -26,11 +26,12 @@ include("guest.jl")
 include("moves.jl")
 include("audit.jl")
 include("nvt.jl")
+include("gcmc.jl")
 include("units.jl")
 
 export Framework, read_cif, replicate, ForceField, read_forcefield, Guest, read_guest,
     EwaldParams, FrameworkBatch, widom, WidomResult, SystemState,
     MoveWorkspace, mc_step!, MOVE_TRANSLATION, MOVE_ROTATION, MOVE_REINSERTION,
-    run_nvt!, NVTResult, peng_robinson_fugacity
+    run_nvt!, NVTResult, peng_robinson_fugacity, run_gcmc!, GCMCResult
 
 end

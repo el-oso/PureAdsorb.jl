@@ -67,25 +67,25 @@ end
 
 """
     widom_chain_kernel!(ΔU, sys_of, rpos, quat, batch, guest, guest_types, refpoints, orientations,
-                        guest_offsets, Sk, sys_k_offsets, const_term)
+                        guest_offsets, occupancy, Sk, sys_k_offsets, const_term)
 
 Test-particle insertion energy at pose `(batch.cells[fw]*rpos[i], quat[i])`, `s = sys_of[i]`,
 `fw = batch.framework_of[s]`, into system `s` as it currently stands: host-guest real space plus
 the reciprocal cross term against the RUNNING total structure factor `Sk` (`insertion_energy`,
 generalized from Milestone A's `Shost`-only background to the full host-plus-guests field — at
 `Sk == Shost` this reduces to Milestone A's own formula exactly), plus guest-guest real space
-against every existing guest in `guest_offsets[s]+1:guest_offsets[s+1]`
-(`guest_pair_realspace_energy`, an empty sum when the system holds no guests), plus the
-pose-independent `const_term[s]` (`insertion_constant_term`). `sys_k_offsets` (the caller's own
-`state.k_offsets`) locates system `s`'s slice of `Sk`, which is sized one slice per SYSTEM even
-when systems share a framework and so cannot reuse `batch.k_offsets` (one slice per FRAMEWORK,
-`FrameworkBatch`'s docstring) directly. Reads `refpoints`/`orientations`/`Sk` only; never mutates
-state.
+against every LIVE existing guest (`guest_offsets[s]+1:guest_offsets[s]+occupancy[s]`, matching
+`guest_range`'s own bound rather than the system's reserved capacity — `guest_pair_realspace_energy`,
+an empty sum when the system holds no guests), plus the pose-independent `const_term[s]`
+(`insertion_constant_term`). `sys_k_offsets` (the caller's own `state.k_offsets`) locates system
+`s`'s slice of `Sk`, which is sized one slice per SYSTEM even when systems share a framework and so
+cannot reuse `batch.k_offsets` (one slice per FRAMEWORK, `FrameworkBatch`'s docstring) directly.
+Reads `refpoints`/`orientations`/`Sk` only; never mutates state.
 """
 @kernel function widom_chain_kernel!(
         ΔU, @Const(sys_of), @Const(rpos), @Const(quat), batch, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        @Const(refpoints), @Const(orientations), @Const(guest_offsets), @Const(Sk), @Const(sys_k_offsets),
-        @Const(const_term)
+        @Const(refpoints), @Const(orientations), @Const(guest_offsets), @Const(occupancy), @Const(Sk),
+        @Const(sys_k_offsets), @Const(const_term)
     ) where {T, N}
     i = @index(Global)
     s = sys_of[i]
@@ -106,7 +106,7 @@ state.
         view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(Sk, ks0:ks1)
     )
     test_sites = guest_sites_at(guest, pos, q)
-    gr = (guest_offsets[s] + one(eltype(guest_offsets))):guest_offsets[s + 1]
+    gr = (guest_offsets[s] + one(eltype(guest_offsets))):(guest_offsets[s] + occupancy[s])
     E_lj = zero(T); E_sr = zero(T)
     for j in gr
         other_sites = guest_sites_at(guest, refpoints[j], orientations[j])
@@ -312,7 +312,7 @@ function run_nvt!(
         copyto!(dquat, quat)
         widom_chain_kernel!(backend)(
             dΔU, dsys, drpos, dquat, db, guest_c, guest_types, dst.refpoints, dst.orientations, dst.guest_offsets,
-            dst.Sk, dst.k_offsets, d_const_term; ndrange = ninsert_per_cycle
+            dst.occupancy, dst.Sk, dst.k_offsets, d_const_term; ndrange = ninsert_per_cycle
         )
         KernelAbstractions.synchronize(backend)
         copyto!(ΔU_h, dΔU)

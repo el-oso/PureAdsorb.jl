@@ -31,11 +31,12 @@ distribution while still looking healthy. `refpoints` (Å, Cartesian, wrapped in
 `orientations` (unit quaternions, `rotate`'s `(x, y, z, w)` convention, the same one Milestone A
 uses) together give each guest's pose. `insert_guest!`/`delete_guest!` update only these arrays
 and `occupancy`; a caller applying a μVT move is responsible for updating `Sk` and `energy` to
-match, exactly as `mc_step!`'s kernels already do for the NVT moves. Those kernels, and
-`select_and_propose`, currently index a system's guests as `guest_offsets[n]+1:guest_offsets[n+1]`
-directly rather than through `guest_range` — correct only as long as `occupancy[n] ==
-capacity(state, n)`, which holds for every `SystemState` this package's moves actually run
-against today, since nothing yet calls `insert_guest!`/`delete_guest!` on a state a move touches.
+match, exactly as `mc_step!`'s kernels already do for the NVT moves. Those kernels,
+`select_and_propose` and `widom_chain_kernel!` all index a system's live guests through
+`occupancy[n]` (an `occupancy`-bounded range built from `guest_offsets[n]`, matching
+`guest_range`'s own bound) rather than through `guest_offsets[n]+1:guest_offsets[n+1]`, its
+reserved capacity: a slot beyond occupancy holds a stale or sentinel pose that no energy loop,
+guest-guest pair loop, or RNG guest selection may read as live.
 
 `k_offsets` (`kvec_range`) gives each system its OWN slice of `Sk`, one system at a time, so that
 `Sk[i] = Shost(k_i) + Σ_guests S_guest(k_i)` for every k-vector that system's framework carries —

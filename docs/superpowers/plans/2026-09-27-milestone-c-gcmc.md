@@ -136,3 +136,101 @@ needs 6. Task 10 is last.
 - **Slow convergence of the fluctuation `q_st`.** It may simply need more cycles than is practical;
   if so, report it with its error and say it is slow rather than hiding it.
 - **The IRMOF-1 comparison may be blocked** by file format rather than physics.
+
+## Second-opinion review, 2026-09-27 — five errors, and the ideal-gas gate is not sufficient
+
+An independent review read the design, the plan, the landed code, the in-progress task-3 diff and
+the kUPS source. Findings, in the order they should be fixed.
+
+**E1 — Units. There is no pascal conversion anywhere, and it is a factor of 1.6e11.**
+`peng_robinson_fugacity` returns `f` in pascals; `batch.volumes` is Å³ and `kT` is eV, so
+`log_insertion_prefactor(f, V, kT, N)` in the working tree mixes all three. kUPS converts before
+the equation of state (`application/mcmc/data.py:427-431`, `PASCAL = 1/(METER³·e)`). The factor is
+
+    PASCAL = 1 / (1e30 * 1.6021766208e-19) = 6.241509e-12  eV Å⁻³ Pa⁻¹
+
+Left uncorrected the insertion prefactor is 1.6e11 too large: **every insertion is accepted, the
+chain climbs to capacity, and the energy audit passes.** Add `PASCAL` to `src/constants.jl` beside
+`KB`, convert exactly once at the μVT entry point, and document the unit on the `f` argument.
+Peng–Robinson is scale-invariant in pressure (only `P/pc` enters), so the conversion belongs at
+the acceptance boundary, not inside `fugacity.jl`.
+
+**E2 — Insertion and deletion are not individually detailed-balanced, and the spec says they are.**
+Design §1.1 and `src/moves.jl`'s header carry Milestone B's argument that each move satisfies
+detailed balance individually, so any fixed schedule preserves the target. That holds for
+translation, rotation and reinsertion and **fails for insertion or deletion alone** — an
+insertion cannot be reversed by an insertion. Only the mixture `½K_ins + ½K_del` is
+π-preserving. A deterministic alternation samples the wrong loading with a passing audit
+(worked counterexample: ideal gas at `fV/kT = 0.1` gives a stationary ratio of 0.009 instead of
+0.1). Requirements: the choice between insertion and deletion is a **fresh fair random draw every
+launch**, `p_ins = p_del` is an invariant the prefactors depend on, and the "any fixed sequence"
+argument must be restated as applying to the NVT moves and to the exchange pair *as one move*.
+Task 8's discriminating test should perturb exactly this.
+
+**E3 — `q_st` sign: kUPS's GCMC analyzer is the negative of its own Widom analyzer.**
+`application/mcmc/analysis.py:122-126` computes `cov/var − kT`; its Widom path
+(`analysis.py:326-332`) computes `kT − ⟨ΔU·W⟩/⟨W⟩`. Ours follows the Widom convention, so task 9
+must compare against `−hoa_kUPS`. `U` is the configurational energy, exactly `total_energy`.
+Use a pooled estimator with a jackknife over blocks, not kUPS's per-block ratio (which carries
+the Jensen bias its own docstring warns about). Convergence goes as `(1−ρ²)/(n ρ²)` with
+`ρ = corr(U,N)`; **measure ρ per system** — below 0.5 expect more than 4× the cycles the loading
+needs.
+
+**E4 — `insertion_constant_term` is cached once per run and depends on N.**
+`src/nvt.jl:44-63` folds the tail correction (N² convention) and the net-charge term into a
+constant evaluated once before the cycle loop. Correct for NVT, wrong the moment N changes.
+Insertion needs `tail(N+1) − tail(N)` at the chain's current N. Compute it in-kernel from
+`occupancy[n]`; for CO2 the net-charge piece is zero, so the tail term is what would silently
+drift.
+
+**E5 — kUPS's own example is mislabelled.** `examples/mcmc_rigid.yaml` says
+`pressure: 10_000  # Pa (10 bar)`; 1e4 Pa is 0.1 bar. That run is also 100% exchange moves
+(the other three probabilities are zero). Task 9 must match both. At that pressure the fugacity
+coefficient is about 0.9995, so **the kUPS GCMC comparison does not exercise the equation of
+state at all** within statistical error.
+
+**P1 — Deletion at N = 0 and insertion at capacity.** `log_deletion_prefactor(…, 0)` evaluates to
+`-Inf`, so rejection happens by the IEEE accident ruling R7 forbids relying on; reject explicitly.
+Worse: a kernel cannot throw at capacity, so if it merely rejects, the chain samples a truncated
+ensemble and **`audit_energy!`'s `occupancy <= capacity` check is vacuous** — nothing can ever
+exceed it. Replace with a per-system `capacity_hits` counter written by the kernel and checked
+host-side, throwing on nonzero. Test: an ideal-gas chain with `fV/kT = 20` and capacity 25 must
+abort, not finish.
+
+**P2 — Cycle length must be recomputed each cycle** from the live maximum occupancy, as kUPS does
+(`mcmc_rigid.py`'s `LoopPropagator` evaluates it on the current state). `run_nvt!` fixes it once
+before the loop; copying that into the GCMC driver biases sampling density as N drifts.
+
+**P3 — `insert_guest!`'s `host_energy_new` defaults to zero** (`src/state.jl:212`). A caller that
+forgets it corrupts the cache silently until the next audit. Make it required.
+
+**R1 — The ideal-gas gate as specified cannot catch E1.** Asserting `⟨N⟩ = fV/kT` with the
+expected value computed from the same `f`, `V` and `kT` the code consumes is self-referential: it
+pins the combinatorial factors, and a uniform scale error in `f` passes it. **Assert a physical
+anchor instead** — Loschmidt (1 atm, 273.15 K, ⟨N⟩ = 1 in 37,219 Å³), or the kUPS example
+(1e4 Pa, 298.15 K, RUBTAK 3×3×3 at V = 61,457 Å³ gives ⟨N⟩ = 0.1493, kT = 0.025693 eV).
+"Interactions off" must also zero the tail, net-charge and per-guest self/exclusion terms.
+
+**R2 — A sharper test that merges tasks 7 and 8.** With interactions on,
+`P(N+1)/P(N) = (fV/((N+1)kT))·⟨exp(−ΔU_ins/kT)⟩_N`, where the average is Milestone B's
+Widom-along-chain at loading N. At N = 0 this is Henry's law exactly, so one test has a
+closed-form target at every loading and ties C to B under the real potential.
+
+**R3 — To exercise the equation of state**, run the ideal-gas chain at CO2, 298 K, 5e6 Pa, where
+the fugacity coefficient is well below 1, and assert `⟨N⟩ = φPV/kT`. A 20–30% effect is a
+many-σ discriminator in a short run.
+
+**Sound, confirmed:** the acceptance ratios themselves are correct and exact inverses, matching
+kUPS's `LogFugacityRatio`, *given* E1 and E2. The rigid-body orientational factor **cancels**,
+because the equation-of-state fugacity refers to the same rigid molecule's ideal gas and the
+orientation proposal is exactly uniform on SO(3) — both Λ and the rotational partition function,
+symmetry number included, drop out. **Warning attached**: if the hard-core stage is ever used to
+*resample* an insertion pose until it clears the host, the proposal stops being uniform and the
+ratio needs a correction; using it only to short-circuit the energy of a pose that is then
+rejected as a normal attempt is fine. `state.jl`'s swap-delete is correct in every field.
+
+**Throughput:** looping to `occupancy` rather than capacity is warp-uniform under
+workgroup-per-chain, so the divergence worry is probably moot — measure at `nsys = 1024` with N
+uniform over 0..50 against all-50 and all-0. The real costs are that half of all exchange attempts
+are insertions with no host-energy cache, and that a batch-wide cycle length set by the maximum N
+wastes work on low-pressure chains in a mixed-pressure isotherm batch.

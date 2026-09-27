@@ -70,6 +70,12 @@ const MOVE_TRANSLATION = Int32(1)
 const MOVE_ROTATION = Int32(2)
 const MOVE_REINSERTION = Int32(3)
 
+# `mc_step!`'s default `groupsize`, chosen by the minimax ratio to the best groupsize measured
+# across {32, 64, 128, 256} at nsys ∈ {1, 64, 256}, both precisions, on an RTX 4070
+# (`bench/results/pureadsorb_groupsizesweep_*.json`, `bench/results/README.md`): 64 is never more
+# than 45% above the best groupsize in any measured cell, against 59-177% for the alternatives.
+const DEFAULT_GROUPSIZE = 64
+
 # Hamilton product in the (x, y, z, w) convention `rotate` uses (scalar last): `qmul(q2, q1)`
 # composes "apply q1, then q2", i.e. `rotate(qmul(q2, q1), v) == rotate(q2, rotate(q1, v))`.
 function qmul(q2::SVector{4, T}, q1::SVector{4, T}) where {T}
@@ -462,7 +468,7 @@ end
 
 """
     mc_step!(ws, batch, state, guest, guest_types, movetype, step_trans, step_rot, kT;
-             backend = CPU(), groupsize = 256,
+             backend = CPU(), groupsize = DEFAULT_GROUPSIZE,
              nblocks_per_chain = default_nblocks_per_chain(T, state.nsys)) -> nothing
 
 One Metropolis Monte Carlo move attempt for every chain in `state`, all performing the same
@@ -485,7 +491,7 @@ reduction halves it every step) and `nblocks_per_chain` must not exceed `ws.nblo
 function mc_step!(
         ws::MoveWorkspace, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
         movetype::Integer, step_trans, step_rot, kT::T;
-        backend = CPU(), groupsize::Integer = 256, nblocks_per_chain::Integer = default_nblocks_per_chain(T, state.nsys)
+        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE, nblocks_per_chain::Integer = default_nblocks_per_chain(T, state.nsys)
     ) where {T, N}
     movetype in (MOVE_TRANSLATION, MOVE_ROTATION, MOVE_REINSERTION) || throw(
         ArgumentError("mc_step!: movetype=$movetype must be MOVE_TRANSLATION, MOVE_ROTATION or MOVE_REINSERTION")

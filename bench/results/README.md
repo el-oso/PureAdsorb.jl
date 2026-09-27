@@ -797,3 +797,49 @@ reinsertion, and per-system acceptance differs at fixed seed, confirming indepen
 
 Caveat: our own GPU tests ran during the `nscale` sweep, and repeat spread there is 6–20%. The
 single-system fit was clean and is unaffected.
+
+## `mc_step!` groupsize sweep (Milestone B task 7, cleanup 1)
+
+`mc_step_bench.jl`'s own default (`groupsize = 256`) was chosen alongside a single at-one-chain
+Float64 measurement (180-230 us/move at `groupsize = 64`, `be3f19e`'s commit message) without
+ever comparing it against the alternatives. `bench/groupsize_sweep_bench.jl` sweeps
+`groupsize ∈ {32, 64, 128, 256}` at `nsys ∈ {1, 64, 256}`, both precisions, RTX 4070, same
+RUBTAK 3x3x3 + 50 CO2 case and warm-up discipline (wall-clock ramp) as `mc_step_bench.jl`:
+
+| nsys | precision | 32 (us/move) | 64 | 128 | 256 |
+|---|---|---|---|---|---|
+| 1 | f64 | 182.2 | 212.9 | 289.2 | 356.7 |
+| 64 | f64 | 18.41 | 18.43 | 17.84 | 17.37 |
+| 256 | f64 | 16.72 | 15.50 | 12.76 | 12.55 |
+| 1 | f32 | 314.1 | 164.0 | 123.9 | 113.2 |
+| 64 | f32 | 6.27 | 3.48 | 2.83 | 3.00 |
+| 256 | f32 | 2.13 | 1.96 | 1.77 | 2.14 |
+
+Files: `pureadsorb_groupsizesweep_neuromancer4070_cuda_f64_20260927_b6cc175.json`,
+`pureadsorb_groupsizesweep_neuromancer4070_cuda_f32_20260927_b6cc175.json`.
+
+No single groupsize wins everywhere: Float64 at `nsys=1` favors 32, every other Float64 cell and
+every Float32 cell but `nsys=1` favors 128 or 256, and Float32 at `nsys=1` favors 256. Picking by
+worst-case ratio to the best groupsize measured in each cell (minimax, since a default is chosen
+without knowing in advance what `nsys` a caller will run at):
+
+| groupsize | worst ratio to best | which cell |
+|---|---|---|
+| 32 | 2.77x | f32, nsys=1 |
+| **64** | **1.45x** | f32, nsys=1 |
+| 128 | 1.59x | f64, nsys=1 |
+| 256 | 1.96x | f64, nsys=1 |
+
+**`groupsize = 64` is the new default** (`PureAdsorb.DEFAULT_GROUPSIZE`, `src/moves.jl`): it has
+the best worst-case ratio of the four (never more than 45% above the best measured groupsize in
+any swept cell), it directly fixes the originally-flagged regression (256 costs 357 us/move at
+`nsys=1` Float64, against 213 us/move at 64 — both comfortably under kUPS's 388 us/move
+reference), and it stays within 6-23% of the best groupsize at every other measured cell. 128
+edges it out on a plain sum of the six cells' ratios (6.73 vs 7.25), but by a margin smaller than
+the run-to-run noise already visible between this sweep and `be3f19e`'s own at-one-chain figure
+(213 us/move here against 180-230 us/move there, same nominal case) — not a large enough gap to
+prefer the less robust choice. The `nsys=1` datapoint at `groupsize=64`, Float64 (213 us/move)
+is this project's own record of the "187 us/move" figure `be3f19e`'s commit message cites but
+never saved as JSON (the file at that name was overwritten by a later run before archival); the
+number differs from 187 by ordinary run-to-run GPU measurement noise, not a regression, and is
+now committed as part of the sweep JSON above rather than as a separate near-duplicate file.

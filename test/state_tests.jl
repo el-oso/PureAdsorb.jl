@@ -294,7 +294,7 @@ end
     b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
     st = PureAdsorb.SystemState(b, g, [2], ff; T = 298.15, seed = 3)   # capacity == occupancy == 2
     @test_throws "already at capacity" PureAdsorb.insert_guest!(
-        st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1)
+        st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1), 0.0
     )
     @test PureAdsorb.nguests(st, 1) == 2   # the rejected insert changed nothing
 end
@@ -334,7 +334,7 @@ end
     st = PureAdsorb.SystemState(b, g, [0], ff; T = 298.15, seed = 3, capacities = [4])
     @test_throws "no guests to delete" PureAdsorb.delete_guest!(st, 1, 1)
 
-    PureAdsorb.insert_guest!(st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1))
+    PureAdsorb.insert_guest!(st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1), 0.0)
     @test_throws "not one of system 1's occupied slots" PureAdsorb.delete_guest!(st, 1, 2)   # a reserved, unoccupied slot
 end
 

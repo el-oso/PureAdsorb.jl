@@ -161,10 +161,10 @@ nguests(state::SystemState, n::Integer) = state.occupancy[n]
 
 """
     insert_guest!(state::SystemState{F}, n::Integer, pos::SVector{3,F}, orient::SVector{4,F},
-                  host_energy_new::F = zero(F)) -> Integer
+                  host_energy_new::F) -> Integer
 
-Writes a new guest's pose (and, if given, its host-guest real-space energy) into system `n`'s next
-free slot, `guest_offsets[n] + occupancy[n] + 1`, and increments `occupancy[n]` — the slot
+Writes a new guest's pose and its host-guest real-space energy into system `n`'s next free slot,
+`guest_offsets[n] + occupancy[n] + 1`, and increments `occupancy[n]` — the slot
 immediately after the system's current last occupant, so occupied slots stay contiguous from the
 start of the system's reserved block. Returns the global slot index written. Updates only
 `refpoints`/`orientations`/`host_energy`/`occupancy`; a caller applying a μVT move is responsible
@@ -174,7 +174,7 @@ Throws `ArgumentError` if system `n` is already at capacity (`nguests(state, n) 
 capacity(state, n)`).
 """
 function insert_guest!(
-        state::SystemState{F}, n::Integer, pos::SVector{3, F}, orient::SVector{4, F}, host_energy_new::F = zero(F)
+        state::SystemState{F}, n::Integer, pos::SVector{3, F}, orient::SVector{4, F}, host_energy_new::F
     ) where {F}
     occ = state.occupancy[n]
     cap = capacity(state, n)

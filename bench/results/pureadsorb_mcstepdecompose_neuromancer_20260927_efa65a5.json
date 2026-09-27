@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-27T08:33:50.532",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "nguests": 50,
+    "commit": "efa65a5",
+    "description": "Item 2 (2026-09-26-milestone-b-nvt.md): the cis (sincos) fraction, the total reciprocal share, and the real-space visit-vs-pair split, re-measured on the ACTUAL mc_step! pipeline (evaluate_move_kernel!+decide_move_kernel!+apply_sk_kernel!), which replaced the one-thread-per-move kernel bench/sincos_fraction_bench.jl and bench/visit_vs_pair_bench.jl measured; those numbers no longer describe this code. sincos_fraction (real vs a same-cost-but-wrong cis) isolates only evaluate_move_kernel!'s own transcendental cost; reciprocal_fraction (real vs a kernel that skips the k-loop entirely) is the reciprocal term's TOTAL share, which sincos_fraction alone understates. reciprocal_fraction + lj_arith_fraction + ewald_arith_fraction + visit_and_overhead_fraction telescope to exactly 1 by construction (each is a same-kernel difference over the same real_min baseline); visit_and_overhead_fraction bundles the real-space atom-loop's own visit cost with decide_move_kernel!/apply_sk_kernel!/launch overhead, which this ablation cannot separate further without a fourth (zero-atom) baseline. apply_sk_kernel!'s own cis (only ever touching accepted chains' k-vectors) is not isolated by any of these numbers."
+  },
+  "results": [
+    {
+      "precision": "Float64",
+      "nsys": 1,
+      "real_min_ns": 174288.0,
+      "real_median_ns": 248207.5,
+      "fake_cis_min_ns": 165782.0,
+      "sincos_fraction": 0.04880427797668227,
+      "no_recip_min_ns": 186431.0,
+      "reciprocal_fraction": -0.0696720370880382,
+      "realspace_fraction": 1.0696720370880382,
+      "ewald0_min_ns": 154211.0,
+      "both0_min_ns": 149141.0,
+      "lj_arith_fraction": 0.029089782429082896,
+      "ewald_arith_fraction": 0.18486642798127237,
+      "visit_and_overhead_fraction": 0.8557158266776829,
+      "fraction_sum": 1.0
+    },
+    {
+      "precision": "Float64",
+      "nsys": 1024,
+      "real_min_ns": 10128.8759765625,
+      "real_median_ns": 10804.7001953125,
+      "fake_cis_min_ns": 7148.6826171875,
+      "sincos_fraction": 0.29422745093048386,
+      "no_recip_min_ns": 5998.498046875,
+      "reciprocal_fraction": 0.40778245673507124,
+      "realspace_fraction": 0.5922175432649288,
+      "ewald0_min_ns": 3984.4794921875,
+      "both0_min_ns": 5762.5849609375,
+      "lj_arith_fraction": -0.17554815291098536,
+      "ewald_arith_fraction": 0.19883929464116215,
+      "visit_and_overhead_fraction": 0.5689264015347519,
+      "fraction_sum": 1.0
+    },
+    {
+      "precision": "Float32",
+      "nsys": 1,
+      "real_min_ns": 147398.0,
+      "real_median_ns": 195538.0,
+      "fake_cis_min_ns": 117631.0,
+      "sincos_fraction": 0.20194982292839794,
+      "no_recip_min_ns": 100670.0,
+      "reciprocal_fraction": 0.3170192268551812,
+      "realspace_fraction": 0.6829807731448188,
+      "ewald0_min_ns": 88597.0,
+      "both0_min_ns": 77857.0,
+      "lj_arith_fraction": 0.07286394659357658,
+      "ewald_arith_fraction": 0.08190748856836592,
+      "visit_and_overhead_fraction": 0.5282093379828763,
+      "fraction_sum": 1.0
+    },
+    {
+      "precision": "Float32",
+      "nsys": 1024,
+      "real_min_ns": 948.7890625,
+      "real_median_ns": 984.1435546875,
+      "fake_cis_min_ns": 851.2724609375,
+      "sincos_fraction": 0.10278006505002264,
+      "no_recip_min_ns": 694.482421875,
+      "reciprocal_fraction": 0.26803285437852525,
+      "realspace_fraction": 0.7319671456214747,
+      "ewald0_min_ns": 652.9189453125,
+      "both0_min_ns": 763.1572265625,
+      "lj_arith_fraction": -0.11618839804026514,
+      "ewald_arith_fraction": 0.043806867306187984,
+      "visit_and_overhead_fraction": 0.8043486763555519,
+      "fraction_sum": 1.0
+    }
+  ]
+}

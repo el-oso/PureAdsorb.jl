@@ -912,3 +912,68 @@ same quantity Widom's own μ_ex accumulates:
 `pureadsorb_widom_chain_vs_oracle_neuromancer_f64_20260927_f6a99ca.json`. Test items:
 `test/nvt_tests.jl`'s two `"...matches an independent oracle with other guests present..."` items
 (the RUBTAK one tagged `:slow`, ~1 s/pose from a full non-incremental Ewald sum over 3078+ atoms).
+
+## Optimization wave, item 1 — framework dedup (ranked-plan item 2, `2026-09-26-milestone-b-nvt.md`)
+
+`FrameworkBatch` now stores `Shost`/`kmin`/`bs`/atoms/cells/etc. once per DISTINCT framework
+value (`framework_of` indirection), not once per system. `fill(sc, nsys)` (identical framework
+across every chain — the production shape for a chain sweep) before/after commit `e38352a` ->
+`efa65a5`:
+
+| nsys | t_build before | t_build after | bytes before | bytes after |
+|---|---|---|---|---|
+| 1 | 0.18 s | 0.18 s | 357 KB | 357 KB |
+| 64 | 10.6 s | 0.17 s | 36.1 MiB | 357 KB |
+| 256 | 42.4 s | 0.17 s | 98.3 MiB | 358 KB |
+| 1024 | 169.6 s | 0.19 s | 462.7 MiB | 361 KB |
+| 4096 | 684.9 s | 0.26 s | 1994.9 MiB | 374 KB |
+
+Bytes are `Base.summarysize` of the host-resident `FrameworkBatch` object, a proxy for what
+`adapt` uploads to the device. `mc_step!` itself is byte-for-byte unchanged; the L2-residency
+effect the design doc flagged as real-but-unquantified is exactly the gap below, since the ONLY
+thing that changed is the device memory footprint the same kernel reads:
+
+| nsys | ns/move before | ns/move after | speedup |
+|---|---|---|---|
+| 1024 | 1465.0 | 994.3 | 1.47x |
+| 4096 | 1288.9 | 832.4 | 1.55x |
+
+Float32, RTX 4070, warmed on wall-clock time (0.5 s of untimed calls after one compile call),
+median of 200 timed calls. `pureadsorb_frameworkdedup_neuromancer_20260927_efa65a5.json`.
+
+## Optimization wave, item 2 — the term split, re-measured on `mc_step!`
+
+Every share published before this point (`pureadsorb_sincosfraction_*`, `pureadsorb_visitvspair_*`)
+was measured on the one-thread-per-move kernel `mc_step!` replaced and no longer describes this
+code. Re-measured on the real 3-kernel `mc_step!` pipeline (RUBTAK 3x3x3 + 50 CO2/chain, RTX
+4070), by the same disabling-and-differencing method: a same-cost-but-numerically-wrong `cis`
+isolates its own transcendental cost (`sincos_fraction`); a kernel that skips the reciprocal
+k-loop entirely isolates the reciprocal term's TOTAL share (`reciprocal_fraction`, which
+`sincos_fraction` alone understates); the real-space cutoff ablation, run through the
+no-reciprocal kernel so it cannot conflate real space with reciprocal or launch/decide/apply
+overhead, splits the remainder into LJ arithmetic, Ewald arithmetic, and a residual
+"visit-and-overhead" share. All four fractions telescope to exactly 1 by construction.
+
+| precision | nsys | sincos | reciprocal | LJ arith | Ewald arith | visit+overhead |
+|---|---|---|---|---|---|---|
+| Float64 | 1 | 0.049 | -0.070 | 0.029 | 0.185 | 0.856 |
+| Float64 | 1024 | 0.294 | 0.408 | -0.176 | 0.199 | 0.569 |
+| Float32 | 1 | 0.202 | 0.317 | 0.073 | 0.082 | 0.528 |
+| Float32 | 1024 | 0.103 | 0.268 | -0.116 | 0.044 | 0.804 |
+
+At `nsys = 1024`, `sincos_fraction` is a real, moderate share (10-29%) but a strict SUBSET of
+`reciprocal_fraction` (27-41%) — roughly 40-70% of the reciprocal term's own cost is the `cis`
+call itself, the rest is `kprefactor`/`Sk` loads and the complex arithmetic around it.
+`visit_and_overhead_fraction` dominates the real-space share at every measured point (53-86%),
+confirming P4's qualitative finding (most real-space cost is the atom-loop scan, not the pair
+arithmetic once inside cutoff) survives on the new kernel even though the numbers changed.
+`LJ arith` comes out **negative** at `nsys = 1024` in both precisions, a nonphysical result: this
+GPU's clock is not pinned for benchmarking (only galen/wintermost are gate-authoritative) and the
+`ewald0`/`both0` calls run sequentially late in the script, so a rising boost-clock state over the
+run is a plausible confound that this measurement cannot rule out. `nsys = 1`'s numbers are
+dominated by kernel-launch latency (per-move times of 150-250 μs against a throughput floor near
+0.15 μs) and should be read as noisy. Deciding item 3 from this: `reciprocal_fraction`'s ceiling
+(27-41% at 1024 chains) exceeds `sincos_fraction`'s own ceiling (10-29%), so item 4 (split the
+structure factor, cutting total k-work 2.7x) has more to gain than item 5 (factorized phase
+tables, which only ever touches the `cis` call) — consistent with the ranked plan's own ordering.
+`pureadsorb_mcstepdecompose_neuromancer_20260927_efa65a5.json`.

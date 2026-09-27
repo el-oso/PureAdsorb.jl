@@ -1,0 +1,42 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "date": "2026-09-27",
+    "commit_after": "efa65a5",
+    "commit_before": "e38352a",
+    "description": "Ranked-plan item 2 (2026-09-26-milestone-b-nvt.md): FrameworkBatch build time and host-side byte footprint (Base.summarysize), and mc_step! cost per move at nsys in {1024, 4096}, before (commit e38352a, one copy of Shost/kmin/bs/etc. per system) and after (commit efa65a5, framework_of indirection, one copy per distinct framework) the dedup. RUBTAK 3x3x3 + 50 CO2/chain, fill(sc, nsys) (all chains share one Framework value). Build-time/bytes measured on CPU (4 threads, hardcore_bound's own Threads.@threads); move-cost measured on the RTX 4070 (Float32, MOVE_TRANSLATION, warmed on wall-clock time per the card's 210 MHz idle / 3105 MHz boost gap, median of 200 timed calls after warm-up)."
+  },
+  "build": {
+    "before": [
+      {"nsys": 1, "t_build_s": 0.175, "bytes": 357096},
+      {"nsys": 64, "t_build_s": 10.56, "bytes": 37903220},
+      {"nsys": 256, "t_build_s": 42.353, "bytes": 103033048},
+      {"nsys": 1024, "t_build_s": 169.622, "bytes": 485218360},
+      {"nsys": 4096, "t_build_s": 684.869, "bytes": 2091839020}
+    ],
+    "after": [
+      {"nsys": 1, "t_build_s": 0.176, "bytes": 357148},
+      {"nsys": 64, "t_build_s": 0.165, "bytes": 357400},
+      {"nsys": 256, "t_build_s": 0.17, "bytes": 358168},
+      {"nsys": 1024, "t_build_s": 0.188, "bytes": 361240},
+      {"nsys": 4096, "t_build_s": 0.26, "bytes": 373528}
+    ]
+  },
+  "move_cost_f32_cuda": {
+    "before": [
+      {"nsys": 1024, "per_move_ns": 1465.0},
+      {"nsys": 4096, "per_move_ns": 1288.9}
+    ],
+    "after": [
+      {"nsys": 1024, "per_move_ns": 994.3},
+      {"nsys": 4096, "per_move_ns": 832.4}
+    ],
+    "speedup": [
+      {"nsys": 1024, "factor": 1.4736},
+      {"nsys": 4096, "factor": 1.5482}
+    ],
+    "note": "mc_step! itself is byte-for-byte unchanged between before/after; the entire speedup is attributable to the deduplicated batch's much smaller device memory footprint making the shared host data L2-resident, which the ranked plan flagged as 'a real but unquantified second gain' — this is that measurement."
+  }
+}

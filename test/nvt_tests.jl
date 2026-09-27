@@ -126,7 +126,7 @@ end
             ΔU = zeros(Float64, 1)
             PureAdsorb.widom_chain_kernel!(CPU())(
                 ΔU, Int32[n], [rpos], [q], b, guest_c, guest_types, st.refpoints, st.orientations,
-                st.guest_offsets, st.Sk, st.k_offsets, [const_term]; ndrange = 1
+                st.guest_offsets, st.occupancy, st.Sk, st.k_offsets, [const_term]; ndrange = 1
             )
             w_ours[m] = exp(-ΔU[1] / kT)
             refpoints2 = vcat(st.refpoints, [pos])
@@ -348,8 +348,8 @@ end
     quat = [SVector(0.0, 0.0, 0.0, 1.0)]
     ΔU = zeros(Float64, 1)
     PureAdsorb.widom_chain_kernel!(CPU())(
-        ΔU, sys_of, rpos, quat, b, guest_c, guest_types, st.refpoints, st.orientations, st.guest_offsets, st.Sk,
-        st.k_offsets, const_term; ndrange = 1
+        ΔU, sys_of, rpos, quat, b, guest_c, guest_types, st.refpoints, st.orientations, st.guest_offsets,
+        st.occupancy, st.Sk, st.k_offsets, const_term; ndrange = 1
     )
     pos = b.cells[1] * rpos[1]
     e = PureAdsorb.insertion_energy(

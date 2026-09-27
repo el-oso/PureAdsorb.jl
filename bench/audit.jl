@@ -59,7 +59,7 @@ propose_move_types(::Type{T}) where {T} = (
     PureAdsorb.ChainRNG, Int32, SVector{3, T}, SVector{4, T}, T, T, SMatrix{3, 3, T, 9},
 )
 select_and_propose_types(::Type{T}) where {T} = (
-    Int, Vector{Int32}, Vector{UInt64}, Vector{UInt64}, Int32, Vector{T}, Vector{T}, SMatrix{3, 3, T, 9},
+    Int, Vector{Int32}, Vector{Int32}, Vector{UInt64}, Vector{UInt64}, Int32, Vector{T}, Vector{T}, SMatrix{3, 3, T, 9},
     Vector{SVector{3, T}}, Vector{SVector{4, T}}, Int,
 )
 

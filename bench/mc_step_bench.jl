@@ -62,12 +62,28 @@ function run_one(nsys)
     dstep_rot = PureAdsorb.adapt(backend, step_rot)
     ws = PureAdsorb.MoveWorkspace(F, nsys, nblocks; backend)
 
-    # Warm up (compiles every kernel) before timing.
+    # Warm up: one call compiles every kernel (this cost is excluded from the ramp-up budget
+    # below, since it is dominated by compilation, not device state). On a GPU backend, the
+    # device is still at its idle power state after that single call, and a fixed handful of
+    # further calls is not enough to reach the boosted clock the timed samples need: measured
+    # on the RTX 4070 (nsys=1, Float64), `mc_step!`'s own cost drops from ~2.8 ms to ~220-250 us
+    # between the first calls and steady state, a clock-ramp artifact rather than a change in
+    # the compiled kernel, and the ramp itself measured at 100-150 calls (tens of milliseconds).
+    # Looping on wall-clock time after that first call, rather than a fixed count, keeps this
+    # portable to the CPU backend, where it costs a harmless fraction of a second.
     PureAdsorb.mc_step!(
         ws, db, dst, guest_c, guest_types, PureAdsorb.MOVE_TRANSLATION, dstep_trans, dstep_rot, kT; backend, groupsize,
         nblocks_per_chain = nblocks
     )
     KernelAbstractions.synchronize(backend)
+    t_warmup = time()
+    while time() - t_warmup < 0.5
+        PureAdsorb.mc_step!(
+            ws, db, dst, guest_c, guest_types, PureAdsorb.MOVE_TRANSLATION, dstep_trans, dstep_rot, kT; backend, groupsize,
+            nblocks_per_chain = nblocks
+        )
+        KernelAbstractions.synchronize(backend)
+    end
 
     bm = @be mc_step!(
         $ws, $db, $dst, $guest_c, $guest_types, PureAdsorb.MOVE_TRANSLATION, $dstep_trans, $dstep_rot, $kT; backend = $backend,

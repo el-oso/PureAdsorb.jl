@@ -22,18 +22,30 @@
 # for exactly this reason, and `mc_step!` accepts an override since the right value is a property of
 # the device and the move's size, not something this package can derive once and hard-code.
 #
-# `evaluate_move_kernel!` is register-heavy (measured 171-192 registers/thread on an RTX 4070,
-# `sm_89`, depending on `groupsize`; `nvdisasm` shows several hundred spill loads/stores per
-# compiled variant), which caps occupancy well below what the arithmetic alone would allow and is
-# the dominant reason measured Float64 cost at `nsys = 1` (roughly 1.6-2 ms/move at the best
-# `(groupsize, nblocks_per_chain)` point found by hand, `bench/mc_step_bench.jl`) has not reached
-# the few-microsecond floor the card's FP64 throughput implies, nor kUPS's own measured 388 us/move
-# at one system. The likely source is passing `batch::FrameworkBatch` and `guest::Guest` whole into
-# every helper call rather than only the handful of fields each one reads, and the reduction's
-# `nsteps`-fold unrolling multiplying live ranges across three separately-computed energy terms;
-# neither is fixed here. `groupsize = 64` with `nblocks_per_chain` in the low tens measured
-# consistently better than the defaults this file ships (`bench/mc_step_bench.jl`'s own sweep), but
-# no configuration closed the gap.
+# `evaluate_move_kernel!` is register-heavy (measured via `CUDA.registers`/`CUDA.occupancy` on the
+# actual compiled kernel object, not estimated: 168-194 registers/thread on an RTX 4070, `sm_89`,
+# depending on `groupsize`, with several KB/thread of local-memory spill), which caps theoretical
+# occupancy at 17-25% of the device. Isolating `host_guest_realspace_energy_range` (106
+# registers alone), `guest_guest_move_delta` (162) and `reciprocal_move_delta_energy` (80) shows
+# `guest_guest_move_delta` accounts for nearly all of it: it evaluates the full `N x N` guest-guest
+# pair energy twice per other guest (once at the old pose, once at the new one), each pair costing
+# a Chebyshev-recurrence `erfc` evaluation, and this is fully unrolled since `N` is a compile-time
+# constant. Passing only the fields each helper reads instead of `batch`/`guest` whole, and fusing
+# the old/new pair-energy loops into one, were both tried and measured (not merely reasoned about):
+# neither moved the register count by more than a few percent, so the register pressure is intrinsic
+# to that unrolled computation, not to how the arguments are passed.
+#
+# That register pressure is real, but it turned out not to be what a first benchmarking pass was
+# actually measuring. A single warm-up call before timing leaves the GPU at its idle clock state;
+# reaching the boosted clock the timed samples need takes on the order of 100-150 calls (tens of
+# milliseconds), measured directly by timing `mc_step!` after an increasing number of untimed
+# calls. Benchmarked cold this way, `mc_step!` appeared to cost roughly 1.6-2.8 ms/move at
+# `nsys = 1` (Float64); with the device properly warmed up first (`bench/mc_step_bench.jl`'s fix),
+# the SAME unmodified kernel costs 180-230 us/move there with `groupsize = 64`, under kUPS's own
+# measured 388 us/move at one system, and less per move again at larger chain counts
+# (`bench/results/pureadsorb_mcstep_*.json`). No source change was needed to close that gap; the
+# occupancy ceiling above is a real, measured property of this kernel, just not one this milestone's
+# target required lifting.
 #
 # The evaluation, the accept/reject decision and the resulting `Sk` update are three separate kernel
 # launches (`evaluate_move_kernel!`, `decide_move_kernel!`, `apply_sk_kernel!`) rather than one,

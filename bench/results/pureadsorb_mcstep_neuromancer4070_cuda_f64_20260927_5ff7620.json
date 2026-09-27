@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "julia": "1.13.0",
+    "date": "2026-09-27T02:34:35.073",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "precision": "f64",
+    "nguests": 50,
+    "nsys_list": [
+      1,
+      64,
+      256,
+      1024
+    ],
+    "groupsize": 64,
+    "bench_seconds": 10,
+    "bench_samples": 10,
+    "commit": "5ff7620",
+    "description": "Task 5: cost per move (mc_step!, workgroup-per-chain with nblocks_per_chain fan-out) against chain count. RUBTAK 3x3x3 + 50 CO2 per system, one Metropolis translation attempt per chain per call. nblocks_per_chain is PureAdsorb.default_nblocks_per_chain(F, nsys) unless PA_NBLOCKS_PER_CHAIN overrides it."
+  },
+  "results": [
+    {
+      "nsys": 1,
+      "nblocks_per_chain": 256,
+      "groupsize": 64,
+      "t_build": 2.436870504,
+      "times_s": [
+        0.000180981,
+        0.000212911,
+        0.000182714,
+        0.000180179,
+        0.00021857200000000002,
+        0.000184598,
+        0.000177505,
+        0.000210036,
+        0.00022061500000000001,
+        0.00018984700000000001
+      ],
+      "per_move_s": 0.00018722250000000003
+    },
+    {
+      "nsys": 64,
+      "nblocks_per_chain": 4,
+      "groupsize": 64,
+      "t_build": 11.674099467,
+      "times_s": [
+        0.001143624,
+        0.001164824,
+        0.001157711,
+        0.0011497060000000001,
+        0.001158531,
+        0.001315828,
+        0.0011634310000000001,
+        0.001183769,
+        0.001243111,
+        0.0012395140000000002
+      ],
+      "per_move_s": 1.8189492187500003e-5
+    },
+    {
+      "nsys": 256,
+      "nblocks_per_chain": 1,
+      "groupsize": 64,
+      "t_build": 46.06143748,
+      "times_s": [
+        0.004015643,
+        0.004026233000000001,
+        0.004005604,
+        0.004027414,
+        0.004038566,
+        0.0040443070000000005,
+        0.0040608070000000005,
+        0.004064194,
+        0.0040711770000000005,
+        0.004067361
+      ],
+      "per_move_s": 1.5786861328125e-5
+    },
+    {
+      "nsys": 1024,
+      "nblocks_per_chain": 1,
+      "groupsize": 64,
+      "t_build": 184.943976128,
+      "times_s": [
+        0.011140643,
+        0.010791796000000001,
+        0.010932612000000001,
+        0.011128160000000002,
+        0.010947961,
+        0.010956807,
+        0.010784513,
+        0.011121548,
+        0.011124012,
+        0.011202370000000001
+      ],
+      "per_move_s": 1.078044677734375e-5
+    }
+  ]
+}

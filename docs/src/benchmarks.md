@@ -52,6 +52,41 @@ machine is its Float64 reference instead. Comparing PureAdsorb against itself at
 same code: the R9700 is 1.0× the RTX 4070 in Float64 and 0.7× in Float32; the Apple M6's Metal
 backend is 0.6× the RTX 4070 in Float32.
 
+## NVT (canonical Monte Carlo) throughput, RTX 4070 12 GB
+
+RUBTAK 3×3×3 + 50 CO2, `mc_step!` (one Metropolis translation attempt per chain per kernel
+launch, the workgroup-per-chain kernel run at its default `groupsize = 64` — the minimax choice
+over the groupsize sweep in `pureadsorb_groupsizesweep_neuromancer4070_cuda_{f64,f32}_20260927_b6cc175.json`,
+detailed in `bench/results/README.md`) against kUPS's own `examples/nvt_co2_pressure_test.yaml`
+case (the same 50-CO2 system) on the same card.
+
+| Precision | Chains | Cost per move (µs) | Ratio to kUPS (387.6 µs/move) |
+|---|---|---|---|
+| Float64 | 1     | 187.2 | 2.1× |
+| Float64 | 64    | 18.2  | 21.3× |
+| Float64 | 256   | 15.8  | 24.6× |
+| Float64 | 1,024 | 10.8  | 36.0× |
+| Float32 | 1     | 177.7 | 2.2× |
+| Float32 | 64    | 3.55  | 109.0× |
+| Float32 | 256   | 1.98  | 195.5× |
+| Float32 | 1,024 | 1.39  | 278.7× |
+
+PureAdsorb's numbers are `per_move_s` from `pureadsorb_mcstep_neuromancer4070_cuda_f64_20260927_5ff7620.json`
+and the `f32` file alongside it. kUPS's reference rate is the same OLS fit as the Widom
+comparison above (`t = intercept + nmoves/rate`) over its own single-system timing sweep
+(`kups_nvt_timing_neuromancer4070_f64_20260927.json`: nmoves = 100,000 / 500,000 / 1,000,000;
+fitted intercept 24.3 s, rate 2,580 moves/s, i.e. 387.6 µs/move, residuals under 1% at every
+point). **Batching does not raise kUPS's rate: 387.6 µs/move is its peak on this card at any
+chain count.** Its own chain-count sweep
+(`kups_nvt_nscale_neuromancer4070_f64_20260927.json`) gives an aggregate throughput, once the
+24.3 s startup is subtracted, of about 1,880 moves/s at its largest working batch (32
+systems) — lower than the single-system rate — and 64 systems fails outright during state
+construction with `RESOURCE_EXHAUSTED` trying to allocate 10.49 GiB. So the single-system
+figure is kUPS's best case on this card at any batch size, and every ratio above is measured
+against that ceiling, not against a smaller number a larger kUPS batch might have reached.
+
+![NVT cost per move: PureAdsorb vs kUPS](assets/nvt_vs_kups.png)
+
 ## Method
 
 Both codes run on the same RTX 4070 (host `neuromancer4070`), but kUPS times its whole process
@@ -144,6 +179,18 @@ PA_BACKEND=metal PA_PRECISION=f32 julia --project=bench/metal bench/widom_bench.
 # Regenerate the figure above from the committed JSON only
 julia --project=bench bench/plot_headtohead.jl
 PA_PLOT_OUT=docs/src/assets/widom_vs_kups.png julia --project=bench bench/plot_headtohead.jl
+
+# NVT (mc_step!) chain-count sweep, PureAdsorb
+PA_HOST=neuromancer4070 PA_BACKEND=cuda PA_PRECISION=f64 julia --project=bench/gpu bench/mc_step_bench.jl
+PA_HOST=neuromancer4070 PA_BACKEND=cuda PA_PRECISION=f32 julia --project=bench/gpu bench/mc_step_bench.jl
+
+# NVT reference, kUPS (needs a kUPS checkout outside this repo, at commit e183c9a)
+KUPS=~/src/kups PA_HOST=neuromancer4070 bench/run_kups_nvt.sh timing
+KUPS=~/src/kups PA_HOST=neuromancer4070 bench/run_kups_nvt.sh nscale
+
+# Regenerate the NVT figure above from the committed JSON only
+julia --project=bench bench/plot_nvt_vs_kups.jl
+PA_PLOT_OUT=docs/src/assets/nvt_vs_kups.png julia --project=bench bench/plot_nvt_vs_kups.jl
 ```
 
 See `bench/results/README.md` for every other measurement recorded in this repository (CPU and

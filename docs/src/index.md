@@ -6,7 +6,9 @@ batch of host frameworks, a rigid guest molecule and a Lennard-Jones + Ewald for
 reports the excess chemical potential, Henry coefficient and zero-loading isosteric heat of
 adsorption, each with a standard error. Two [`KernelAbstractions`](https://github.com/JuliaGPU/KernelAbstractions.jl)
 kernels — a hard-core rejection test, then the energy on the survivors — run unchanged on the
-CPU, on NVIDIA GPUs (CUDA.jl) and on AMD GPUs (AMDGPU.jl).
+CPU, on NVIDIA GPUs (CUDA.jl) and on AMD GPUs (AMDGPU.jl). A batch of independent chains can also
+sample the canonical (NVT) ensemble at fixed guest count by Metropolis Monte Carlo, with Widom
+insertion carried along the chain to reach finite-loading chemical potentials.
 
 PureAdsorb reproduces the conventions of [kUPS](https://github.com/cusp-ai-oss/kups)
 (commit `e183c9a`), CuspAI's Widom/Monte Carlo engine, so results from the two codes compare

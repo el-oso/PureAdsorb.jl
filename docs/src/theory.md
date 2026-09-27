@@ -376,3 +376,202 @@ its variance is estimated by the first-order delta method for a ratio of means,
 
 clamped at zero (the first-order approximation can return a negative value when the covariance
 term dominates, but the true variance is non-negative).
+
+## Canonical (NVT) Monte Carlo
+
+Widom insertion (above) samples a single, fixed configuration: one host, no guests, no chain.
+With ``N`` guests present the configuration itself must be sampled, at fixed ``N``, ``V`` and
+``T``, before Widom insertion can be applied to it. This section derives the Markov chain that
+does the sampling and the extra energy terms ``N`` mobile guests introduce.
+
+### The canonical ensemble and the Metropolis criterion
+
+The equilibrium distribution over configurations ``x`` at fixed ``N``, ``V``, ``T`` is
+``P(x) \propto \exp(-U(x)/k_BT)``. A Markov chain built from a proposal density
+``q(x\to x')`` and an acceptance probability ``A(x\to x')`` has ``P`` as its stationary
+distribution once it satisfies detailed balance,
+
+```math
+P(x)\,q(x\to x')\,A(x\to x') = P(x')\,q(x'\to x)\,A(x'\to x).
+```
+
+For a **symmetric** proposal, ``q(x\to x') = q(x'\to x)``, the ``q`` factors cancel and detailed
+balance reduces to a condition on the acceptance ratio alone,
+
+```math
+\frac{A(x\to x')}{A(x'\to x)} = \frac{P(x')}{P(x)} = \exp(-\Delta U/k_BT), \qquad \Delta U = U(x') - U(x).
+```
+
+The Metropolis choice ``A(x\to x') = \min(1, \exp(-\Delta U/k_BT))`` satisfies this for every
+``\Delta U``: when ``\Delta U \leq 0``, ``A(x\to x') = 1`` and ``A(x'\to x) = \exp(\Delta U/k_BT)``,
+giving ratio ``\exp(-\Delta U/k_BT)`` as required; the case ``\Delta U \geq 0`` gives the same
+ratio by the same substitution with the roles exchanged. Only ``\Delta U`` ever enters this test,
+so a chain never needs the total energy to decide a move — except for the periodic audit below,
+which recomputes it as an independent check.
+
+Drawing one uniform ``u \sim \mathrm{Uniform}(0,1)`` per chain and accepting when
+``-\Delta U/k_BT > \ln u`` implements exactly this rule: ``P(u < \exp(-\Delta U/k_BT))`` equals
+``\exp(-\Delta U/k_BT)`` when that value is below 1, and equals 1 (since ``u < 1`` always holds)
+when it is at or above 1 — precisely ``\min(1, \exp(-\Delta U/k_BT))``.
+
+### The three moves, and why each is symmetric
+
+Each move attempt picks one guest, uniformly at random within its system, and applies one of
+three proposals to it:
+
+- **Translation.** ``\mathbf{r}' = \mathbf{r} + \delta\,\boldsymbol{\eta}``,
+  ``\boldsymbol{\eta} \sim \mathcal{N}(0, I_3)`` — an isotropic Gaussian displacement of the
+  guest's reference point, standard deviation ``\delta`` (Å) along each Cartesian axis. A Gaussian
+  density is an even function of the displacement, ``q(\Delta\mathbf{r}) = q(-\Delta\mathbf{r})``,
+  so ``q(\mathbf{r}\to\mathbf{r}') = q(\mathbf{r}'\to\mathbf{r})``: symmetric.
+- **Rotation.** A fresh unit quaternion, uniform on ``SO(3)`` by the same Shoemake construction
+  as the pose sampler above, is raised to a fractional power ``\rho \in [0,1]`` — same rotation
+  axis, angle scaled by ``\rho`` — and composed with the guest's current orientation. On ``SO(3)``'s
+  invariant measure the rotation axis is uniform on the sphere and independent of the angle, so a
+  rotation by angle ``\theta`` about axis ``\mathbf{u}`` has the same density as its inverse
+  (angle ``-\theta`` about ``\mathbf{u}``, equivalently angle ``\theta`` about ``-\mathbf{u}``,
+  which the uniform axis distribution assigns equal density): symmetric.
+- **Reinsertion.** A fresh position uniform over the cell and a fresh orientation uniform on
+  ``SO(3)``, independent of the guest's current pose. The proposal density does not depend on the
+  starting configuration at all, so ``q(\mathrm{old}\to\mathrm{new}) = q(\mathrm{new}\to\mathrm{old})``
+  trivially: symmetric.
+
+All three need no Hastings correction in the acceptance ratio above. Every chain in a batch
+performs the *same* move type on a given step — a fixed, not randomly re-chosen per chain,
+schedule, which avoids divergent branches across a batch running in lockstep. This changes
+nothing about the target distribution: each move type individually satisfies detailed balance
+for ``P``, and a chain built from any fixed sequence of individually detailed-balanced kernels
+still has ``P`` as its stationary distribution, since each step alone preserves it. What a fixed
+(rather than randomized) order forfeits is reversibility of the *composite* per-cycle transition,
+not the stationary distribution itself.
+
+### Guest–guest energy
+
+With ``N`` guests present, the total potential energy decomposes as
+
+```math
+U = U_{\text{host-host}} + \sum_i U_{\text{host-guest}}(i) + \sum_{i<j} U_{\text{guest-guest}}(i,j).
+```
+
+``U_{\text{host-host}}`` is constant (the host never moves) and cancels in every ``\Delta U``.
+``U_{\text{host-guest}}`` is exactly the insertion energy above, evaluated per guest.
+``U_{\text{guest-guest}}`` is new: a Lennard-Jones sum over guest site pairs under the same
+Lorentz–Berthelot mixing and plain truncation as the host term, plus a Coulomb term folded into
+the same Ewald summation as the host, using the same splitting parameter ``\alpha`` and k-vector
+set, since guest and host charges sit in the same periodic cell.
+
+### The running structure factor, and why a move costs ``O(n_k)``
+
+The structure factor of the whole system is the host's plus every guest's own,
+
+```math
+S(k) = S_{\mathrm{host}}(k) + \sum_i S_i(k), \qquad S_i(k) = \sum_{s\,\in\,\text{guest }i} q_s\,e^{i\,k\cdot r_s},
+```
+
+and the reciprocal-space energy of the whole system is ``U_{\mathrm{recip}} = \sum_k \mathrm{pref}_k\,|S(k)|^2``
+(the same prefactor as the Ewald summation above, now summing the total charge distribution
+rather than the host alone). Moving one guest ``i`` changes only that guest's own term,
+
+```math
+S(k) \;\to\; S(k) + \Delta S(k), \qquad \Delta S(k) = S_i^{\mathrm{new}}(k) - S_i^{\mathrm{old}}(k),
+```
+
+leaving every other guest's and the host's contribution untouched. Since
+``|a+b|^2 = |a|^2 + 2\,\mathrm{Re}(\bar a b) + |b|^2`` for any complex ``a``, ``b``, the reciprocal
+energy change from this one move is exactly
+
+```math
+\Delta U_{\mathrm{recip}} = \sum_k \mathrm{pref}_k \bigl(2\,\mathrm{Re}[\,\overline{S(k)}\,\Delta S(k)\,] + |\Delta S(k)|^2\bigr),
+```
+
+with ``S(k)`` the running total *before* the move — exact regardless of how many other guests or
+host atoms feed into it, since they are untouched by this move. Evaluating ``\Delta S(k)`` needs
+one pass over the moved guest's own sites at each ``k``, so this sum costs ``O(n_k)`` work per
+move, independent of the total guest count ``N``; recomputing ``S(k)`` from scratch after every
+move — summing every guest's sites at every ``k`` — would cost ``O(N\,n_k)`` instead. Carrying
+``S(k)`` as mutable per-chain state, updated to ``S(k) + \Delta S(k)`` on acceptance and left
+unchanged on rejection, is what makes the incremental form possible.
+
+### Which k-vectors each term needs
+
+"Coupled k-vectors" above shows that a supercell built by replicating a smaller cell has a host
+structure factor that vanishes at every k-vector not coupled to that replication — about 190 of
+4587 for RUBTAK 3×3×3. The host-guest cross term in ``U_{\mathrm{recip}}``,
+``2\,\mathrm{Re}(\overline{S_{\mathrm{host}}}\,S_{\mathrm{guest}})``, carries an explicit factor
+of ``S_{\mathrm{host}}(k)``, so it vanishes at exactly the same k-vectors ``S_{\mathrm{host}}``
+does, whatever the guest term's own value there — restricting that term to the
+replication-coupled subset changes nothing about it. The guest-guest term,
+``|\sum_i S_i(k)|^2``, carries no factor of ``S_{\mathrm{host}}`` at all: a guest's position is
+not tied to the host's periodicity, so its structure factor is generically nonzero at every
+``k``, and the guest-guest sum needs the full k-vector table to be evaluated correctly.
+PureAdsorb currently builds and uses one full k-vector table for every reciprocal-space term once
+any guest is present (`fullk = true` at `FrameworkBatch` construction); restricting the cross
+term back to the replication-coupled subset is a valid arithmetic identity, not yet exploited as
+an optimization.
+
+### Intramolecular exclusion: two conventions, one value
+
+The reciprocal-space sum has no notion of molecules: built from the total structure factor, it
+supplies the full ``\operatorname{erf}(\alpha r)/r`` part of every pair's Coulomb interaction,
+intramolecular pairs included. What must be subtracted to remove an intramolecular pair's
+contribution entirely therefore depends on a bookkeeping choice — whether that pair is also
+included in the real-space sum.
+
+PureAdsorb excludes same-guest pairs from the real-space sum (the "Real space" formula above runs
+over pairs in different molecules only), so such a pair receives zero from real space and the
+full ``\operatorname{erf}(\alpha r)/r`` from reciprocal space, which ``E_{\mathrm{excl}}`` (given
+above) cancels exactly:
+
+```math
+\underbrace{0}_{\text{real}} + \underbrace{k_e\,q_sq_t\,\operatorname{erf}(\alpha r_{st})/r_{st}}_{\text{recip's share}} - \underbrace{k_e\,q_sq_t\,(1-\operatorname{erfc}(\alpha r_{st}))/r_{st}}_{E_{\mathrm{excl}}} = 0,
+```
+
+using ``\operatorname{erf}(x) = 1 - \operatorname{erfc}(x)``. kUPS makes the opposite bookkeeping
+choice: its real-space sum includes intramolecular pairs (paying
+``k_e\,q_sq_t\,\operatorname{erfc}(\alpha r_{st})/r_{st}`` for each), so real plus reciprocal
+already sum to the pair's full, undamped Coulomb energy,
+``\operatorname{erfc}(\alpha r)/r + \operatorname{erf}(\alpha r)/r = 1/r``; kUPS's own correction
+then subtracts that full ``k_e\,q_sq_t/r_{st}`` rather than the ``\operatorname{erf}`` leftover
+PureAdsorb subtracts. The two conventions cancel the same pair's contribution to the same value —
+zero — not merely approximately: the identity ``\operatorname{erf} = 1 - \operatorname{erfc}``
+makes them equal term by term, for every ``r`` inside the real-space cutoff (a condition
+PureAdsorb asserts holds for every intramolecular distance in the guest, rather than assuming it).
+
+### Block averaging runs over cycles, not insertions
+
+Widom insertion along the chain evaluates several test-particle insertions into the
+configuration the current cycle's moves produced, then advances the chain by another cycle before
+the next batch of insertions. Two different kinds of correlation are present: insertions within
+one cycle share the same background configuration but are otherwise independent draws of a test
+pose, so at *fixed* configuration they are independent samples of the Boltzmann weight; the
+configuration itself, however, is produced by a Markov chain, so consecutive cycles' mean
+Boltzmann weights are correlated, with a correlation time set by how many *moves* it takes the
+chain to decorrelate — not by how many insertions run per cycle.
+
+A block-averaged standard error is only consistent if each block is long enough, and blocks are
+separated far enough, that different block means are approximately independent. Blocking by
+cycle satisfies this by construction, since each block spans whole cycles of the chain's own
+correlated dynamics. Blocking by insertion instead — treating insertions from the *same* cycle as
+if they were independent samples of the mean — would split highly correlated samples (all drawn
+from one configuration) across different blocks and understate the true variance of the mean.
+Widom insertion into a single, fixed, non-chained framework (Milestone A) has no such correlation
+to worry about — there is only one configuration — which is why blocking by insertion is correct
+there and not here.
+
+### Parallelism: a batch of chains, not a batch of moves
+
+Move ``n+1`` of a chain depends on the outcome of move ``n``, since its proposal and acceptance
+test read the configuration and running structure factor move ``n`` left behind. No amount of
+hardware removes that dependency: the moves of *one* chain must execute strictly in sequence. The
+only axis along which independent work exists is between *different* chains — replicas of the
+same framework, or different frameworks in a batch — since two chains share no state (each
+carries its own poses and running ``S(k)``) and their moves may be proposed, evaluated and
+accepted or rejected with no communication between them.
+
+This is a different axis from the parallelism exploited *within* one move's own energy
+evaluation — splitting a single move's host-atom, guest-guest and k-vector sums across the
+work-items of a workgroup parallelizes the arithmetic of one step, which is embarrassingly
+parallel regardless of the chain's sequential structure. Batching chains parallelizes across
+*steps*, which the chain's own sequential dependency would otherwise forbid entirely. A
+production run's throughput therefore comes from running as many independent chains as the
+device can hold, each one still advancing a single move at a time.

@@ -51,9 +51,18 @@ fugacity coefficient `φ = f/P` from the critical temperature, critical pressure
 factor. `Guest` already carries `tc`, `pc` and `omega` for exactly this purpose; they are read
 and stored today and never used.
 
-Peng–Robinson is a cubic in the compressibility Z; the vapor root is the largest real root. The
-implementation must say what it does when the cubic has three real roots (below the critical
-point, where liquid and vapor coexist) rather than silently picking one.
+Peng–Robinson is a cubic in the compressibility Z. Where it has three real roots — below the
+critical point, where liquid and vapor coexist — the implementation must say which it takes
+rather than silently picking one.
+
+**Correction, 2026-09-27**: an earlier draft of this section said the vapor root is the largest
+real root, and that is wrong. The stable phase is the one of lowest Gibbs energy, equivalently
+the lowest fugacity coefficient, and which root that is depends on where the state point sits
+relative to the saturation pressure: below it the vapor root (largest) wins, above it the liquid
+root (smallest) does. Always taking the largest would silently return a metastable vapor above
+the saturation pressure. kUPS selects by minimum fugacity coefficient, as does RASPA2, and this
+was confirmed numerically — at CO2 243 K / 1.568 MPa and methane 114.3 K / 919.8 kPa, both
+three-root points, kUPS takes the *smallest* root. Our implementation uses the same rule.
 
 ## 2. What is genuinely hard: a variable particle count
 

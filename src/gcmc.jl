@@ -265,7 +265,7 @@ function run_gcmc!(
             for _ in 1:nsteps
                 do_exchange = !iszero(exchange_prob) && rand(rng_move, F) < F(exchange_prob)
                 if do_exchange
-                    mc_exchange!(rng_move, db, dst, guest_c, guest_types, dp, dq, fug, kT; backend)
+                    mc_exchange!(rng_move, ws, db, dst, guest_c, guest_types, dp, dq, fug, kT; backend, groupsize, nblocks_per_chain)
                     # `occ_host` is reused as scratch here: its cycle-start value already fed
                     # `nsteps` above and is not read again until the next cycle (or the caller's
                     # own post-cycle sample, both of which re-copy it fresh first).

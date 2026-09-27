@@ -29,6 +29,12 @@
     # batch of one system, with its own independent coin sequence, avoids that correlation
     # entirely. Each replica runs `nattempts` mc_exchange! attempts from N=0 and reports its final
     # occupancy, treated by `ideal_gas_stats` below as one iid draw of the stationary distribution.
+    # `nblocks_per_chain = 1` throughout: this replica loop makes millions of exchange attempts on
+    # a single-guest-site, neutral, non-interacting system (`ideal_gas_box`'s own construction), so
+    # every attempt's real- and reciprocal-space loops are already trivial -- `mc_step!`'s workgroup
+    # fan-out exists to spread a GPU's SM-count of parallel work across a genuinely expensive
+    # k-vector sum (`src/moves.jl`'s own comment on the μVT exchange moves), which buys nothing here
+    # and only adds per-attempt CPU dispatch overhead at the default `target_blocks = 256`.
     function ideal_gas_replicas(
             b::PureAdsorb.FrameworkBatch{F}, g::PureAdsorb.Guest{F}, ff, fugacity_pa::F, kT::F;
             capacity::Integer, K::Integer, nattempts::Integer, seed0::Integer = 1000
@@ -40,9 +46,10 @@
         Ns = Vector{Int}(undef, K)
         for k in 1:K
             st = SystemState(b, g, [0], ff; T = F(1), seed = seed0 + k, capacities = [capacity])
+            ws = PureAdsorb.MoveWorkspace(F, st.nsys, 1)
             rng = Xoshiro(seed0 + 7 * k + 3)
             for _ in 1:nattempts
-                PureAdsorb.mc_exchange!(rng, b, st, gc, gt, p, q, [fugacity_pa], kT)
+                PureAdsorb.mc_exchange!(rng, ws, b, st, gc, gt, p, q, [fugacity_pa], kT; nblocks_per_chain = 1)
             end
             Ns[k] = st.occupancy[1]
         end
@@ -136,10 +143,11 @@ end
     gc = PureAdsorb.compact_guest(b, g)
     gt = SVector{1, Int}(b.guest_types)
     p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
+    ws = PureAdsorb.MoveWorkspace(F, st.nsys, 1)
     rng = Xoshiro(42)
     maxocc = Ref(0)
     for _ in 1:5000
-        PureAdsorb.mc_exchange!(rng, b, st, gc, gt, p, q, [1.0e4], F(PureAdsorb.KB * 298.15))
+        PureAdsorb.mc_exchange!(rng, ws, b, st, gc, gt, p, q, [1.0e4], F(PureAdsorb.KB * 298.15); nblocks_per_chain = 1)
         maxocc[] = max(maxocc[], st.occupancy[1])
         @test st.energy[1] === 0.0
     end

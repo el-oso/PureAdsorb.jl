@@ -977,3 +977,49 @@ dominated by kernel-launch latency (per-move times of 150-250 μs against a thro
 structure factor, cutting total k-work 2.7x) has more to gain than item 5 (factorized phase
 tables, which only ever touches the `cis` call) — consistent with the ranked plan's own ordering.
 `pureadsorb_mcstepdecompose_neuromancer_20260927_efa65a5.json`.
+
+## μVT exchange moves: workgroup fan-out (Milestone C job 1)
+
+`mc_insert_kernel!`/`mc_delete_kernel!` were originally one work-item per chain, so a single GPU
+thread summed the whole reciprocal-space k-vector loop serially — the same shape `mc_step!`'s own
+kernels had before task 5, and the same fix: `mc_insert!`/`mc_delete!` now split into an
+evaluate/decide/apply three-kernel pipeline that fans a chain's host-atom, guest-guest and
+k-vector loops across `nblocks_per_chain` workgroups (`src/moves.jl`'s own comment on the μVT
+exchange moves has the full mechanical description). `bench/gpu/exchange_workgroup_bench.jl`
+measures `mc_insert!`/`mc_delete!`'s per-call cost at nsys ∈ {1, 64, 256}, RUBTAK 3×3×3 + CO2, 10
+initial guests/chain, capacity 40, fugacity 2e4 Pa, `nblocks_per_chain` at its own
+`default_nblocks_per_chain(F, nsys)` default — the same shape `mc_step_bench.jl` uses for
+`mc_step!`. Occupancy is reset to its starting `nguests` after every call (warm-up and timed
+samples alike): a workgroup-fanned exchange move is fast enough that thousands of calls fit in the
+0.5 s wall-clock warm-up window, and this system's real (favorable) CO2-in-RUBTAK adsorption
+equilibrates well above `capacity=40` at 2e4 Pa — an unconstrained warm-up walks occupancy into
+`mc_insert!`'s own capacity-hit failure well before the timed samples run, a real failure mode hit
+while building this benchmark.
+
+RTX 4070, `commit f4a0503`, "before" from `git stash` of this work, "after" from the landed
+workgroup fan-out:
+
+| precision | move | nsys | before (us/call) | after (us/call) | speedup |
+|---|---|---|---|---|---|
+| Float64 | insert | 1 | 15,504.0 | 188.6 | 82.2x |
+| Float64 | insert | 64 | 47,675.2 | 821.7 | 58.0x |
+| Float64 | insert | 256 | 108,923.6 | 2,522.5 | 43.2x |
+| Float64 | delete | 1 | 10,444.1 | 134.2 | 77.8x |
+| Float64 | delete | 64 | 23,469.6 | 485.1 | 48.4x |
+| Float64 | delete | 256 | 61,629.3 | 1,624.6 | 37.9x |
+| Float32 | insert | 1 | 3,290.1 | 159.1 | 20.7x |
+| Float32 | insert | 64 | 7,653.1 | 204.8 | 37.4x |
+| Float32 | insert | 256 | 8,794.5 | 312.8 | 28.1x |
+| Float32 | delete | 1 | 1,867.4 | 105.4 | 17.7x |
+| Float32 | delete | 64 | 2,027.5 | 124.0 | 16.4x |
+| Float32 | delete | 256 | 3,086.9 | 171.8 | 18.0x |
+
+At nsys=1 both precisions land at or under `mc_step!`'s own ~187-230 us/move (Float64 target).
+Cost rises with nsys the same way `mc_step!`'s does — more chains' work per launch, not fan-out
+degrading — and `nblocks_per_chain` itself shrinks with nsys
+(`default_nblocks_per_chain(F, nsys)`: 256/4/1 at nsys=1/64/256 for Float64, 1 throughout for
+Float32), which is why the *rate* of increase from nsys=1 to nsys=256 (13-19x) is smaller than the
+256x growth in chain count.
+
+Files: `pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_before_20260927_f4a0503.json`,
+`pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_after_20260927_f4a0503.json`.

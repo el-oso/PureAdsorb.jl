@@ -44,6 +44,10 @@ guest_guest_move_delta_types(::Type{T}) where {T} = (
     PureAdsorb.Guest{T, 3}, Vector{SVector{3, T}}, Vector{SVector{4, T}}, UnitRange{Int}, Int,
     SVector{3, T}, SVector{4, T}, SVector{3, T}, SVector{4, T}, Matrix{T}, Matrix{T}, SVector{3, Int}, T, T, sm3(T), sm3(T), T,
 )
+guest_pair_realspace_energy_range_types(::Type{T}) where {T} = (
+    PureAdsorb.Guest{T, 3}, SVector{3, T}, SVector{4, T}, Vector{SVector{3, T}}, Vector{SVector{4, T}}, UnitRange{Int}, Int32,
+    Matrix{T}, Matrix{T}, SVector{3, Int}, T, T, sm3(T), sm3(T), T,
+)
 reciprocal_move_delta_energy_types(::Type{T}) where {T} = (
     PureAdsorb.Guest{T, 3}, SVector{3, T}, SVector{4, T}, SVector{3, T}, SVector{4, T},
     Vector{SVector{3, T}}, Vector{T}, Vector{Complex{T}},
@@ -178,11 +182,12 @@ results = vcat(
     signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float64}, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float32}, Int); guarantees = (:typestable, :noalloc)),
     # Milestone C task 3's μVT exchange moves (`src/moves.jl`): the device-kernel-safe primitives
-    # `mc_insert_kernel!`/`mc_delete_kernel!` call, both precisions. The kernels themselves are not
-    # audited here for the same reason `evaluate_move_kernel!`/`decide_move_kernel!`/
-    # `apply_sk_kernel!` are not; `exchange_constant_term`/`exchange_constant_coeffs` are host-only
-    # and allocating by design (their own docstrings) and are excluded for the same reason
-    # `insertion_constant_term` (`nvt.jl`) always has been.
+    # `evaluate_insert_kernel!`/`decide_insert_kernel!`/`evaluate_delete_kernel!`/
+    # `decide_delete_kernel!`/`apply_exchange_sk_kernel!` call, both precisions. The kernels
+    # themselves are not audited here for the same reason `evaluate_move_kernel!`/
+    # `decide_move_kernel!`/`apply_sk_kernel!` are not; `exchange_constant_term`/
+    # `exchange_constant_coeffs` are host-only and allocating by design (their own docstrings) and
+    # are excluded for the same reason `insertion_constant_term` (`nvt.jl`) always has been.
     signature_findings(PureAdsorb.log_insertion_prefactor, (Float64, Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.log_insertion_prefactor, (Float32, Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.log_deletion_prefactor, (Float64, Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
@@ -202,13 +207,15 @@ results = vcat(
         guarantees = (:typestable, :noalloc)
     ),
     signature_findings(
-        PureAdsorb.apply_exchange_sk!,
-        (PureAdsorb.Guest{Float64, 3}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, Vector{SVector{3, Float64}}, Vector{ComplexF64}, Vector{Float64});
+        PureAdsorb.guest_pair_realspace_energy_range, guest_pair_realspace_energy_range_types(Float64);
         guarantees = (:typestable, :noalloc)
     ),
     signature_findings(
-        PureAdsorb.apply_exchange_sk!,
-        (PureAdsorb.Guest{Float32, 3}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, Vector{SVector{3, Float32}}, Vector{ComplexF32}, Vector{Float32});
+        PureAdsorb.guest_pair_realspace_energy_range, guest_pair_realspace_energy_range_types(Float32);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.select_delete_index, (Int, Vector{Int32}, Vector{Int32}, Vector{UInt64}, Vector{UInt64}, Int);
         guarantees = (:typestable, :noalloc)
     ),
 )

@@ -32,19 +32,20 @@ p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
 db = PureAdsorb.adapt(backend, b)
 dst = PureAdsorb.adapt(backend, st)
 dp = PureAdsorb.adapt(backend, p); dq = PureAdsorb.adapt(backend, q)
+ws = PureAdsorb.MoveWorkspace(F, nsys, PureAdsorb.default_nblocks_per_chain(F, nsys); backend)
 fugacity = F[2.0e4]
 
 # Warm up on wall-clock time, not a fixed call count (see this file's header).
-PureAdsorb.mc_exchange!(Xoshiro(1), db, dst, guest_c, guest_types, dp, dq, fugacity, kT; backend)
+PureAdsorb.mc_exchange!(Xoshiro(1), ws, db, dst, guest_c, guest_types, dp, dq, fugacity, kT; backend)
 CUDA.synchronize()
 t_warmup = time()
 while time() - t_warmup < 0.5
-    PureAdsorb.mc_exchange!(Xoshiro(1), db, dst, guest_c, guest_types, dp, dq, fugacity, kT; backend)
+    PureAdsorb.mc_exchange!(Xoshiro(1), ws, db, dst, guest_c, guest_types, dp, dq, fugacity, kT; backend)
     CUDA.synchronize()
 end
 
 rng = Xoshiro(1)
-bm = @be PureAdsorb.mc_exchange!($rng, $db, $dst, $guest_c, $guest_types, $dp, $dq, $fugacity, $kT; backend = $backend) seconds = 10 samples = 10 evals = 1
+bm = @be PureAdsorb.mc_exchange!($rng, $ws, $db, $dst, $guest_c, $guest_types, $dp, $dq, $fugacity, $kT; backend = $backend) seconds = 10 samples = 10 evals = 1
 times_s = [s.time for s in bm.samples]
 per_call = median(times_s)
 println("mc_exchange! nsys=$nsys: $(per_call * 1.0e6) us/call (median of $(length(times_s)) samples)")

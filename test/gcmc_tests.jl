@@ -46,7 +46,10 @@
     # low, so a `min_cycle_length` of just 1 makes `ncycles` cycles far fewer total attempts than
     # `ideal_gas_tests.jl`'s own fixed `nattempts`; `min_cycle_length` here is instead set well
     # above the target loading so every cycle attempts a comparable number of moves regardless of
-    # the instantaneous occupancy.
+    # the instantaneous occupancy. `nblocks_per_chain = 1`, for the same reason
+    # `ideal_gas_tests.jl`'s own `ideal_gas_replicas` sets it: `K` replicas of many cheap,
+    # single-guest-site, non-interacting attempts is a CPU microbenchmark shape, not the GPU-scale
+    # workload the exchange kernels' workgroup fan-out is for.
     function gcmc_ideal_gas_replicas(
             b::PureAdsorb.FrameworkBatch{F}, g::PureAdsorb.Guest{F}, ff, fugacity_pa::F, T::F;
             capacity::Integer, K::Integer, n_warmup::Integer, n_production::Integer, min_cycle_length::Integer,
@@ -58,7 +61,7 @@
             run_gcmc!(
                 b, st, g, ff; T, n_warmup, n_production, n_audit = n_warmup + n_production + 1,
                 step_trans = [F(0.3)], step_rot = [F(0.3)], fugacity = [fugacity_pa], exchange_prob = F(1),
-                seed = seed0 + 7 * k + 3, nblocks = 4, min_cycle_length
+                seed = seed0 + 7 * k + 3, nblocks = 4, min_cycle_length, nblocks_per_chain = 1
             )
             Ns[k] = st.occupancy[1]
         end

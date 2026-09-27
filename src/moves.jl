@@ -312,20 +312,28 @@ default_nblocks_per_chain(::Type{T}, nsys::Integer, target_blocks::Integer = 256
 """
     MoveWorkspace{T}
 
-Device-memory scratch `mc_step!` reuses across calls so a move attempt allocates nothing:
-`partial1`/`partial2` hold each chain's up-to-`nblocks_max` per-workgroup partial sums from
-`evaluate_move_kernel!` (`decide_move_kernel!`'s input), shaped `(nblocks_max, nsys)` so any call
-may use `nblocks_per_chain <= nblocks_max`; `accept_flag`, `move_oldpos`, `move_oldq`,
-`move_newpos`, `move_newq` are `decide_move_kernel!`'s per-chain output and `apply_sk_kernel!`'s
-input — this handoff is what lets `evaluate_move_kernel!`'s several workgroups per chain
-communicate with each other at all, since only work-items within the SAME workgroup share
-`@localmem`. Build with `MoveWorkspace(T, nsys, nblocks_max; backend)` and adapt it to `backend`
-once, like `batch`/`state`, rather than per call.
+Device-memory scratch `mc_step!` (and the μVT exchange moves, `mc_insert!`/`mc_delete!`) reuse
+across calls so a move attempt allocates nothing: `partial1`/`partial2` hold each chain's
+up-to-`nblocks_max` per-workgroup partial sums from `evaluate_move_kernel!`/
+`evaluate_insert_kernel!`/`evaluate_delete_kernel!` (the matching `decide_*_kernel!`'s input),
+shaped `(nblocks_max, nsys)` so any call may use `nblocks_per_chain <= nblocks_max`; `accept_flag`,
+`move_oldpos`, `move_oldq`, `move_newpos`, `move_newq` are a `decide_*_kernel!`'s per-chain output
+and the matching apply kernel's input — this handoff is what lets an evaluate kernel's several
+workgroups per chain communicate with each other at all, since only work-items within the SAME
+workgroup share `@localmem`. An NVT move (`decide_move_kernel!`) uses all four pose fields, one
+old/new pair for the single guest that moved; a μVT exchange move (`decide_insert_kernel!`/
+`decide_delete_kernel!`) has only one real pose — the newly inserted guest, or the guest about to
+be removed — and writes it into `move_newpos`/`move_newq` alone, leaving `move_oldpos`/`move_oldq`
+unused (`apply_exchange_sk_kernel!` never reads them). `capacity_hits` is `mc_insert_kernel!`'s
+own per-chain diagnostic, read back and checked host-side by `mc_insert!`. Build with
+`MoveWorkspace(T, nsys, nblocks_max; backend)` and adapt it to `backend` once, like `batch`/
+`state`, rather than per call.
 """
 struct MoveWorkspace{VF, VU8, VP, VQ}
     partial1::VF
     partial2::VF
     accept_flag::VU8
+    capacity_hits::VU8
     move_oldpos::VP
     move_oldq::VQ
     move_newpos::VP
@@ -338,6 +346,7 @@ function MoveWorkspace(::Type{T}, nsys::Integer, nblocks_max::Integer; backend =
     return MoveWorkspace(
         adapt(backend, zeros(T, Int(nblocks_max), Int(nsys))),
         adapt(backend, zeros(T, Int(nblocks_max), Int(nsys))),
+        adapt(backend, zeros(UInt8, Int(nsys))),
         adapt(backend, zeros(UInt8, Int(nsys))),
         adapt(backend, zeros(SVector{3, T}, Int(nsys))),
         adapt(backend, zeros(SVector{4, T}, Int(nsys))),
@@ -609,23 +618,41 @@ function mc_step!(
 end
 
 # The μVT exchange moves (insertion, deletion): unlike the NVT moves above, these change a
-# system's OCCUPANCY, not just a guest's pose, so each is one work-item per chain (`ndrange =
-# nsys`, no workgroup fan-out across a chain's own host-atom/guest-guest/k-vector loops) rather
-# than `mc_step!`'s three-kernel evaluate/decide/apply split: a chain's own capacity block is only
-# ever written by that chain's own work-item, so there is no cross-work-item reduction to
-# coordinate. Each chain loops its own guest count directly rather than a padded, capacity-wide
-# range (`docs/superpowers/specs/2026-09-27-milestone-c-gcmc.md`, "What is genuinely hard: a
-# variable particle count"): correctness first, GPU divergence measured before it is optimized away.
+# system's OCCUPANCY, not just a guest's pose. `mc_insert!`/`mc_delete!` use the SAME
+# evaluate/decide/apply three-kernel structure `mc_step!` does, and share its machinery directly
+# rather than duplicating it: `evaluate_insert_kernel!`/`evaluate_delete_kernel!` fan a chain's
+# host-atom loop (insertion only — deletion reads `host_energy`'s cache instead), guest-guest loop
+# and k-vector loop across `nblocks_per_chain` workgroups of `groupsize` work-items exactly as
+# `evaluate_move_kernel!` does, calling the IDENTICAL `host_guest_realspace_energy_range` and
+# `reciprocal_exchange_energy` (over a strided view, the same trick `evaluate_move_kernel!` plays
+# on `reciprocal_move_delta_energy`) that the NVT path calls. The one piece that could not be
+# reused as-is is the guest-guest loop: `guest_guest_move_delta` sums an old/new POSE-PAIR delta for
+# a guest that already exists and is moving, whereas an exchange move's guest has only ONE real pose
+# (a candidate insertion, or a guest about to be removed) — `guest_pair_realspace_energy_range`
+# (`guest.jl`) is that single-pose analogue, over the same kind of strided range.
 #
-# That single work-item is also where most of an exchange attempt's cost now sits. Measured on an
-# RTX 4070 (RUBTAK 3×3×3 + CO2, nsys=1, `bench/gpu/exchange_bench.jl`/`exchange_bench_decompose.jl`):
-# `mc_insert_kernel!`'s own launch+execution is ~15.5 ms, `mc_delete_kernel!`'s (no host-atom loop,
-# since it reads `host_energy`'s cache) ~10.4 ms, both dominated by one GPU thread serially summing
-# the reciprocal-space loop over every one of the framework's ~4,600 k-vectors — an order of
-# magnitude more than `mc_step!`'s own ~187 us/move on the same hardware, which fans that same kind
-# of loop across a workgroup (`evaluate_move_kernel!`). Raising exchange throughput to `mc_step!`'s
-# order of magnitude needs the same workgroup fan-out and cross-workgroup reduction `mc_step!`
-# already has, not a change to how `mc_insert!`/`mc_delete!` prepare their host-side arguments.
+# `decide_insert_kernel!`/`decide_delete_kernel!` stay one-work-item-per-chain, exactly as
+# `decide_move_kernel!` is: summing `nblocks_per_chain` partial sums and committing the outcome is
+# O(1) work, and a chain's own occupancy (writing a new slot, or swap-deleting one) is only ever
+# touched by that chain's own work-item. `apply_exchange_sk_kernel!` fans the k-vector write for an
+# accepted move across `nblocks_per_chain*groupsize` work-items with no reduction needed — the same
+# disjoint-k-range parallelism `apply_sk_kernel!` uses — taking `Val(INSERT)` to pick which side of
+# `reciprocal_exchange_energy`'s own `old_sites`/`new_sites` convention is the real pose and which
+# is `no_guest_sites`'s sentinel, since an exchange move supplies only one real pose where
+# `apply_sk_kernel!` has an old-and-new pair for a single guest that moved.
+#
+# Each chain still loops its own guest count directly rather than a padded, capacity-wide range
+# (`docs/superpowers/specs/2026-09-27-milestone-c-gcmc.md`, "What is genuinely hard: a variable
+# particle count"), exactly as the NVT moves do.
+#
+# Measured on an RTX 4070 (RUBTAK 3×3×3 + CO2, `bench/gpu/exchange_workgroup_bench.jl`,
+# `bench/results/pureadsorb_exchange_workgroup_*.json`): `mc_insert!`/`mc_delete!` drop from
+# 15.5/10.4 ms/call to 189/134 us/call at nsys=1 (Float64) and 3.29/1.87 ms to 159/105 us/call
+# (Float32) — an 82×/78× (Float64) and 21×/18× (Float32) reduction, both now at or under
+# `mc_step!`'s own ~187-230 us/move. At nsys=64 and 256 the per-call cost (every chain's own
+# attempt, one launch) rises with nsys exactly as `mc_step!`'s does, since more chains' work is
+# being done per call, not because the fan-out degrades: 822/485 us (nsys=64) and 2.52/1.62 ms
+# (nsys=256) in Float64, 205/124 us and 313/172 us in Float32.
 #
 # This file's own opening comment argues that translation, rotation and reinsertion each satisfy
 # detailed balance ON THEIR OWN, so applying any fixed (even non-random) sequence of them still
@@ -668,25 +695,6 @@ function reciprocal_exchange_energy(guest::Guest{T, N}, old_sites, new_sites, ks
         ΔU += kprefactor[i] * contribution
     end
     return T(KE) * ΔU
-end
-
-"""
-    apply_exchange_sk!(guest, old_sites, new_sites, ks, Sk, sk_abs_accum) -> nothing
-
-Applies an ACCEPTED exchange move's structure-factor change: `Sk[i] += ds` and
-`sk_abs_accum[i] += 2*Σ|guest.charges|` (`apply_sk_kernel!`'s own tolerance-scale bound,
-`SystemState`'s docstring) for every k-vector, `ds` from the SAME `old_sites`/`new_sites`
-convention `reciprocal_exchange_energy` uses (recomputed here rather than carried over from that
-call, for the same reason `apply_sk_kernel!` recomputes rather than stores `ds`).
-"""
-function apply_exchange_sk!(guest::Guest{T, N}, old_sites, new_sites, ks, Sk, sk_abs_accum) where {T, N}
-    ds_bound = 2 * sum(abs, guest.charges)
-    for i in eachindex(ks)
-        ds, _ = _reciprocal_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Sk[i])
-        Sk[i] += ds
-        sk_abs_accum[i] += ds_bound
-    end
-    return nothing
 end
 
 """
@@ -774,87 +782,167 @@ function exchange_constant_coeffs(ff::ForceField{T}, batch::FrameworkBatch{T}, g
     return p, q
 end
 
+# Deterministically reproduces chain `n`'s to-be-deleted guest index from `(rng_seed[n],
+# rng_counter[n])` alone, exactly as `select_and_propose` does for the NVT moves: every work-item
+# of every `evaluate_delete_kernel!` workgroup assigned to chain `n` calls this identically, and
+# `decide_delete_kernel!` calls it again in its own, separate kernel launch to know which slot to
+# possibly remove. Returns the ADVANCED `rng` state too (`select_and_propose`'s own convention), so
+# `decide_delete_kernel!` can continue drawing its acceptance uniform from the same stream without
+# reconstructing it. A zero-occupancy chain (`Ng` zero) has no valid slot to select; `gidx_local`
+# clamps into `refpoints`'s valid range regardless (`rand_range` never returns below `1`), and
+# `decide_delete_kernel!` forces `accept = false` whenever `Ng` is zero, so nothing selected for
+# such a chain is ever actually removed.
+@inline function select_delete_index(n::Integer, guest_offsets, occupancy, rng_seed, rng_counter, nrefpoints::Integer)
+    gr0 = guest_offsets[n]
+    Ng = occupancy[n]
+    Ng_eff = max(Ng, one(Ng))
+    rng = ChainRNG(rng_seed[n], rng_counter[n], zero(Int32))
+    gidx_local, rng = rand_range(rng, Ng_eff)
+    i = clamp(gr0 + gidx_local, one(gr0), Int32(nrefpoints))
+    return i, Ng, rng
+end
+
 """
-    mc_insert_kernel!(refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum,
-                      Sk, sk_abs_accum, rng_counter, capacity_hits, batch, guest, guest_types,
-                      guest_offsets, k_offsets, rng_seed, fugacity, kT, const_p, const_q)
+    evaluate_insert_kernel!(partial1, partial2, refpoints, orientations, Sk, batch, guest,
+                            guest_types, guest_offsets, occupancy, k_offsets, rng_seed, rng_counter,
+                            nblocks_per_chain, ::Val{G})
 
-One work-item per chain (`ndrange = nsys`). Draws a fresh uniform pose in the chain's own cell
-(`propose_reinsertion`, the same symmetric proposal translation/rotation/reinsertion already
-share) from `ChainRNG(rng_seed[n], rng_counter[n], 0)` — the same per-chain, per-attempt keying
-`select_and_propose` uses for the NVT moves, so a μVT insertion attempt is just another draw from
-the SAME per-chain move-attempt stream, sharing its counter. Computes `ΔU` from the new guest's
-host-guest real-space energy (`host_guest_realspace_energy`), its real-space energy against every
-LIVE existing guest (`guest_pair_realspace_energy`, `occupancy[n]`-bounded), the reciprocal-space
-change against the running field `Sk` (`reciprocal_exchange_energy`) and the pose-independent term
-`const_p[n] + const_q[n]*occupancy[n]` (`exchange_constant_coeffs`), then accepts with probability
-`min(1, exp(log_insertion_prefactor(fugacity[n], V, kT, occupancy[n]) - ΔU/kT))`
-(`metropolis_accept_muvt`). At capacity (`occupancy[n] == capacity(state, n)`) the draw and the
-energy evaluation still happen (keeping the RNG stream advance identical to every other chain
-regardless of outcome, matching `decide_move_kernel!`'s handling of a guest-less chain for the NVT
-moves) but `accept` is forced `false`, so a slot beyond the reserved capacity block is computed but
-never written.
-
-On acceptance: writes the new pose and host-guest energy into slot
-`guest_offsets[n] + occupancy[n] + 1` (`insert_guest!`'s own placement rule, inlined here since a
-kernel may not call a throwing host function), increments `occupancy[n]`, applies the structure-
-factor change (`apply_exchange_sk!`) and updates `energy[n]`/`energy_abs_accum[n]`. On rejection,
-`refpoints`/`orientations`/`host_energy`/`occupancy`/`Sk`/`energy` are all left untouched.
-`rng_counter[n]` advances by one regardless of the outcome.
-
-`capacity_hits[n]` is set to `1` whenever the Metropolis test alone would have accepted (a
-genuine, physical insertion) but the chain sat at capacity, so the move was forced to reject
-anyway — the actual truncation event `mc_insert!` checks for and throws on — and to `0`
-otherwise (including an ordinary physical rejection at capacity, which truncates nothing since
-the untruncated chain would have rejected that attempt too). Without this signal, a kernel that
-merely forces `accept = false` at capacity makes `audit_energy!`'s `occupancy <= capacity` check
-vacuous: nothing written by this kernel can ever exceed capacity, so that check alone could never
-catch a saturating chain.
+`evaluate_move_kernel!`'s own structure, for a candidate insertion: `nblocks_per_chain`
+workgroups of `G` work-items evaluate one chain's candidate pose (`ndrange = (G, nblocks_per_chain,
+nsys)`). Every work-item in every workgroup assigned to chain `n` independently redraws the SAME
+deterministic candidate pose (`propose_reinsertion` from `ChainRNG(rng_seed[n], rng_counter[n], 0)`
+— the same per-chain, per-attempt keying `select_and_propose` uses for the NVT moves, so an
+insertion attempt is just another draw from the same per-chain move-attempt stream). Each work-item
+then takes its own disjoint, stride-`L` slice (`L = nblocks_per_chain*G`) of the host-atom loop
+(`host_guest_realspace_energy_range`), the guest-guest loop against every LIVE existing guest
+(`guest_pair_realspace_energy_range`, `exclude = 0` since the candidate is not itself stored) and
+the k-vector loop against the running field `Sk` (`reciprocal_exchange_energy`, over a strided
+view — the same trick `evaluate_move_kernel!` plays on `reciprocal_move_delta_energy`). `buf1`
+accumulates ONLY the host-guest term (`host_guest_realspace_energy_range` already returns it KE-
+scaled where needed), matching `host_energy[i]`'s per-guest-cache convention so
+`decide_insert_kernel!` can write `partial1`'s sum straight into `host_energy` on acceptance;
+`buf2` accumulates the guest-guest and reciprocal terms together, which never feed the cache.
+`decide_insert_kernel!` sums across blocks.
 """
-@kernel function mc_insert_kernel!(
-        refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum, Sk, sk_abs_accum, rng_counter,
-        capacity_hits, batch, guest::Guest{T, N}, guest_types::SVector{N, Int}, @Const(guest_offsets),
-        @Const(k_offsets), @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q)
-    ) where {T, N}
-    n = @index(Global, Linear)
+@kernel function evaluate_insert_kernel!(
+        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), batch, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(rng_seed),
+        @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
+    ) where {T, N, G}
+    tid = @index(Local, Linear)
+    grp = @index(Group, NTuple)
+    b, n = grp[2], grp[3]
+    @uniform nsteps = trailing_zeros(G)
+
     fw = batch.framework_of[n]
     A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
-    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
-    V = batch.volumes[fw]
+    rng = ChainRNG(rng_seed[n], rng_counter[n], zero(Int32))
+    pos, q, rng = propose_reinsertion(rng, A)
+
+    L = nblocks_per_chain * G
+    lane = (b - one(Int32)) * G + tid
 
     gr0 = guest_offsets[n]
     Ng = occupancy[n]
+    a0 = batch.atom_offsets[fw]
+    natoms = batch.atom_offsets[fw + 1] - a0
+    host_new_partial = host_guest_realspace_energy_range(
+        pos, q, guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
+        batch.positions, batch.types, batch.charges, (a0 + lane):L:(a0 + natoms), A, invA, alpha
+    )
+
+    gr_lo = gr0 + one(gr0); gr_hi = gr0 + Ng
+    E_lj_partial, E_sr_partial = guest_pair_realspace_energy_range(
+        guest, pos, q, refpoints, orientations, (gr_lo + lane - 1):L:gr_hi, zero(gr0),
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+    )
+
+    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+    zero_sites = no_guest_sites(T, Val(N))
+    test_sites = guest_sites_at(guest, pos, q)
+    ΔU_recip_partial = reciprocal_exchange_energy(
+        guest, zero_sites, test_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+    )
+
+    buf1 = @localmem T (G,)
+    buf2 = @localmem T (G,)
+    buf1[tid] = host_new_partial
+    buf2[tid] = E_lj_partial + T(KE) * E_sr_partial + ΔU_recip_partial
+    @synchronize()
+    for step in 1:nsteps
+        stride = G >> step
+        if tid <= stride
+            buf1[tid] += buf1[tid + stride]
+            buf2[tid] += buf2[tid + stride]
+        end
+        @synchronize()
+    end
+    grp2 = @index(Group, NTuple)
+    b2, n2 = grp2[2], grp2[3]
+    tid == 1 && (partial1[b2, n2] = buf1[1]; partial2[b2, n2] = buf2[1])
+end
+
+"""
+    decide_insert_kernel!(refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum,
+                          rng_counter, capacity_hits, accept_flag, move_newpos, move_newq, partial1,
+                          partial2, batch, guest, guest_offsets, rng_seed, fugacity, kT, const_p,
+                          const_q, nblocks_per_chain)
+
+One work-item per chain (`ndrange = nsys`), `evaluate_insert_kernel!`'s decide stage. Redraws the
+SAME candidate pose (cheap: a handful of RNG draws and flops, unlike `evaluate_insert_kernel!`'s
+fanned-out scan), sums `nblocks_per_chain` partial sums into `ΔU` together with the pose-independent
+term `const_p[n] + const_q[n]*occupancy[n]` (`exchange_constant_coeffs`), and applies
+`metropolis_accept_muvt` with the acceptance ratio's insertion prefactor. At capacity
+(`occupancy[n] == capacity(state, n)`) the draw and the energy evaluation still happen (keeping the
+RNG stream advance identical to every other chain regardless of outcome, matching
+`decide_move_kernel!`'s handling of a guest-less chain for the NVT moves) but `accept` is forced
+`false`, so a slot beyond the reserved capacity block is computed but never written.
+
+On acceptance: writes the new pose and its host-guest energy (`partial1`'s summed value, exactly
+the cached-energy convention `decide_move_kernel!`'s own `host_energy[i] = e_new` uses) into slot
+`guest_offsets[n] + occupancy[n] + 1` (`insert_guest!`'s own placement rule, inlined here since a
+kernel may not call a throwing host function), increments `occupancy[n]`, and updates
+`energy[n]`/`energy_abs_accum[n]`. On rejection, `refpoints`/`orientations`/`host_energy`/
+`occupancy`/`energy` are all left untouched; `Sk` is never touched here at all —
+`apply_exchange_sk_kernel!` applies an accepted move's structure-factor change separately, reading
+`accept_flag`/`move_newpos`/`move_newq` written below. `rng_counter[n]` advances by one regardless
+of the outcome.
+
+`capacity_hits[n]` is set to `1` whenever the Metropolis test alone would have accepted (a genuine,
+physical insertion) but the chain sat at capacity, so the move was forced to reject anyway — the
+actual truncation event `mc_insert!` checks for and throws on — and to `0` otherwise (including an
+ordinary physical rejection at capacity, which truncates nothing since the untruncated chain would
+have rejected that attempt too). Without this signal, a kernel that merely forces `accept = false`
+at capacity makes `audit_energy!`'s `occupancy <= capacity` check vacuous: nothing written by this
+kernel can ever exceed capacity, so that check alone could never catch a saturating chain.
+"""
+@kernel function decide_insert_kernel!(
+        refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum, rng_counter, capacity_hits,
+        accept_flag, move_newpos, move_newq, @Const(partial1), @Const(partial2), batch, guest::Guest{T, N},
+        @Const(guest_offsets), @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q),
+        nblocks_per_chain::Int32
+    ) where {T, N}
+    n = @index(Global, Linear)
+    fw = batch.framework_of[n]
+    A = batch.cells[fw]
+    V = batch.volumes[fw]
+    gr0 = guest_offsets[n]
+    Ng = occupancy[n]
     cap = guest_offsets[n + 1] - gr0
-    gr = (gr0 + one(gr0)):(gr0 + Ng)
 
     rng = ChainRNG(rng_seed[n], rng_counter[n], zero(Int32))
     pos, q, rng = propose_reinsertion(rng, A)
     u, rng = rand_uniform(rng, T)
 
-    ks0 = k_offsets[n] + one(eltype(k_offsets)); ks1 = k_offsets[n + 1]
-    kb0 = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kb1 = batch.k_offsets[fw + 1]
-    Sk_n = view(Sk, ks0:ks1)
-    ks_n = view(batch.ks, kb0:kb1)
-    kpref_n = view(batch.kprefactor, kb0:kb1)
-
-    host_new = host_guest_realspace_energy(
-        pos, q, guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff, batch.positions, batch.types,
-        batch.charges, a0, natoms, A, invA, alpha
-    )
-    test_sites = guest_sites_at(guest, pos, q)
-    E_lj = zero(T); E_sr = zero(T)
-    for j in gr
-        other_sites = guest_sites_at(guest, refpoints[j], orientations[j])
-        lj, sr = guest_pair_realspace_energy(
-            test_sites, other_sites, guest_types, guest.charges, batch.sigma, batch.epsilon, batch.cutoff,
-            batch.ewald_cutoff, A, invA, alpha
-        )
-        E_lj += lj; E_sr += sr
+    e_new = zero(T); rest = zero(T)
+    for blk in Int32(1):nblocks_per_chain
+        e_new += partial1[blk, n]
+        rest += partial2[blk, n]
     end
-    zero_sites = no_guest_sites(T, Val(N))
-    ΔU_recip = reciprocal_exchange_energy(guest, zero_sites, test_sites, ks_n, kpref_n, Sk_n)
     const_term_n = const_p[n] + const_q[n] * T(Ng)
-    ΔU = host_new + E_lj + T(KE) * E_sr + ΔU_recip + const_term_n
+    ΔU = e_new + rest + const_term_n
 
     log_pref = log_insertion_prefactor(fugacity[n], V, kT, Ng)
     would_accept = metropolis_accept_muvt(ΔU, kT, log_pref, u)
@@ -863,113 +951,150 @@ catch a saturating chain.
     capacity_hits[n] = UInt8(would_accept & at_capacity)
 
     if accept
-        apply_exchange_sk!(guest, zero_sites, test_sites, ks_n, Sk_n, view(sk_abs_accum, ks0:ks1))
         slot = gr0 + Ng + one(gr0)
         refpoints[slot] = pos
         orientations[slot] = q
-        host_energy[slot] = host_new
+        host_energy[slot] = e_new
         occupancy[n] = Ng + one(Ng)
         energy[n] += ΔU
         energy_abs_accum[n] += abs(ΔU)
     end
+    accept_flag[n] = UInt8(accept)
+    move_newpos[n] = pos; move_newq[n] = q
     rng_counter[n] = rng_counter[n] + one(eltype(rng_counter))
 end
 
 """
-    mc_delete_kernel!(refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum,
-                      Sk, sk_abs_accum, rng_counter, batch, guest, guest_types, guest_offsets,
-                      k_offsets, rng_seed, fugacity, kT, const_p, const_q)
+    evaluate_delete_kernel!(partial1, partial2, refpoints, orientations, Sk, batch, guest,
+                            guest_types, guest_offsets, occupancy, k_offsets, rng_seed, rng_counter,
+                            nblocks_per_chain, ::Val{G})
 
-One work-item per chain (`ndrange = nsys`), the μVT deletion counterpart to `mc_insert_kernel!`.
-Selects a guest uniformly among the chain's `occupancy[n]` LIVE guests via the same
-`rand_range`-on-`ChainRNG` mechanism `select_and_propose` uses (a zero occupancy clamps to a
-fictitious slot, matching `select_and_propose`'s own comment, since `accept` is forced `false`
-below in that case regardless). `ΔU` is the exact negative of `mc_insert_kernel!`'s formula for
-inserting THIS SAME guest, at its own current pose, back into the `occupancy[n]-1`-guest system its
-removal leaves — but NOT by negating every piece uniformly: `host_energy[i]` (P2's cache, no
-host-atom rescan), the guest-guest real-space energy against every OTHER live guest, and
-`const_term_n1` are each the SAME positive-convention quantity `mc_insert_kernel!` computes for
-this pose, so removing the guest subtracts them (one shared negation over that group). The
-reciprocal term is different: `reciprocal_exchange_energy` with the sites swapped (`old_sites =
-guest i`, `new_sites = none`), evaluated against the CURRENT `Sk` (which still includes this
-guest), already returns `-1` times the value the matching `mc_insert_kernel!` call would have
-returned against the field with this guest excluded — the reciprocal energy is quadratic in the
-total structure factor, not a per-guest additive term, so its delta is correctly signed for THIS
-removal on its own and must be added, not folded into the shared negation — folding it in would
-silently double-negate it, exactly what the reversibility test in `test/exchange_tests.jl` checks
-for. Accepts with probability
-`min(1, exp(log_deletion_prefactor(fugacity[n], V, kT, occupancy[n]) - ΔU/kT))`, explicitly forced
-`false` whenever `occupancy[n]` is zero (R7) rather than relying on the `-Inf`
-`log_deletion_prefactor(..., 0)` would otherwise produce — the prefactor itself is evaluated at
-`max(occupancy[n], 1)` so that `log(0)` is never actually computed.
+`evaluate_insert_kernel!`'s deletion counterpart: no host-atom loop (deletion reads
+`host_energy[i]`'s cache in `decide_delete_kernel!` instead, an O(1) lookup that needs no fan-out),
+just the guest-guest loop against every OTHER live guest (`guest_pair_realspace_energy_range`,
+`exclude = i`) and the k-vector loop (`reciprocal_exchange_energy`, `old_sites = sites_i`,
+`new_sites = no_guest_sites`), fanned across `nblocks_per_chain` workgroups of `G` work-items
+exactly as `evaluate_insert_kernel!` fans its own three loops. `select_delete_index` picks the
+SAME guest index every work-item of every workgroup assigned to chain `n` would pick, since it is
+keyed only on `(rng_seed[n], rng_counter[n])`. `buf1` accumulates the guest-guest term alone (the
+piece `decide_delete_kernel!` negates together with the cached `host_energy[i]`); `buf2`
+accumulates the reciprocal term, which is added rather than negated (`decide_delete_kernel!`'s own
+docstring explains why).
+"""
+@kernel function evaluate_delete_kernel!(
+        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), batch, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(rng_seed),
+        @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
+    ) where {T, N, G}
+    tid = @index(Local, Linear)
+    grp = @index(Group, NTuple)
+    b, n = grp[2], grp[3]
+    @uniform nsteps = trailing_zeros(G)
 
-On acceptance: applies the structure-factor change (`apply_exchange_sk!`), copies the system's LAST
-occupied slot's pose and cached host energy into the freed slot (`delete_guest!`'s own swap rule, a
-no-op when the removed slot already is the last one), decrements `occupancy[n]`, and updates
-`energy[n]`/`energy_abs_accum[n]`. On rejection every one of those is left untouched.
+    fw = batch.framework_of[n]
+    i, Ng, _ = select_delete_index(n, guest_offsets, occupancy, rng_seed, rng_counter, length(refpoints))
+    pos = refpoints[i]; q = orientations[i]
+
+    L = nblocks_per_chain * G
+    lane = (b - one(Int32)) * G + tid
+
+    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
+    gr0 = guest_offsets[n]
+    gr_lo = gr0 + one(gr0); gr_hi = gr0 + Ng
+    E_lj_partial, E_sr_partial = guest_pair_realspace_energy_range(
+        guest, pos, q, refpoints, orientations, (gr_lo + lane - 1):L:gr_hi, i,
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+    )
+
+    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+    zero_sites = no_guest_sites(T, Val(N))
+    sites_i = guest_sites_at(guest, pos, q)
+    ΔU_recip_partial = reciprocal_exchange_energy(
+        guest, sites_i, zero_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+    )
+
+    buf1 = @localmem T (G,)
+    buf2 = @localmem T (G,)
+    buf1[tid] = E_lj_partial + T(KE) * E_sr_partial
+    buf2[tid] = ΔU_recip_partial
+    @synchronize()
+    for step in 1:nsteps
+        stride = G >> step
+        if tid <= stride
+            buf1[tid] += buf1[tid + stride]
+            buf2[tid] += buf2[tid + stride]
+        end
+        @synchronize()
+    end
+    grp2 = @index(Group, NTuple)
+    b2, n2 = grp2[2], grp2[3]
+    tid == 1 && (partial1[b2, n2] = buf1[1]; partial2[b2, n2] = buf2[1])
+end
+
+"""
+    decide_delete_kernel!(refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum,
+                          rng_counter, accept_flag, move_newpos, move_newq, partial1, partial2,
+                          batch, guest, guest_offsets, rng_seed, fugacity, kT, const_p, const_q,
+                          nblocks_per_chain)
+
+One work-item per chain (`ndrange = nsys`), `evaluate_delete_kernel!`'s decide stage. Reselects the
+SAME guest index (`select_delete_index`) and sums `nblocks_per_chain` partial sums into `ΔU`
+together with the cached `host_energy[i]` (P2's cache, no host-atom rescan) and the pose-independent
+term `const_p[n] + const_q[n]*(occupancy[n]-1)`:
+
+    ΔU = -(host_energy[i] + guest_guest_term + const_term_n1) + reciprocal_term
+
+`host_energy[i]`, the guest-guest term (`partial1`'s sum) and `const_term_n1` are each the SAME
+positive-convention quantity `decide_insert_kernel!` would compute for this same guest at this same
+pose, so removing the guest subtracts them (one shared negation). The reciprocal term (`partial2`'s
+sum, `reciprocal_exchange_energy` with `old_sites = sites_i`, `new_sites = none`, against the
+CURRENT `Sk`, which still includes this guest) already returns `-1` times the value the matching
+insertion would return against the field with this guest excluded — the reciprocal energy is
+quadratic in the total structure factor, not a per-guest additive term, so its delta is correctly
+signed for THIS removal on its own and must be added, not folded into the shared negation; folding
+it in would silently double-negate it, exactly what the reversibility test in
+`test/exchange_tests.jl` checks for. Accepts with `metropolis_accept_muvt` and the deletion
+prefactor, explicitly forced `false` whenever `occupancy[n]` is zero (R7) rather than relying on the
+`-Inf` `log_deletion_prefactor(..., 0)` would otherwise produce — the prefactor itself is evaluated
+at `max(occupancy[n], 1)` so `log(0)` is never actually computed.
+
+On acceptance: copies the system's LAST occupied slot's pose and cached host energy into the freed
+slot (`delete_guest!`'s own swap rule, a no-op when the removed slot already is the last one),
+decrements `occupancy[n]`, and updates `energy[n]`/`energy_abs_accum[n]`. `Sk` is never touched
+here; `move_newpos[n]`/`move_newq[n]` capture the REMOVED guest's pose BEFORE any swap, so
+`apply_exchange_sk_kernel!` (`Val(false)`) reads the guest that actually left, regardless of
+whether its slot was then overwritten. On rejection every mutated field above is left untouched.
 `rng_counter[n]` advances by one regardless of the outcome.
 """
-@kernel function mc_delete_kernel!(
-        refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum, Sk, sk_abs_accum, rng_counter,
-        batch, guest::Guest{T, N}, guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(k_offsets),
-        @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q)
+@kernel function decide_delete_kernel!(
+        refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum, rng_counter,
+        accept_flag, move_newpos, move_newq, @Const(partial1), @Const(partial2), batch, guest::Guest{T, N},
+        @Const(guest_offsets), @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q),
+        nblocks_per_chain::Int32
     ) where {T, N}
     n = @index(Global, Linear)
-    fw = batch.framework_of[n]
-    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
-    V = batch.volumes[fw]
-
-    gr0 = guest_offsets[n]
+    V = batch.volumes[batch.framework_of[n]]
     Ng = occupancy[n]
     Ng_eff = max(Ng, one(Ng))
-
-    rng = ChainRNG(rng_seed[n], rng_counter[n], zero(Int32))
-    gidx_local, rng = rand_range(rng, Ng_eff)
-    i = clamp(gr0 + gidx_local, one(gr0), Int32(length(refpoints)))
+    i, _, rng = select_delete_index(n, guest_offsets, occupancy, rng_seed, rng_counter, length(refpoints))
     u, rng = rand_uniform(rng, T)
 
-    gr = (gr0 + one(gr0)):(gr0 + Ng)
-    ks0 = k_offsets[n] + one(eltype(k_offsets)); ks1 = k_offsets[n + 1]
-    kb0 = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kb1 = batch.k_offsets[fw + 1]
-    Sk_n = view(Sk, ks0:ks1)
-    ks_n = view(batch.ks, kb0:kb1)
-    kpref_n = view(batch.kprefactor, kb0:kb1)
-
-    pos = refpoints[i]; q = orientations[i]
-    sites_i = guest_sites_at(guest, pos, q)
-    zero_sites = no_guest_sites(T, Val(N))
-    E_lj = zero(T); E_sr = zero(T)
-    for j in gr
-        j == i && continue
-        other_sites = guest_sites_at(guest, refpoints[j], orientations[j])
-        lj, sr = guest_pair_realspace_energy(
-            sites_i, other_sites, guest_types, guest.charges, batch.sigma, batch.epsilon, batch.cutoff,
-            batch.ewald_cutoff, A, invA, alpha
-        )
-        E_lj += lj; E_sr += sr
+    gg_term = zero(T); recip_term = zero(T)
+    for blk in Int32(1):nblocks_per_chain
+        gg_term += partial1[blk, n]
+        recip_term += partial2[blk, n]
     end
-    # `ΔU_recip` is the reciprocal-energy CHANGE from removing this guest from the CURRENT field
-    # `Sk_n` (which still includes it): `|Sk_n - ΔS_guest|² - |Sk_n|²` under the `sites_i -> zero`
-    # convention, already the correctly-signed system-energy delta on its own (the reciprocal
-    # energy is quadratic in the total structure factor, so this is NOT the guest's field-excluding
-    # self-interaction and must not be negated again). `host_energy[i]`, `E_lj`/`E_sr` and
-    # `const_term_n1` are each the POSITIVE-convention quantity `mc_insert_kernel!` would have
-    # added for this same guest at this same pose, so removing the guest subtracts them — hence the
-    # separate negation on that group only. Folding `ΔU_recip` into that same negation double-flips
-    # its sign, which a fixed alternation of `mc_insert!`/`mc_delete!` would not by itself reveal.
-    ΔU_recip = reciprocal_exchange_energy(guest, sites_i, zero_sites, ks_n, kpref_n, Sk_n)
     const_term_n1 = const_p[n] + const_q[n] * T(Ng - one(Ng))
-    ΔU = -(host_energy[i] + E_lj + T(KE) * E_sr + const_term_n1) + ΔU_recip
+    ΔU = -(host_energy[i] + gg_term + const_term_n1) + recip_term
 
-    # `Ng_eff` (already computed above for the guest-index draw) is reused here so `N=0` never
-    # evaluates `log_deletion_prefactor`'s `log(N)` at zero: `!iszero(Ng)` below is the sole,
-    # explicit rejection at empty occupancy (R7) rather than relying on the `-Inf` that `log(0)`
-    # would otherwise produce to reject by IEEE-754 comparison accident.
     log_pref = log_deletion_prefactor(fugacity[n], V, kT, Ng_eff)
     accept = metropolis_accept_muvt(ΔU, kT, log_pref, u) & !iszero(Ng)
 
+    gr0 = guest_offsets[n]
+    pos = refpoints[i]; q = orientations[i]
     if accept
-        apply_exchange_sk!(guest, sites_i, zero_sites, ks_n, Sk_n, view(sk_abs_accum, ks0:ks1))
         hi = gr0 + Ng
         if i != hi
             refpoints[i] = refpoints[hi]
@@ -980,58 +1105,128 @@ no-op when the removed slot already is the last one), decrements `occupancy[n]`,
         energy[n] += ΔU
         energy_abs_accum[n] += abs(ΔU)
     end
+    accept_flag[n] = UInt8(accept)
+    move_newpos[n] = pos; move_newq[n] = q
     rng_counter[n] = rng_counter[n] + one(eltype(rng_counter))
 end
 
 """
-    mc_insert!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend = CPU()) -> nothing
-    mc_delete!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend = CPU()) -> nothing
+    apply_exchange_sk_kernel!(Sk, sk_abs_accum, batch, accept_flag, pose_pos, pose_q, guest,
+                              k_offsets, ::Val{INSERT})
+
+Applies an accepted μVT exchange move's structure-factor change, fanned across `ndrange = (L,
+nsys)` work-items with no workgroup reduction needed — the same disjoint-k-range parallelism
+`apply_sk_kernel!` uses for the NVT moves, since each k-vector's `Sk` update is independent of
+every other. `INSERT = true` (an accepted `decide_insert_kernel!`) treats `pose_pos[n]`/
+`pose_q[n]` as the newly inserted guest's pose (`old_sites = no_guest_sites`, `new_sites` the real
+pose); `INSERT = false` (an accepted `decide_delete_kernel!`) treats them as the REMOVED guest's
+pose before removal (`old_sites` the real pose, `new_sites = no_guest_sites`) — the same
+`reciprocal_exchange_energy` convention `evaluate_insert_kernel!`/`evaluate_delete_kernel!` already
+use to score the move, fanned across work-items instead of read by one. An exchange move has only
+ONE real pose to give this kernel, unlike `apply_sk_kernel!`'s old-and-new pair for a single guest
+that moved, so only `move_newpos`/`move_newq` (`MoveWorkspace`'s docstring) are read here.
+A rejected chain's `accept_flag` is `0` and this kernel does nothing for it.
+"""
+@kernel function apply_exchange_sk_kernel!(
+        Sk, sk_abs_accum, batch, @Const(accept_flag), @Const(pose_pos), @Const(pose_q), guest::Guest{T, N},
+        @Const(k_offsets), ::Val{INSERT}
+    ) where {T, N, INSERT}
+    idx = @index(Global, NTuple)
+    lane, n = idx[1], idx[2]
+    L = @ndrange()[1]
+    if !iszero(accept_flag[n])
+        sites = guest_sites_at(guest, pose_pos[n], pose_q[n])
+        zero_sites = no_guest_sites(T, Val(N))
+        old_sites = INSERT ? zero_sites : sites
+        new_sites = INSERT ? sites : zero_sites
+        ds_bound = 2 * sum(abs, guest.charges)
+        fw = batch.framework_of[n]
+        kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+        for rel in lane:L:(kr_hi - kr_lo + one(kr_hi))
+            kk = kr_lo + rel - one(rel)
+            kk_b = kr_lo_b + rel - one(rel)
+            ds, _ = _reciprocal_move_delta_k(batch.ks[kk_b], guest.charges, old_sites, new_sites, Sk[kk])
+            Sk[kk] += ds
+            sk_abs_accum[kk] += ds_bound
+        end
+    end
+end
+
+"""
+    mc_insert!(ws, batch, state, guest, guest_types, const_p, const_q, fugacity, kT;
+              backend = CPU(), groupsize = DEFAULT_GROUPSIZE,
+              nblocks_per_chain = default_nblocks_per_chain(T, state.nsys)) -> nothing
+    mc_delete!(ws, batch, state, guest, guest_types, const_p, const_q, fugacity, kT;
+              backend = CPU(), groupsize = DEFAULT_GROUPSIZE,
+              nblocks_per_chain = default_nblocks_per_chain(T, state.nsys)) -> nothing
 
 One μVT insertion (`mc_insert!`) or deletion (`mc_delete!`) attempt for every chain in `state`, at
 fixed fugacity `fugacity[n]` per system in PASCALS — the units `peng_robinson_fugacity` returns.
 Both functions convert to the eV·Å⁻³ convention `log_insertion_prefactor`/`log_deletion_prefactor`
 need (`PASCAL`, `src/constants.jl`) exactly once, here, at this entry point; neither the kernels nor
-the prefactor functions do any unit conversion of their own. `ws`-free, unlike `mc_step!`: each
-chain's attempt is one work-item with no workgroup fan-out (`mc_insert_kernel!`/
-`mc_delete_kernel!`'s own docstrings). `batch` and `state` must already be resident on `backend`,
-matching `mc_step!`'s own contract. `const_p`/`const_q` are the pose-independent term's affine
-coefficients (`exchange_constant_coeffs(ff, host_batch, guest)`, one entry per system), already
-resident on `backend` — the CALLER computes these ONCE per run from a host-resident `batch` (a
-scalar-indexing computation `FrameworkBatch`'s device storage cannot support) and adapts them once,
-exactly as `run_nvt!` precomputes `insertion_constant_term` before its cycle loop: `batch` and
-`guest` do not change between calls, so re-deriving `const_p`/`const_q` on every attempt would force
-a host round-trip of a device-resident `batch` every time. Measured on an RTX 4070 (RUBTAK 3×3×3 +
-CO2, nsys=1, `bench/gpu/exchange_bench.jl`): deriving them via `adapt(CPU(), batch)` inside this
-function costs 18.7 ms/call; taking them as precomputed device arrays instead costs 12.8 ms/call.
-That remaining cost is `mc_insert_kernel!`/`mc_delete_kernel!`'s own single-work-item-per-chain
-reciprocal-space loop, not a host round trip (this file's own comment on the μVT exchange moves,
-above `no_guest_sites`) — closing the rest of the gap to `mc_step!`'s ~187 us/move needs the same
-workgroup fan-out `mc_step!` already has. `guest` must already be reindexed to `batch`'s compact
-type (`compact_guest`). `kT` is Boltzmann's constant times the temperature, in the same energy
-units as `batch`/`guest`.
+the prefactor functions do any unit conversion of their own.
+
+Three kernel launches each, `mc_step!`'s own structure: an evaluate kernel fans a chain's
+host-atom (insertion only), guest-guest and k-vector loops across `nblocks_per_chain` workgroups of
+`groupsize` work-items; a decide kernel (one work-item per chain) sums the partial sums and applies
+`metropolis_accept_muvt`; `apply_exchange_sk_kernel!` fans back out to update `state.Sk` on an
+accepted chain. `ws` (`MoveWorkspace`), `batch` and `state` must already be resident on `backend`,
+matching `mc_step!`'s own contract; `groupsize` must be a power of two and `nblocks_per_chain` must
+not exceed `ws.nblocks_max`, exactly as `mc_step!` requires. `const_p`/`const_q` are the
+pose-independent term's affine coefficients (`exchange_constant_coeffs(ff, host_batch, guest)`, one
+entry per system), already resident on `backend` — the CALLER computes these ONCE per run from a
+host-resident `batch` (a scalar-indexing computation `FrameworkBatch`'s device storage cannot
+support) and adapts them once, exactly as `run_nvt!` precomputes `insertion_constant_term` before
+its cycle loop: `batch` and `guest` do not change between calls, so re-deriving `const_p`/`const_q`
+on every attempt would force a host round-trip of a device-resident `batch` every time. `guest`
+must already be reindexed to `batch`'s compact type (`compact_guest`). `kT` is Boltzmann's constant
+times the temperature, in the same energy units as `batch`/`guest`.
 
 Attempting a deletion on an empty chain is handled by forcing that chain's acceptance to `false`
-(`mc_delete_kernel!`'s own docstring), not by throwing: a kernel may not throw, so only
+(`decide_delete_kernel!`'s own docstring), not by throwing: a kernel may not throw, so only
 `insert_guest!`/`delete_guest!` (`state.jl`, not called by this device path) do that. Exceeding a
 chain's capacity is different: `mc_insert!` throws `ArgumentError` immediately if
-`mc_insert_kernel!`'s `capacity_hits` reports any system where a physically-accepted insertion was
-forced to reject for lack of a free slot — a saturating chain samples a silently truncated
-distribution, so this is fail-fast rather than a diagnostic left for a later audit to notice.
+`ws.capacity_hits` (written fresh by every `decide_insert_kernel!` launch) reports any system where
+a physically-accepted insertion was forced to reject for lack of a free slot — a saturating chain
+samples a silently truncated distribution, so this is fail-fast rather than a diagnostic left for a
+later audit to notice.
 """
 function mc_insert!(
-        batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        const_p, const_q, fugacity, kT::T; backend = CPU()
+        ws::MoveWorkspace, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
+        const_p, const_q, fugacity, kT::T;
+        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE, nblocks_per_chain::Integer = default_nblocks_per_chain(T, state.nsys)
     ) where {T, N}
+    ispow2(groupsize) || throw(ArgumentError("mc_insert!: groupsize=$groupsize must be a power of two"))
+    nblocks_per_chain >= 1 || throw(ArgumentError("mc_insert!: nblocks_per_chain=$nblocks_per_chain must be >= 1"))
+    nblocks_per_chain <= ws.nblocks_max ||
+        throw(ArgumentError("mc_insert!: nblocks_per_chain=$nblocks_per_chain exceeds the workspace's nblocks_max=$(ws.nblocks_max)"))
+    G = Int(groupsize)
+    nbpc = Int32(nblocks_per_chain)
     nsys = state.nsys
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
-    dhits = adapt(backend, zeros(UInt8, nsys))
-    mc_insert_kernel!(backend)(
-        state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
-        state.Sk, state.sk_abs_accum, state.rng_counter, dhits, batch, guest, guest_types, state.guest_offsets,
-        state.k_offsets, state.rng_seed, dfug, kT, const_p, const_q; ndrange = nsys
+
+    evaluate_insert_kernel!(backend)(
+        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, batch, guest, guest_types,
+        state.guest_offsets, state.occupancy, state.k_offsets, state.rng_seed, state.rng_counter, nbpc, Val(G);
+        ndrange = (G, nblocks_per_chain, nsys), workgroupsize = (G, 1, 1)
     )
     KernelAbstractions.synchronize(backend)
-    hits = Array(dhits)
+
+    decide_insert_kernel!(backend)(
+        state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
+        state.rng_counter, ws.capacity_hits, ws.accept_flag, ws.move_newpos, ws.move_newq, ws.partial1, ws.partial2,
+        batch, guest, state.guest_offsets, state.rng_seed, dfug, kT, const_p, const_q, nbpc; ndrange = nsys
+    )
+    KernelAbstractions.synchronize(backend)
+
+    apply_exchange_sk_kernel!(backend)(
+        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_newpos, ws.move_newq, guest, state.k_offsets, Val(true);
+        ndrange = (nblocks_per_chain * G, nsys)
+    )
+    KernelAbstractions.synchronize(backend)
+
+    hits = Array(ws.capacity_hits)
     any(!iszero, hits) && throw(
         ArgumentError(
             "mc_insert!: system(s) $(findall(!iszero, hits)) hit capacity on a move the Metropolis " *
@@ -1043,29 +1238,52 @@ function mc_insert!(
 end
 
 function mc_delete!(
-        batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        const_p, const_q, fugacity, kT::T; backend = CPU()
+        ws::MoveWorkspace, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
+        const_p, const_q, fugacity, kT::T;
+        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE, nblocks_per_chain::Integer = default_nblocks_per_chain(T, state.nsys)
     ) where {T, N}
+    ispow2(groupsize) || throw(ArgumentError("mc_delete!: groupsize=$groupsize must be a power of two"))
+    nblocks_per_chain >= 1 || throw(ArgumentError("mc_delete!: nblocks_per_chain=$nblocks_per_chain must be >= 1"))
+    nblocks_per_chain <= ws.nblocks_max ||
+        throw(ArgumentError("mc_delete!: nblocks_per_chain=$nblocks_per_chain exceeds the workspace's nblocks_max=$(ws.nblocks_max)"))
+    G = Int(groupsize)
+    nbpc = Int32(nblocks_per_chain)
     nsys = state.nsys
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
-    mc_delete_kernel!(backend)(
+
+    evaluate_delete_kernel!(backend)(
+        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, batch, guest, guest_types,
+        state.guest_offsets, state.occupancy, state.k_offsets, state.rng_seed, state.rng_counter, nbpc, Val(G);
+        ndrange = (G, nblocks_per_chain, nsys), workgroupsize = (G, 1, 1)
+    )
+    KernelAbstractions.synchronize(backend)
+
+    decide_delete_kernel!(backend)(
         state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
-        state.Sk, state.sk_abs_accum, state.rng_counter, batch, guest, guest_types, state.guest_offsets,
-        state.k_offsets, state.rng_seed, dfug, kT, const_p, const_q; ndrange = nsys
+        state.rng_counter, ws.accept_flag, ws.move_newpos, ws.move_newq, ws.partial1, ws.partial2,
+        batch, guest, state.guest_offsets, state.rng_seed, dfug, kT, const_p, const_q, nbpc; ndrange = nsys
+    )
+    KernelAbstractions.synchronize(backend)
+
+    apply_exchange_sk_kernel!(backend)(
+        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_newpos, ws.move_newq, guest, state.k_offsets, Val(false);
+        ndrange = (nblocks_per_chain * G, nsys)
     )
     KernelAbstractions.synchronize(backend)
     return nothing
 end
 
 """
-    mc_exchange!(rng::AbstractRNG, batch, state, guest, guest_types, const_p, const_q, fugacity, kT;
-                backend = CPU()) -> Bool
+    mc_exchange!(rng::AbstractRNG, ws, batch, state, guest, guest_types, const_p, const_q, fugacity,
+                kT; backend = CPU(), groupsize = DEFAULT_GROUPSIZE,
+                nblocks_per_chain = default_nblocks_per_chain(T, state.nsys)) -> Bool
 
 The μVT exchange move: draws ONE fair coin from `rng` (`rand(rng, Bool)`) — shared across every
 chain in the batch for this launch, exactly as `run_nvt!` draws one shared `movetype` per call to
 `mc_step!` — and calls `mc_insert!` on `true`, `mc_delete!` on `false`. Returns which one ran.
-`const_p`/`const_q` are forwarded unchanged to whichever one runs; see `mc_insert!`'s docstring for
-why they are precomputed once per run rather than derived here.
+`ws`, `const_p`/`const_q`, `groupsize` and `nblocks_per_chain` are forwarded unchanged to whichever
+one runs; see `mc_insert!`'s docstring for why `const_p`/`const_q` are precomputed once per run
+rather than derived here.
 
 This is the ONLY sanctioned way to attempt insertion/deletion moves: `mc_insert!`/`mc_delete!`
 individually do NOT satisfy detailed balance (this file's own opening comment on the μVT moves), so
@@ -1075,14 +1293,15 @@ while every existing energy audit still passes. `p_ins = p_del = 1/2` here is ex
 launch, or substituting a biased draw, breaks that assumption silently.
 """
 function mc_exchange!(
-        rng::AbstractRNG, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N},
-        guest_types::SVector{N, Int}, const_p, const_q, fugacity, kT::T; backend = CPU()
+        rng::AbstractRNG, ws::MoveWorkspace, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, const_p, const_q, fugacity, kT::T;
+        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE, nblocks_per_chain::Integer = default_nblocks_per_chain(T, state.nsys)
     ) where {T, N}
     do_insert = rand(rng, Bool)
     if do_insert
-        mc_insert!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend)
+        mc_insert!(ws, batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend, groupsize, nblocks_per_chain)
     else
-        mc_delete!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend)
+        mc_delete!(ws, batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend, groupsize, nblocks_per_chain)
     end
     return do_insert
 end

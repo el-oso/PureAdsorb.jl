@@ -129,6 +129,34 @@ function guest_guest_move_delta(
 end
 
 """
+    guest_pair_realspace_energy_range(guest, testpos, testq, refpoints, orientations, gr, exclude,
+                                       sigma, epsilon, guest_types, cutoff, ewald_cutoff, A, invA, alpha) -> (E_lj, E_sr)
+
+Real-space (LJ + screened-Coulomb) energy between one guest at pose `(testpos, testq)` and every
+OTHER live guest whose global index appears in `gr`, skipping index `exclude`. Any range or
+strided range over `gr` is exact, since the sum is just a plain sum over `gr` — summing this over
+a partition of a system's live guests into disjoint strided ranges gives the same total, exactly
+as `guest_guest_move_delta` already relies on for the NVT moves (`moves.jl`'s μVT exchange kernels
+use this the same way). An insertion attempt, whose candidate pose is not itself stored in
+`refpoints`/`orientations`, passes `exclude = 0`, which never appears in a 1-based `gr`; a
+deletion attempt passes its own guest's global index so it is not paired against itself.
+"""
+function guest_pair_realspace_energy_range(
+        guest::Guest{T, N}, testpos::SVector{3, T}, testq::SVector{4, T}, refpoints, orientations, gr, exclude::Integer,
+        sigma, epsilon, guest_types::SVector{N, Int}, cutoff::T, ewald_cutoff::T, A, invA, alpha::T
+    ) where {T, N}
+    test_sites = guest_sites_at(guest, testpos, testq)
+    E_lj = zero(T); E_sr = zero(T)
+    for j in gr
+        j == exclude && continue
+        other_sites = guest_sites_at(guest, refpoints[j], orientations[j])
+        lj, sr = guest_pair_realspace_energy(test_sites, other_sites, guest_types, guest.charges, sigma, epsilon, cutoff, ewald_cutoff, A, invA, alpha)
+        E_lj += lj; E_sr += sr
+    end
+    return E_lj, E_sr
+end
+
+"""
     host_guest_realspace_energy_range(pos, q, guest, sigma, epsilon, cutoff, ewald_cutoff,
                                        positions, types, charges, atom_range, A, invA, alpha) -> energy
 

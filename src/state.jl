@@ -18,11 +18,14 @@ even though nothing here assumes systems share a count — Milestone C varies it
 (Å, Cartesian, wrapped into the cell) and `orientations` (unit quaternions, `rotate`'s
 `(x, y, z, w)` convention, the same one Milestone A uses) together give each guest's pose.
 
-`k_offsets` (`kvec_range`) copies the layout of the `FrameworkBatch` the state was built from,
-so `Sk[i] = Shost(k_i) + Σ_guests S_guest(k_i)` for every k-vector that batch carries. This is
-correct only when that batch was built with `fullk = true`: a guest's own structure factor is
-nonzero at every k, not only the host-coupled subset the sparse (Milestone A) path keeps, so the
-constructor requires it.
+`k_offsets` (`kvec_range`) gives each system its OWN slice of `Sk`, one system at a time, so that
+`Sk[i] = Shost(k_i) + Σ_guests S_guest(k_i)` for every k-vector that system's framework carries —
+`Sk` cannot reuse `batch`'s own `k_offsets`/`Shost` directly when two systems share a framework
+(`FrameworkBatch`'s docstring), since a shared host still has independent guests per system, so
+`batch_kvec_range` resolves a system's framework's slice of `batch`'s deduplicated tables while
+`kvec_range` resolves that system's own slice of `Sk` here. This is correct only when that batch
+was built with `fullk = true`: a guest's own structure factor is nonzero at every k, not only the
+host-coupled subset the sparse (Milestone A) path keeps, so the constructor requires it.
 
 `energy` is a per-system running total, set at construction to `total_energy(batch, state,
 guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incrementally from
@@ -269,25 +272,38 @@ function SystemState(
     rpos, quat = initial_poses(batch, guest, sys_of, kT, rng, backend)
     refpoints = Vector{SVector{3, F}}(undef, ntot)
     for i in 1:ntot
-        refpoints[i] = batch.cells[sys_of[i]] * rpos[i]
+        refpoints[i] = batch.cells[batch.framework_of[sys_of[i]]] * rpos[i]
     end
 
-    k_offsets = copy(batch.k_offsets)
-    Sk = copy(batch.Shost)
+    # `state.Sk` cannot reuse `batch`'s own (per-FRAMEWORK, deduplicated) `Shost`/`k_offsets`
+    # directly: `Sk` also carries each system's own guests, so it needs one slice per SYSTEM even
+    # when two systems share a framework. Each system's slice starts as a fresh copy of its own
+    # framework's `Shost` (`batch_kvec_range`), sized by that framework's own k-vector count —
+    # the same total layout `copy(batch.k_offsets)`/`copy(batch.Shost)` gave before frameworks
+    # were deduplicated, just no longer literally aliasing `batch`'s storage.
+    k_offsets = Vector{Int32}(undef, nsys + 1)
+    k_offsets[1] = 0
+    for n in 1:nsys
+        k_offsets[n + 1] = k_offsets[n] + Int32(length(batch_kvec_range(batch, n)))
+    end
+    Sk = Vector{Complex{F}}(undef, k_offsets[end])
     for n in 1:nsys
         kr = (k_offsets[n] + 1):k_offsets[n + 1]
+        krb = batch_kvec_range(batch, n)
+        Sk[kr] .= view(batch.Shost, krb)
         gr = (guest_offsets[n] + 1):guest_offsets[n + 1]
         (isempty(kr) || isempty(gr)) && continue
         sitepos, siteq = guest_site_positions_charges(guest, refpoints, quat, gr)
-        Sk[kr] .+= structure_factor(view(batch.ks, kr), sitepos, siteq)
+        Sk[kr] .+= structure_factor(view(batch.ks, krb), sitepos, siteq)
     end
 
     guest_types_c = SVector{N, Int}(batch.guest_types)
     guest_compact = Guest{F, N}(guest.sites, guest_types_c, guest.charges, guest.tc, guest.pc, guest.omega)
     host_energy = Vector{F}(undef, ntot)
     for n in 1:nsys
-        a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
-        A = batch.cells[n]; invA = batch.invcells[n]; alpha = batch.alphas[n]
+        fw = batch.framework_of[n]
+        a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
+        A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
         for i in (guest_offsets[n] + 1):guest_offsets[n + 1]
             host_energy[i] = host_guest_realspace_energy(
                 refpoints[i], quat[i], guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,

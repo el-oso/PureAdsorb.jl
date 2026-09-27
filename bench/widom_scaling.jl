@@ -89,6 +89,10 @@ function tiled_batch(backend, b::FrameworkBatch{T}, n::Integer) where {T}
         adapt(backend, b.guest_sites_orig), adapt(backend, b.guest_charges_orig),
         rep(b.bs), tile(backend, b.kmin, n),
         b.cutoff, b.ewald_cutoff, b.fullk, Int(n),
+        # This helper deliberately builds the naive, one-copy-per-system layout `FrameworkBatch`
+        # itself no longer uses (item 2 of the ranked plan, `2026-09-26-milestone-b-nvt.md`), so
+        # `framework_of` is the identity map rather than a deduplicated one.
+        adapt(backend, Int32.(1:n)),
     )
 end
 
@@ -130,6 +134,8 @@ for nsys in nsys_grid
         fill(b1.ncells[1], nsys), b1.cell_offsets, b1.cellgrid_offsets, b1.sigma, b1.epsilon,
         b1.compact_to_orig, b1.guest_types, b1.guest_types_orig, b1.guest_sites_orig, b1.guest_charges_orig,
         fill(b1.bs[1], nsys), repeat(b1.kmin, nsys), b1.cutoff, b1.ewald_cutoff, b1.fullk, nsys,
+        # Naive layout by construction (see `tiled_batch`'s comment above): identity `framework_of`.
+        Int32.(1:nsys),
     )
     rho2, reach0, ntypes_ = PureAdsorb.build_rejection_tables(rb_batch, g_compact, kT)   # warm-up: compile
     rb_bm = @be PureAdsorb.build_rejection_tables($rb_batch, $g_compact, $kT) seconds = 10 samples = 5 evals = 1

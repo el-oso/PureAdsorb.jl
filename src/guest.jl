@@ -284,9 +284,11 @@ energy audit (task 8); it is also what seeds `SystemState.energy` at constructio
 function total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, ff::ForceField{T}, n::Integer) where {T, N}
     gr = guest_range(state, n)
     kr = kvec_range(state, n)
+    krb = batch_kvec_range(batch, n)
     Ng = length(gr)
-    A = batch.cells[n]; invA = batch.invcells[n]; alpha = batch.alphas[n]
-    a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
+    fw = batch.framework_of[n]
+    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
+    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
     guest_types = SVector{N, Int}(batch.guest_types)
     # `batch.sigma`/`batch.epsilon` are indexed by the batch's compact LJ type, so
     # `host_guest_realspace_energy` (mirroring `insertion_energy`'s own convention) needs a
@@ -306,7 +308,7 @@ function total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Gu
     )
     E += E_lj_gg + T(KE) * E_sr_gg
 
-    E += total_reciprocal_energy(view(batch.kprefactor, kr), view(state.Sk, kr), view(batch.Shost, kr))
+    E += total_reciprocal_energy(view(batch.kprefactor, krb), view(state.Sk, kr), view(batch.Shost, krb))
 
     gself, gexcl = guest_self_terms(guest, alpha, batch.ewald_cutoff)
     E += Ng * T(KE) * (gself + gexcl)
@@ -320,11 +322,11 @@ function total_energy(batch::FrameworkBatch{T}, state::SystemState{T}, guest::Gu
     for j in (a0 + 1):(a0 + natoms)
         host_counts[batch.compact_to_orig[batch.types[j]]] += 1
     end
-    E += guest_tail_correction(ff, host_counts, gcounts, Ng, batch.volumes[n])
+    E += guest_tail_correction(ff, host_counts, gcounts, Ng, batch.volumes[fw])
 
     Qh = sum(view(batch.charges, (a0 + 1):(a0 + natoms)))
     Qg = sum(guest.charges)
-    E += -T(KE) * T(π) / (2 * batch.volumes[n] * alpha^2) * ((Qh + Ng * Qg)^2 - Qh^2)
+    E += -T(KE) * T(π) / (2 * batch.volumes[fw] * alpha^2) * ((Qh + Ng * Qg)^2 - Qh^2)
 
     return E
 end
@@ -359,8 +361,9 @@ function guest_move_delta(
         newpos::SVector{3, T}, newq::SVector{4, T}, ΔS
     ) where {T, N}
     oldpos = state.refpoints[i]; oldq = state.orientations[i]
-    A = batch.cells[n]; invA = batch.invcells[n]; alpha = batch.alphas[n]
-    a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
+    fw = batch.framework_of[n]
+    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
+    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
     guest_types = SVector{N, Int}(batch.guest_types)
     guest_compact = Guest{T, N}(guest.sites, guest_types, guest.charges, guest.tc, guest.pc, guest.omega)
 
@@ -375,7 +378,8 @@ function guest_move_delta(
         batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
     )
     kr = kvec_range(state, n)
-    ΔU_recip = reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, kr), view(batch.kprefactor, kr), view(state.Sk, kr))
+    krb = batch_kvec_range(batch, n)
+    ΔU_recip = reciprocal_move_delta!(ΔS, guest, oldpos, oldq, newpos, newq, view(batch.ks, krb), view(batch.kprefactor, krb), view(state.Sk, kr))
     return (e_new - e_old) + ΔU_gg + ΔU_recip, e_new
 end
 
@@ -390,9 +394,10 @@ end
 @kernel function realspace_move_kernel!(ΔU, @Const(sys_of), @Const(gidx), @Const(oldpos), @Const(oldq), @Const(newpos), @Const(newq), batch, guest, refpoints, orientations, guest_offsets, guest_types::SVector{N, Int}) where {N}
     m = @index(Global)
     n = sys_of[m]; i = gidx[m]
-    a0 = batch.atom_offsets[n]
-    natoms = batch.atom_offsets[n + 1] - a0
-    A = batch.cells[n]; invA = batch.invcells[n]; alpha = batch.alphas[n]
+    fw = batch.framework_of[n]
+    a0 = batch.atom_offsets[fw]
+    natoms = batch.atom_offsets[fw + 1] - a0
+    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
     e_old = host_guest_realspace_energy(
         oldpos[m], oldq[m], guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
@@ -416,7 +421,8 @@ end
     m = @index(Global)
     n = sys_of[m]
     kr = (k_offsets[n] + 1):k_offsets[n + 1]
+    krb = batch_kvec_range(batch, n)
     ΔU[m] = reciprocal_move_delta_energy(
-        guest, oldpos[m], oldq[m], newpos[m], newq[m], view(batch.ks, kr), view(batch.kprefactor, kr), view(Sk, kr)
+        guest, oldpos[m], oldq[m], newpos[m], newq[m], view(batch.ks, krb), view(batch.kprefactor, krb), view(Sk, kr)
     )
 end

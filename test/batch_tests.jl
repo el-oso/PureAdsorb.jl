@@ -6,9 +6,14 @@
     sc = replicate(fw, (3, 3, 3))
     b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6))
     @test b.nsys == 2
-    @test b.atom_offsets == Int32[0, 3078, 6156]
-    @test length(b.ks) == 2 * (b.k_offsets[2] - b.k_offsets[1])
-    @test b.constant_offset[1] == b.constant_offset[2]
+    # Both systems hold the same (value-equal) framework, so `FrameworkBatch` dedups them into
+    # ONE framework's worth of storage (item 2 of the ranked plan, `2026-09-26-milestone-b-nvt.md`)
+    # rather than two identical copies.
+    @test PureAdsorb.nframeworks(b) == 1
+    @test b.framework_of == Int32[1, 1]
+    @test b.atom_offsets == Int32[0, 3078]
+    @test length(b.ks) == b.k_offsets[2] - b.k_offsets[1]
+    @test length(b.constant_offset) == 1
     # Atoms are stored sorted by cell (E2), not CIF order, so position 1 is no longer
     # necessarily the CIF's first atom (Zr) — only the per-system multiset of types survives.
     # `b.types` uses the batch's compact type index (E3); map back through `compact_to_orig` to
@@ -55,7 +60,10 @@ end
     b0 = FrameworkBatch(fill(fw, nsys), ff, g0, EwaldParams(cutoff = 12.0))
     bq = FrameworkBatch(fill(fw, nsys), ff, gq, EwaldParams(cutoff = 12.0))
     @test isempty(b0.ks)
-    @test b0.k_offsets == zeros(Int32, nsys + 1)
+    # `fill(fw, nsys)` is one framework value repeated `nsys` times, so `FrameworkBatch` dedups it
+    # to a single framework's worth of storage regardless of `nsys`.
+    @test PureAdsorb.nframeworks(b0) == 1
+    @test b0.k_offsets == zeros(Int32, 2)
     @test !isempty(bq.ks)
     @test all(iszero, b0.self_term_halfrange)   # no charge, no orientation dependence
 end
@@ -287,9 +295,11 @@ end
 end
 
 @testitem "hardcore_bound's threaded per-framework pass matches a serial recomputation" begin
-    # Mixes repeated copies of RUBTAK (exercising cross-framework memo reuse) with a distinct
+    # Mixes repeated copies of RUBTAK (exercising cross-framework memo reuse AND dedup — three
+    # of the eight systems below are RUBTAK, one distinct framework, not three) with a distinct
     # empty framework, several systems deep, independent of how many threads this process runs
-    # with: `bs` must not depend on Threads.@threads's scheduling order.
+    # with: `bs` must not depend on Threads.@threads's scheduling order, and must be stored once
+    # per DISTINCT framework, not once per system.
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
     ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
     g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
@@ -300,17 +310,26 @@ end
     ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
     b = FrameworkBatch(fws, ff, g, ewald)
 
+    sc_idx = [1, 2, 4, 6, 7, 8]      # indices of fws holding sc
+    empty_idx = [3, 5]               # indices of fws holding empty_fw
+    @test PureAdsorb.nframeworks(b) == 2   # sc and empty_fw, regardless of how many systems repeat each
+    @test allequal(b.framework_of[sc_idx])
+    @test allequal(b.framework_of[empty_idx])
+    @test b.framework_of[sc_idx[1]] != b.framework_of[empty_idx[1]]
+
     N = length(g.sites)
     guest_compact = PureAdsorb.Guest{Float64, N}(g.sites, PureAdsorb.SVector{N, Int}(b.guest_types), g.charges, g.tc, g.pc, g.omega)
     α = only(unique(b.alphas))
-    bs_serial = Vector{Float64}(undef, length(fws))
-    for n in eachindex(fws)
-        atoms_n = (b.atom_offsets[n] + 1):b.atom_offsets[n + 1]
-        k_n = (b.k_offsets[n] + 1):b.k_offsets[n + 1]
-        bs_serial[n] = PureAdsorb.hardcore_bound(
+    bs_serial = Vector{Float64}(undef, PureAdsorb.nframeworks(b))
+    for fwidx in 1:PureAdsorb.nframeworks(b)
+        atoms_n = (b.atom_offsets[fwidx] + 1):b.atom_offsets[fwidx + 1]
+        k_n = (b.k_offsets[fwidx] + 1):b.k_offsets[fwidx + 1]
+        bs_serial[fwidx] = PureAdsorb.hardcore_bound(
             guest_compact, b.sigma, b.epsilon, b.positions, b.types, b.charges, atoms_n, ff.cutoff, α,
             view(b.kprefactor, k_n), view(b.Shost, k_n)
         )
     end
     @test b.bs == bs_serial
+    # Every system's own bound, resolved through `framework_of`, matches the per-framework value.
+    @test [b.bs[b.framework_of[n]] for n in eachindex(fws)] == bs_serial[b.framework_of]
 end

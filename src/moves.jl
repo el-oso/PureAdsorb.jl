@@ -328,19 +328,20 @@ written to `partial1[block, n]`/`partial2[block, n]`. `decide_move_kernel!` sums
     b, n = grp[2], grp[3]
     @uniform nsteps = trailing_zeros(G)
 
+    fw = batch.framework_of[n]
     i, oldpos, oldq, newpos, newq, _, _ = select_and_propose(
-        n, guest_offsets, rng_seed, rng_counter, movetype, step_trans, step_rot, batch.cells[n], refpoints,
+        n, guest_offsets, rng_seed, rng_counter, movetype, step_trans, step_rot, batch.cells[fw], refpoints,
         orientations, length(refpoints)
     )
 
     L = nblocks_per_chain * G
     lane = (b - one(Int32)) * G + tid
 
-    A = batch.cells[n]
+    A = batch.cells[fw]
     gr0 = guest_offsets[n]
-    a0 = batch.atom_offsets[n]
-    natoms = batch.atom_offsets[n + 1] - a0
-    invA = batch.invcells[n]; alpha = batch.alphas[n]
+    a0 = batch.atom_offsets[fw]
+    natoms = batch.atom_offsets[fw + 1] - a0
+    invA = batch.invcells[fw]; alpha = batch.alphas[fw]
     e_new_partial = host_guest_realspace_energy_range(
         newpos, newq, guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         batch.positions, batch.types, batch.charges, (a0 + lane):L:(a0 + natoms), A, invA, alpha
@@ -352,10 +353,17 @@ written to `partial1[block, n]`/`partial2[block, n]`. `decide_move_kernel!` sums
         batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
     )
 
+    # `k_offsets` (this kernel's own argument, `state.k_offsets`) ranges over `Sk`, which stays
+    # sized one slice per SYSTEM even when systems share a framework; `batch.k_offsets` ranges
+    # over `batch.ks`/`batch.kprefactor`, deduplicated to one slice per FRAMEWORK
+    # (`FrameworkBatch`'s docstring). The two ranges have the same length (framework `fw`'s own
+    # k-vector count) but different absolute starts, so each is built from its own offsets and
+    # paired by the shared relative stride `lane:L`, never by one absolute range applied to both.
     kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
     ΔU_recip_partial = reciprocal_move_delta_energy(
-        guest, oldpos, oldq, newpos, newq, view(batch.ks, (kr_lo + lane - 1):L:kr_hi),
-        view(batch.kprefactor, (kr_lo + lane - 1):L:kr_hi), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+        guest, oldpos, oldq, newpos, newq, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
     )
 
     buf1 = @localmem T (G,)
@@ -408,8 +416,8 @@ workspace, regardless of acceptance, for `apply_sk_kernel!` to read; it only act
     ) where {T, N}
     n = @index(Global, Linear)
     i, oldpos, oldq, newpos, newq, Ng, rng = select_and_propose(
-        n, guest_offsets, rng_seed, rng_counter, movetype, step_trans, step_rot, batch.cells[n], refpoints,
-        orientations, length(refpoints)
+        n, guest_offsets, rng_seed, rng_counter, movetype, step_trans, step_rot, batch.cells[batch.framework_of[n]],
+        refpoints, orientations, length(refpoints)
     )
     e_new = zero(T); rest = zero(T)
     for blk in Int32(1):nblocks_per_chain
@@ -459,7 +467,7 @@ rejected move leaves `Sk`/`sk_abs_accum` untouched, exactly as `guest_move_delta
 requires.
 """
 @kernel function apply_sk_kernel!(
-        Sk, sk_abs_accum, @Const(ks), @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq), @Const(move_newpos),
+        Sk, sk_abs_accum, batch, @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq), @Const(move_newpos),
         @Const(move_newq), guest::Guest{T, N}, @Const(k_offsets)
     ) where {T, N}
     idx = @index(Global, NTuple)
@@ -469,9 +477,17 @@ requires.
         old_sites = guest_sites_at(guest, move_oldpos[n], move_oldq[n])
         new_sites = guest_sites_at(guest, move_newpos[n], move_newq[n])
         ds_bound = 2 * sum(abs, guest.charges)
+        # `k_offsets` (this kernel's own argument, `state.k_offsets`) ranges over `Sk`, one slice
+        # per SYSTEM; `batch.k_offsets` ranges over `batch.ks`, one slice per FRAMEWORK
+        # (`FrameworkBatch`'s docstring) — same length for system `n`'s framework, different
+        # absolute start, so the loop pairs them by the shared relative offset `rel`.
+        fw = batch.framework_of[n]
         kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
-        for kk in (kr_lo + lane - 1):L:kr_hi
-            ds, _ = _reciprocal_move_delta_k(ks[kk], guest.charges, old_sites, new_sites, Sk[kk])
+        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+        for rel in lane:L:(kr_hi - kr_lo + one(kr_hi))
+            kk = kr_lo + rel - one(rel)
+            kk_b = kr_lo_b + rel - one(rel)
+            ds, _ = _reciprocal_move_delta_k(batch.ks[kk_b], guest.charges, old_sites, new_sites, Sk[kk])
             Sk[kk] += ds
             sk_abs_accum[kk] += ds_bound
         end
@@ -534,7 +550,7 @@ function mc_step!(
     KernelAbstractions.synchronize(backend)
 
     apply_sk_kernel!(backend)(
-        state.Sk, state.sk_abs_accum, batch.ks, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos,
+        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos,
         ws.move_newq, guest, state.k_offsets;
         ndrange = (nblocks_per_chain * G, nsys)
     )

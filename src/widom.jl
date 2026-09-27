@@ -95,15 +95,19 @@ end
     i = @index(Global)
     s = sys_of[i]
     N = length(guest.sites)
-    a0 = batch.atom_offsets[s]
-    g0 = batch.cellgrid_offsets[s] + 1
-    g1 = batch.cellgrid_offsets[s + 1]
-    A = batch.cells[s]
-    invA = batch.invcells[s]
+    fw = batch.framework_of[s]
+    a0 = batch.atom_offsets[fw]
+    g0 = batch.cellgrid_offsets[fw] + 1
+    g1 = batch.cellgrid_offsets[fw + 1]
+    A = batch.cells[fw]
+    invA = batch.invcells[fw]
     pos = A * rpos[i]
     gsites = map(sv -> rotate(quat[i], sv), guest.sites)
     cell_offsets = view(batch.cell_offsets, g0:g1)
-    n = batch.ncells[s]
+    n = batch.ncells[fw]
+    # `rho2`/`reach0` are `build_rejection_tables`' own per-call output, sized one slice per
+    # SYSTEM (`s`), not per framework: rejection depends on `kT` too, so it is rebuilt fresh on
+    # every `widom` call rather than deduplicated in `FrameworkBatch` itself.
     m = reach0[s]
     n1 = n[1]; n2 = n[2]; n3 = n[3]
     m1 = m[1]; m2 = m[2]; m3 = m[3]
@@ -149,19 +153,20 @@ end
     k = @index(Global)
     i = survivor[k]
     s = sys_of[i]
-    a0 = batch.atom_offsets[s]
-    natoms = batch.atom_offsets[s + 1] - a0
-    k0 = batch.k_offsets[s] + 1
-    k1 = batch.k_offsets[s + 1]
-    A = batch.cells[s]
-    invA = batch.invcells[s]
+    fw = batch.framework_of[s]
+    a0 = batch.atom_offsets[fw]
+    natoms = batch.atom_offsets[fw + 1] - a0
+    k0 = batch.k_offsets[fw] + 1
+    k1 = batch.k_offsets[fw + 1]
+    A = batch.cells[fw]
+    invA = batch.invcells[fw]
     pos = A * rpos[i]
     e = insertion_energy(
         pos, quat[i], guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         batch.positions, batch.types, batch.charges, a0, natoms,
-        A, invA, batch.alphas[s], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1)
+        A, invA, batch.alphas[fw], view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(batch.Shost, k0:k1)
     )
-    ΔU[i] = e + batch.constant_offset[s]
+    ΔU[i] = e + batch.constant_offset[fw]
 end
 
 # Rejection radii ρ_at² and phase-0 stencil half-widths for one `widom` call at temperature
@@ -205,10 +210,11 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
     # under the static schedule.
     Threads.@threads :static for s in 1:batch.nsys
         memo = memos[Threads.threadid()]
-        Bs = batch.bs[s]
-        cs = batch.constant_offset[s]
-        natoms_s = batch.atom_offsets[s + 1] - batch.atom_offsets[s]
-        nk_s = batch.k_offsets[s + 1] - batch.k_offsets[s]
+        fw = batch.framework_of[s]
+        Bs = batch.bs[fw]
+        cs = batch.constant_offset[fw]
+        natoms_s = batch.atom_offsets[fw + 1] - batch.atom_offsets[fw]
+        nk_s = batch.k_offsets[fw + 1] - batch.k_offsets[fw]
         n = N * natoms_s + nk_s + 8
         safety = 2 * n * eps(F) * (Bs + abs(cs)) + F(4.0e-6) * Bs
         margin = isinf(Bs) ? F(Inf) : (θ + 2) * kT + safety + Bs - cs
@@ -219,20 +225,24 @@ function build_rejection_tables(batch::FrameworkBatch{F}, guest::Guest{F, N}, kT
             )
         )
         rmax = zero(F)
-        base = (s - 1) * N * ntypes
+        # `rho2` stores one slice per SYSTEM (`hardcore_kernel!` indexes it by `s`), but the values
+        # themselves depend only on system `s`'s FRAMEWORK (`kmin`, deduplicated in `FrameworkBatch`);
+        # `base_fw` reads `kmin`, `base_s` writes `rho2`.
+        base_fw = (fw - 1) * N * ntypes
+        base_s = (s - 1) * N * ntypes
         for a in 1:N, t in 1:ntypes
             gt = guest.types[a]
             σ = batch.sigma[gt, t]
             ε = batch.epsilon[gt, t]
-            kmin_at = batch.kmin[base + (a - 1) * ntypes + t]
+            kmin_at = batch.kmin[base_fw + (a - 1) * ntypes + t]
             r2 = get!(memo, (σ, ε, kmin_at, margin)) do
                 find_rho2(σ, ε, kmin_at, margin, batch.cutoff)
             end
-            rho2[base + (a - 1) * ntypes + t] = r2
+            rho2[base_s + (a - 1) * ntypes + t] = r2
             rmax = max(rmax, r2)
         end
-        L = perpendicular_lengths(batch.cells[s])
-        reach0[s] = stencil_reaches(L, batch.ncells[s], sqrt(rmax))
+        L = perpendicular_lengths(batch.cells[fw])
+        reach0[s] = stencil_reaches(L, batch.ncells[fw], sqrt(rmax))
     end
     return rho2, reach0, ntypes
 end
@@ -319,12 +329,13 @@ function _widom(
             "batch ks/kprefactor/Shost must share axes: $(axes(batch.ks)) vs $(axes(batch.kprefactor)) vs $(axes(batch.Shost))"
         )
     )
-    length(batch.ncells) == nsys || throw(
-        DimensionMismatch("batch ncells must have one entry per system (nsys=$nsys): $(length(batch.ncells))")
+    nfw = nframeworks(batch)
+    length(batch.ncells) == nfw || throw(
+        DimensionMismatch("batch ncells must have one entry per framework (nframeworks=$nfw): $(length(batch.ncells))")
     )
-    length(batch.cellgrid_offsets) == nsys + 1 || throw(
+    length(batch.cellgrid_offsets) == nfw + 1 || throw(
         DimensionMismatch(
-            "batch cellgrid_offsets must have nsys+1=$(nsys + 1) entries, got $(length(batch.cellgrid_offsets))"
+            "batch cellgrid_offsets must have nframeworks+1=$(nfw + 1) entries, got $(length(batch.cellgrid_offsets))"
         )
     )
     batch.cellgrid_offsets[end] == length(batch.cell_offsets) || throw(
@@ -333,12 +344,12 @@ function _widom(
                 "length(cell_offsets)=$(length(batch.cell_offsets))"
         )
     )
-    for s in 1:nsys
-        g1 = batch.cellgrid_offsets[s + 1]
-        natoms_s = batch.atom_offsets[s + 1] - batch.atom_offsets[s]
-        batch.cell_offsets[g1] == natoms_s || throw(
+    for fw in 1:nfw
+        g1 = batch.cellgrid_offsets[fw + 1]
+        natoms_fw = batch.atom_offsets[fw + 1] - batch.atom_offsets[fw]
+        batch.cell_offsets[g1] == natoms_fw || throw(
             DimensionMismatch(
-                "system $s: last cell_offsets entry $(batch.cell_offsets[g1]) must equal its atom count $natoms_s"
+                "framework $fw: last cell_offsets entry $(batch.cell_offsets[g1]) must equal its atom count $natoms_fw"
             )
         )
     end
@@ -418,7 +429,7 @@ function _widom(
         end
         done += m
     end
-    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[s], s, F) for s in 1:nsys]
+    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[batch.framework_of[s]], s, F) for s in 1:nsys]
 end
 
 # Block-averaged mean and standard error of the Widom weight W and the energy-weighted

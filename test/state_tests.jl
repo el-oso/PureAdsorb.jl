@@ -31,13 +31,15 @@ end
     for n in 1:3
         @test length(PureAdsorb.guest_range(st, n)) == ncounts[n]
         @test PureAdsorb.nguests(st, n) == ncounts[n]
-        @test length(PureAdsorb.kvec_range(st, n)) == b.k_offsets[n + 1] - b.k_offsets[n]
+        @test length(PureAdsorb.kvec_range(st, n)) == length(PureAdsorb.batch_kvec_range(b, n))
     end
     @test PureAdsorb.guest_range(st, 1) == 1:5
     @test PureAdsorb.guest_range(st, 2) == 6:5   # empty: system 2 has no guests
     @test PureAdsorb.guest_range(st, 3) == 6:7
     @test length(st.refpoints) == length(st.orientations) == sum(ncounts)
-    @test length(st.Sk) == length(b.Shost)
+    # `st.Sk` is sized one slice per SYSTEM (3, here), `b.Shost` one slice per distinct FRAMEWORK
+    # (1, since all three systems share `sc`) — see `FrameworkBatch`'s docstring.
+    @test length(st.Sk) == 3 * length(b.Shost)
     # `energy` is seeded with each system's real total configuration energy at construction
     # (`total_energy`): zero for the empty system, and matching a fresh recomputation for the
     # occupied ones.
@@ -59,7 +61,11 @@ end
     st = PureAdsorb.SystemState(b, g, [0, 0], ff; T = 300.0)
     @test isempty(st.refpoints)
     @test isempty(st.orientations)
-    @test st.Sk == b.Shost
+    # Both systems share `sc`, so both systems' own `Sk` slice equals the SAME (deduplicated)
+    # `b.Shost` entry.
+    for n in 1:2
+        @test st.Sk[PureAdsorb.kvec_range(st, n)] == b.Shost[PureAdsorb.batch_kvec_range(b, n)]
+    end
 end
 
 @testitem "initial placement clears widom's own hard-core rejection test against the host" begin
@@ -80,7 +86,7 @@ end
 
         ntot = length(st.refpoints)
         sys_of = Int32[n for n in 1:b.nsys for _ in PureAdsorb.guest_range(st, n)]
-        rpos = [inv(b.cells[sys_of[i]]) * st.refpoints[i] for i in 1:ntot]
+        rpos = [inv(b.cells[b.framework_of[sys_of[i]]]) * st.refpoints[i] for i in 1:ntot]
         flags = zeros(UInt8, ntot)
         PureAdsorb.hardcore_kernel!(PureAdsorb.CPU())(
             flags, sys_of, rpos, st.orientations, b, g_compact, rho2, reach0, Int32(ntypes); ndrange = ntot
@@ -99,10 +105,11 @@ end
     st = PureAdsorb.SystemState(b, g, [3, 2], ff; T = 298.15, seed = 5)
     for n in 1:2
         kr = PureAdsorb.kvec_range(st, n)
-        expected = copy(b.Shost[kr])
+        krb = PureAdsorb.batch_kvec_range(b, n)
+        expected = copy(b.Shost[krb])
         for i in PureAdsorb.guest_range(st, n)
             gsites = [st.refpoints[i] + PureAdsorb.rotate(st.orientations[i], s) for s in g.sites]
-            expected .+= PureAdsorb.structure_factor(view(b.ks, kr), gsites, g.charges)
+            expected .+= PureAdsorb.structure_factor(view(b.ks, krb), gsites, g.charges)
         end
         # Summed in a different order than the constructor (per guest here, over every guest's
         # every site there), so only mathematically, not bit-for-bit, equal.
@@ -122,8 +129,9 @@ end
     guest_types = SVector{N, Int}(b.guest_types)
     guest_compact = PureAdsorb.Guest{Float64, N}(g.sites, guest_types, g.charges, g.tc, g.pc, g.omega)
     for n in 1:2
-        a0 = b.atom_offsets[n]; natoms = b.atom_offsets[n + 1] - a0
-        A = b.cells[n]; invA = b.invcells[n]; alpha = b.alphas[n]
+        fwidx = b.framework_of[n]
+        a0 = b.atom_offsets[fwidx]; natoms = b.atom_offsets[fwidx + 1] - a0
+        A = b.cells[fwidx]; invA = b.invcells[fwidx]; alpha = b.alphas[fwidx]
         for i in PureAdsorb.guest_range(st, n)
             expected = PureAdsorb.host_guest_realspace_energy(
                 st.refpoints[i], st.orientations[i], guest_compact, b.sigma, b.epsilon, b.cutoff, b.ewald_cutoff,

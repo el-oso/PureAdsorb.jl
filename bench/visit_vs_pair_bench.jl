@@ -70,7 +70,7 @@ with_cutoffs(batch::PureAdsorb.FrameworkBatch, cutoff, ewald_cutoff) = PureAdsor
     batch.ks, batch.kprefactor, batch.Shost, batch.k_offsets, batch.constant_offset, batch.self_term_halfrange,
     batch.ncells, batch.cell_offsets, batch.cellgrid_offsets, batch.sigma, batch.epsilon, batch.compact_to_orig,
     batch.guest_types, batch.guest_types_orig, batch.guest_sites_orig, batch.guest_charges_orig, batch.bs, batch.kmin,
-    cutoff, ewald_cutoff, batch.fullk, batch.nsys
+    cutoff, ewald_cutoff, batch.fullk, batch.nsys, batch.framework_of
 )
 
 # Effectively zero without literal zero: a distance below this never occurs between real atoms,

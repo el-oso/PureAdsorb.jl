@@ -41,9 +41,10 @@ end
 # into an empty system, reused verbatim rather than re-derived — this is what makes a Widom
 # insertion into an empty chain reproduce Milestone A's `widom` bit for bit.
 function insertion_constant_term(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer, Ng::Integer) where {T, N}
-    iszero(Ng) && return batch.constant_offset[n]
-    a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
-    V = batch.volumes[n]; alpha = batch.alphas[n]
+    fw = batch.framework_of[n]
+    iszero(Ng) && return batch.constant_offset[fw]
+    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
+    V = batch.volumes[fw]; alpha = batch.alphas[fw]
     ntypes_ff = length(ff.names)
     gcounts = zeros(Int, ntypes_ff)
     for t in batch.guest_types_orig
@@ -56,41 +57,52 @@ function insertion_constant_term(ff::ForceField{T}, batch::FrameworkBatch{T}, gu
     Qh = sum(view(batch.charges, (a0 + 1):(a0 + natoms)))
     Qg = sum(guest.charges)
     net_at(m) = -T(KE) * T(π) / (2 * V * alpha^2) * ((Qh + m * Qg)^2 - Qh^2)
-    # `batch.constant_offset[n]` with its own Ng=0->1 tail/net terms removed, leaving only the
+    # `batch.constant_offset[fw]` with its own Ng=0->1 tail/net terms removed, leaving only the
     # Ng-independent self/exclusion/orientation-average piece.
-    base = batch.constant_offset[n] - guest_tail_correction(ff, host_counts, gcounts, 1, V) - net_at(1)
+    base = batch.constant_offset[fw] - guest_tail_correction(ff, host_counts, gcounts, 1, V) - net_at(1)
     return base + guest_tail_correction(ff, host_counts, gcounts, Ng + 1, V) - guest_tail_correction(ff, host_counts, gcounts, Ng, V) +
         net_at(Ng + 1) - net_at(Ng)
 end
 
 """
     widom_chain_kernel!(ΔU, sys_of, rpos, quat, batch, guest, guest_types, refpoints, orientations,
-                        guest_offsets, Sk, const_term)
+                        guest_offsets, Sk, sys_k_offsets, const_term)
 
-Test-particle insertion energy at pose `(batch.cells[s]*rpos[i], quat[i])`, `s = sys_of[i]`, into
-system `s` as it currently stands: host-guest real space plus the reciprocal cross term against
-the RUNNING total structure factor `Sk` (`insertion_energy`, generalized from Milestone A's
-`Shost`-only background to the full host-plus-guests field — at `Sk == Shost` this reduces to
-Milestone A's own formula exactly), plus guest-guest real space against every existing guest in
-`guest_offsets[s]+1:guest_offsets[s+1]` (`guest_pair_realspace_energy`, an empty sum when the
-system holds no guests), plus the pose-independent `const_term[s]`
-(`insertion_constant_term`). Reads `refpoints`/`orientations`/`Sk` only; never mutates state.
+Test-particle insertion energy at pose `(batch.cells[fw]*rpos[i], quat[i])`, `s = sys_of[i]`,
+`fw = batch.framework_of[s]`, into system `s` as it currently stands: host-guest real space plus
+the reciprocal cross term against the RUNNING total structure factor `Sk` (`insertion_energy`,
+generalized from Milestone A's `Shost`-only background to the full host-plus-guests field — at
+`Sk == Shost` this reduces to Milestone A's own formula exactly), plus guest-guest real space
+against every existing guest in `guest_offsets[s]+1:guest_offsets[s+1]`
+(`guest_pair_realspace_energy`, an empty sum when the system holds no guests), plus the
+pose-independent `const_term[s]` (`insertion_constant_term`). `sys_k_offsets` (the caller's own
+`state.k_offsets`) locates system `s`'s slice of `Sk`, which is sized one slice per SYSTEM even
+when systems share a framework and so cannot reuse `batch.k_offsets` (one slice per FRAMEWORK,
+`FrameworkBatch`'s docstring) directly. Reads `refpoints`/`orientations`/`Sk` only; never mutates
+state.
 """
 @kernel function widom_chain_kernel!(
         ΔU, @Const(sys_of), @Const(rpos), @Const(quat), batch, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        @Const(refpoints), @Const(orientations), @Const(guest_offsets), @Const(Sk), @Const(const_term)
+        @Const(refpoints), @Const(orientations), @Const(guest_offsets), @Const(Sk), @Const(sys_k_offsets),
+        @Const(const_term)
     ) where {T, N}
     i = @index(Global)
     s = sys_of[i]
-    a0 = batch.atom_offsets[s]; natoms = batch.atom_offsets[s + 1] - a0
-    k0 = batch.k_offsets[s] + one(eltype(batch.k_offsets)); k1 = batch.k_offsets[s + 1]
-    A = batch.cells[s]; invA = batch.invcells[s]; alpha = batch.alphas[s]
+    fw = batch.framework_of[s]
+    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
+    # `batch.k_offsets` ranges over `batch.ks`/`batch.kprefactor`, one slice per FRAMEWORK
+    # (`FrameworkBatch`'s docstring); `sys_k_offsets` (this call's own `state.k_offsets`) ranges
+    # over `Sk`, one slice per SYSTEM — the two have the same length for system `s`'s framework
+    # but different absolute starts, so each gets its own range here.
+    k0 = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); k1 = batch.k_offsets[fw + 1]
+    ks0 = sys_k_offsets[s] + one(eltype(sys_k_offsets)); ks1 = sys_k_offsets[s + 1]
+    A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
     q = quat[i]
     pos = A * rpos[i]
     e = insertion_energy(
         pos, q, guest, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
         batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha,
-        view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(Sk, k0:k1)
+        view(batch.ks, k0:k1), view(batch.kprefactor, k0:k1), view(Sk, ks0:ks1)
     )
     test_sites = guest_sites_at(guest, pos, q)
     gr = (guest_offsets[s] + one(eltype(guest_offsets))):guest_offsets[s + 1]
@@ -299,7 +311,7 @@ function run_nvt!(
         copyto!(dquat, quat)
         widom_chain_kernel!(backend)(
             dΔU, dsys, drpos, dquat, db, guest_c, guest_types, dst.refpoints, dst.orientations, dst.guest_offsets,
-            dst.Sk, d_const_term; ndrange = ninsert_per_cycle
+            dst.Sk, dst.k_offsets, d_const_term; ndrange = ninsert_per_cycle
         )
         KernelAbstractions.synchronize(backend)
         copyto!(ΔU_h, dΔU)
@@ -317,7 +329,7 @@ function run_nvt!(
 
     results = Vector{NVTResult{F}}(undef, nsys)
     for n in 1:nsys
-        wr = _reduce(view(sW, n, :), view(sUW, n, :), view(ncount, n, :), kT, batch.volumes[n], n, F)
+        wr = _reduce(view(sW, n, :), view(sUW, n, :), view(ncount, n, :), kT, batch.volumes[batch.framework_of[n]], n, F)
         ē, ē_err = block_mean_sem(view(energy_samples, n, :), nblocks)
         acc = state.attempted[n]
         rate = SVector{NMOVETYPES, F}(ntuple(k -> iszero(acc[k]) ? zero(F) : F(state.accepted[n][k]) / F(acc[k]), NMOVETYPES))

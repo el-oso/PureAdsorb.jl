@@ -24,7 +24,7 @@
             i = gr0 + gidx_local
             oldpos = state.refpoints[i]; oldq = state.orientations[i]
             newpos, newq, rng = PureAdsorb.propose_move(
-                rng, Int32(movetype), oldpos, oldq, step_trans[n], step_rot[n], batch.cells[n]
+                rng, Int32(movetype), oldpos, oldq, step_trans[n], step_rot[n], batch.cells[batch.framework_of[n]]
             )
             kr = PureAdsorb.kvec_range(state, n)
             ΔS = zeros(Complex{F}, length(kr))
@@ -365,7 +365,12 @@ end
             PureAdsorb.mc_step!(ws, b, st, guest_c, guest_types, PureAdsorb.MOVE_REINSERTION, step_trans, step_rot, kT)
         end
         rs = Float64[
-            norm(PureAdsorb.minimum_image(b.cells[n], b.invcells[n], st.refpoints[n] - b.positions[b.atom_offsets[n] + 1]))
+            norm(
+                PureAdsorb.minimum_image(
+                    b.cells[b.framework_of[n]], b.invcells[b.framework_of[n]],
+                    st.refpoints[n] - b.positions[b.atom_offsets[b.framework_of[n]] + 1]
+                )
+            )
                 for n in 1:nsys
         ]
         return rs, Float64(L), Float64(sigma), Float64(epsilon), Float64(cutoff), Float64(kT), nsys

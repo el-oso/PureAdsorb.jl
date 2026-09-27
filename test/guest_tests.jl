@@ -12,14 +12,15 @@
     # error (see the guest-move throughput bench's finding that the two are not interchangeable
     # once precision differs).
     function oracle_total_energy(batch, state, guest::PureAdsorb.Guest{T, N}, ff, n::Integer, precision) where {T, N}
-        A = batch.cells[n]; invA = batch.invcells[n]
-        a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
+        fw = batch.framework_of[n]
+        A = batch.cells[fw]; invA = batch.invcells[fw]
+        a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
         hpos = batch.positions[(a0 + 1):(a0 + natoms)]
         hq = batch.charges[(a0 + 1):(a0 + natoms)]
         htype = batch.compact_to_orig[batch.types[(a0 + 1):(a0 + natoms)]]
         gr = PureAdsorb.guest_range(state, n)
         Ng = length(gr)
-        alpha = batch.alphas[n]; ewald_cutoff = batch.ewald_cutoff
+        alpha = batch.alphas[fw]; ewald_cutoff = batch.ewald_cutoff
         ks, w, = PureAdsorb.kvectors(A, PureAdsorb.ewald_kmax(alpha, precision))
 
         gpos = SVector{3, T}[]; gq = T[]; gmol = Int[]; gtype_orig = Int[]
@@ -61,7 +62,7 @@
         for t in htype
             host_counts[t] += 1
         end
-        Etail = PureAdsorb.tail_delta(ff, host_counts, Ng .* gcounts, batch.volumes[n])
+        Etail = PureAdsorb.tail_delta(ff, host_counts, Ng .* gcounts, batch.volumes[fw])
         return Elj + Ecoul + Etail
     end
 
@@ -179,7 +180,7 @@ end
         elseif movekind == 2   # rotation about the reference point
             oldpos, normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
         else   # reinsertion: fresh uniform position and orientation
-            b.cells[n] * SVector{3, Float64}(rand(rng, 3)), normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
+            b.cells[b.framework_of[n]] * SVector{3, Float64}(rand(rng, 3)), normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
         end
         ΔU, = PureAdsorb.guest_move_delta(b, st, g, n, i, newpos, newq, ΔS)
         st2 = deepcopy(st)

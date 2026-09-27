@@ -89,18 +89,24 @@ function audit_energy!(
     ) where {F}
     gr = guest_range(state, n)
     kr = kvec_range(state, n)
+    krb = batch_kvec_range(batch, n)
     sitepos, siteq = guest_site_positions_charges(guest, state.refpoints, state.orientations, gr)
-    rebuilt_Sk = view(batch.Shost, kr) .+ structure_factor(view(batch.ks, kr), sitepos, siteq)
+    rebuilt_Sk = view(batch.Shost, krb) .+ structure_factor(view(batch.ks, krb), sitepos, siteq)
     # `structure_factor`'s rebuild at one k-vector sums `nterms_rebuild` complex terms (every
     # guest site's `charge * cis(k·r)`, `|cis| = 1`) plus `batch.Shost`; Higham's bound for that
     # summation scales with the NUMBER of terms as well as their magnitude, so the recompute-side
     # tolerance below is `nterms_rebuild` times the sum of those terms' magnitudes, not just once.
     nterms_rebuild = length(gr) * length(guest.sites)
     total_abs_charge = sum(abs, siteq)
-    for (offset, kidx) in enumerate(kr)
+    # `kr` indexes `state.Sk` (one slice per SYSTEM); `krb` indexes `batch.Shost` (one slice per
+    # FRAMEWORK, `FrameworkBatch`'s docstring) — same length, paired by the shared relative
+    # `offset` rather than by a single absolute index.
+    for offset in eachindex(kr, krb)
+        kidx = kr[offset]
+        kidx_b = krb[offset]
         running = state.Sk[kidx]
         rebuilt = rebuilt_Sk[offset]
-        rebuild_magnitude = nterms_rebuild * (abs(batch.Shost[kidx]) + total_abs_charge)
+        rebuild_magnitude = nterms_rebuild * (abs(batch.Shost[kidx_b]) + total_abs_charge)
         τk = something(sk_tol, sk_audit_tolerance(state.sk_abs_accum[kidx], rebuild_magnitude, nmoves))
         discrepancy = abs(rebuilt - running)
         discrepancy <= τk || throw(

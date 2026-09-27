@@ -1,11 +1,20 @@
 """
     FrameworkBatch{T}
 
-Structure-of-arrays layout for a set of independent framework systems, so a single GPU kernel
-launch can evaluate an insertion in every system at once. Per-system slices are
-`atom_offsets[n]+1:atom_offsets[n+1]` into positions/types/charges and
-`k_offsets[n]+1:k_offsets[n+1]` into ks/kprefactor/Shost. Within a system's slice, atoms are
-sorted by cell-list cell (see below), not CIF order. `cutoff` (Å) truncates the LJ sum and
+Structure-of-arrays layout for a set of `nsys` independent framework systems, so a single GPU
+kernel launch can evaluate an insertion in every system at once. `nsys` systems commonly repeat
+the same host (e.g. a chain sweep replicating one framework across thousands of chains), so
+every array this docstring describes as "system `n`'s" is in fact stored once per DISTINCT
+framework value, not once per system: `framework_of[n]` (`1:nframeworks(batch)`) names system
+`n`'s framework, and `batch_atom_range(batch, n)`/`batch_kvec_range(batch, n)` resolve system
+`n`'s slice through it. Two frameworks compare equal (hence share storage) when they agree on
+cell, replication, fractional coordinates, symbols and charges — the fields this construction
+reads — regardless of object identity. Below, "system `n`'s ARRAY" always means
+`ARRAY[batch.framework_of[n]]`, i.e. that system's framework's own entry.
+
+Framework `fw`'s slices are `atom_offsets[fw]+1:atom_offsets[fw+1]` into positions/types/charges
+and `k_offsets[fw]+1:k_offsets[fw+1]` into ks/kprefactor/Shost. Within a framework's slice, atoms
+are sorted by cell-list cell (see below), not CIF order. `cutoff` (Å) truncates the LJ sum and
 `ewald_cutoff` (Å) truncates the real- and reciprocal-space Ewald sums; they may differ.
 
 `ks`/`kprefactor`/`Shost` hold only the k-vectors coupled to each system's replication: those
@@ -21,9 +30,9 @@ need the full table. A framework's `replication` is taken on trust everywhere el
 framework's own host structure factor must be negligible, or the framework's atoms are not
 actually the translational copies `replication` claims and `FrameworkBatch` throws rather than
 silently dropping k-vectors and shifting energies.
-`self_term_halfrange[n]` (energy units) is half the max-min spread, over 64 fixed guest
+`self_term_halfrange[fw]` (energy units) is half the max-min spread, over 64 fixed guest
 orientations, of the guest self term `KE Σ_k pref_k |S_g(k)|²` taken over the FULL (unfiltered)
-k set of system `n`; its mean over those orientations is folded into `constant_offset[n]` in
+k set of framework `fw`; its mean over those orientations is folded into `constant_offset[fw]` in
 place of recomputing the self term per insertion. This half-range is an estimate from that
 finite sample, not a bound on the true continuous-orientation range — a continuous orientation
 can reach roughly 1.3 times `self_term_halfrange` away from the mean.
@@ -31,15 +40,15 @@ can reach roughly 1.3 times `self_term_halfrange` away from the mean.
 A sample of up to 32 k-vectors gives high probability, not certainty, that a false
 `replication` claim is caught (see `verify_replication`).
 
-Each system's atoms are stored sorted into a grid of `ncells[n]` cells along the stored cell's
+Each framework's atoms are stored sorted into a grid of `ncells[fw]` cells along the stored cell's
 three axes (fractional coordinates, wrapped into [0,1)), so that a cell is a contiguous range of
-`positions`/`types`/`charges`. `cell_offsets` holds each system's `prod(ncells[n]) + 1` local
-offsets back to back (system `n`'s block starts at `cellgrid_offsets[n]+1`; local offset `c`'s
-atom range is `atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c] + 1` through
-`atom_offsets[n] + cell_offsets[cellgrid_offsets[n] + c + 1]`, cell index `c` linear in
-`i + ncells[n][1]*(j + ncells[n][2]*k)`, 0-based). This cell list serves only the hard-core
+`positions`/`types`/`charges`. `cell_offsets` holds each framework's `prod(ncells[fw]) + 1` local
+offsets back to back (framework `fw`'s block starts at `cellgrid_offsets[fw]+1`; local offset
+`c`'s atom range is `atom_offsets[fw] + cell_offsets[cellgrid_offsets[fw] + c] + 1` through
+`atom_offsets[fw] + cell_offsets[cellgrid_offsets[fw] + c + 1]`, cell index `c` linear in
+`i + ncells[fw][1]*(j + ncells[fw][2]*k)`, 0-based). This cell list serves only the hard-core
 rejection stage's phase-0 kernel (E3): the energy itself (`insertion_energy`) loops linearly
-over a system's atoms, the fastest form measured for a framework this size.
+over a framework's atoms, the fastest form measured for a framework this size.
 
 Lennard-Jones types are remapped to a compact index covering only the types actually present
 (any framework's atoms, union the guest's sites): `types`, `sigma` and `epsilon` use this
@@ -51,14 +60,14 @@ same guest the batch was built for (every precomputed quantity below — `bs`, `
 `constant_offset`, `self_term_halfrange` — depends on the guest's sites and charges, not only
 its types).
 
-`bs[n]` is the hard-core rejection bound `B_s` for system `n` (see the efficiency design's E3
-"Lower bound"): a rigorous lower-magnitude bound on the insertion energy's real- and
+`bs[fw]` is the hard-core rejection bound `B_s` for framework `fw` (see the efficiency design's
+E3 "Lower bound"): a rigorous lower-magnitude bound on the insertion energy's real- and
 reciprocal-space terms, `Inf` when no finite bound exists (a pair combines an attractive
-Coulomb term with no Lennard-Jones repulsion at all). `kmin` is the flat, `nsys × N × ntypes`
-table of `K_min(a,t)` (`N` the guest's site count, `ntypes = size(sigma, 1)`), system `n`'s
-`(a, t)` entry at `kmin[(n-1)*N*ntypes + (a-1)*ntypes + t]`. Both depend only on charges and the
-guest, not on temperature, so both are computed once here; `widom` combines them with the
-temperature-dependent margin to build the rejection radii `ρ_at` on every call.
+Coulomb term with no Lennard-Jones repulsion at all). `kmin` is the flat, `nframeworks × N ×
+ntypes` table of `K_min(a,t)` (`N` the guest's site count, `ntypes = size(sigma, 1)`), framework
+`fw`'s `(a, t)` entry at `kmin[(fw-1)*N*ntypes + (a-1)*ntypes + t]`. Both depend only on charges
+and the guest, not on temperature, so both are computed once here; `widom` combines them with
+the temperature-dependent margin to build the rejection radii `ρ_at` on every call.
 """
 struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     positions::VP
@@ -91,8 +100,56 @@ struct FrameworkBatch{T, VP, VI, VT, VM, VK, VS, MT, VN}
     ewald_cutoff::T
     fullk::Bool
     nsys::Int
+    framework_of::VI
 end
 Adapt.@adapt_structure FrameworkBatch
+
+"""
+    nframeworks(batch::FrameworkBatch) -> Int
+
+Number of distinct frameworks `batch` actually stores: every array this docstring's siblings
+describe as "per system" (`atom_offsets`, `cells`, `invcells`, `volumes`, `alphas`, `k_offsets`,
+`ks`, `kprefactor`, `Shost`, `constant_offset`, `self_term_halfrange`, `ncells`, `cell_offsets`,
+`cellgrid_offsets`, `bs`, `kmin`) is in fact stored once per UNIQUE framework value among the
+`nsys` frameworks the batch was built from, since none of them depends on anything but the
+framework itself (host geometry, host charges, host replication) plus the guest and force field,
+which are shared across the whole batch. `framework_of[n]` (`1:nframeworks(batch)`) names system
+`n`'s framework; `batch_atom_range`/`batch_kvec_range` resolve it for callers that need system
+`n`'s slice of these deduplicated arrays. Two systems compare equal (hence share storage) when
+their `Framework`s agree on cell, replication, fractional coordinates, symbols and charges — the
+full set `FrameworkBatch`'s construction reads — so `fill(fw, nsys)` collapses to one copy
+regardless of whether every element is the same object or merely an equal one.
+"""
+nframeworks(batch::FrameworkBatch) = length(batch.cells)
+
+"""
+    batch_atom_range(batch, n) -> UnitRange
+
+System `n`'s framework's slice of `positions`/`types`/`charges`, resolved through
+`batch.framework_of`. Use this (not `n` directly) to index any of `FrameworkBatch`'s
+per-framework arrays other than `ks`/`kprefactor`/`Shost` (see `batch_kvec_range`).
+"""
+function batch_atom_range(batch::FrameworkBatch, n::Integer)
+    fw = batch.framework_of[n]
+    return (batch.atom_offsets[fw] + 1):batch.atom_offsets[fw + 1]
+end
+
+"""
+    batch_kvec_range(batch, n) -> UnitRange
+
+System `n`'s framework's slice of `ks`/`kprefactor`/`Shost`, resolved through
+`batch.framework_of`. This is NOT, in general, the same absolute range as `kvec_range(state, n)`
+(`state.jl`), which indexes `state.Sk` — `Sk` cannot be deduplicated across systems sharing a
+framework, since it also carries each system's own guests, so it stays sized one slice per
+SYSTEM even when the underlying `ks`/`kprefactor`/`Shost` are sized one slice per FRAMEWORK.
+The two ranges always have the same LENGTH (both are that framework's own k-vector count), so a
+caller that needs both builds two separate ranges and pairs them by relative position, never by
+sharing one absolute range across both arrays.
+"""
+function batch_kvec_range(batch::FrameworkBatch, n::Integer)
+    fw = batch.framework_of[n]
+    return (batch.k_offsets[fw] + 1):batch.k_offsets[fw + 1]
+end
 
 # Relative tolerance on the guest self term's orientation dependence: `FrameworkBatch` uses the
 # orientation average, so a guest/cell combination whose self term swings by more than this
@@ -185,6 +242,28 @@ function FrameworkBatch(
     r_guest = maximum(norm, guest.sites)
     rc_guard = rc + r_guest
     w = T(cellwidth)
+
+    # Dedup key: every field `FrameworkBatch`'s construction below reads from a `Framework` —
+    # cell, replication, fractional coordinates, symbols, charges — so two frameworks agreeing on
+    # all five build identical per-framework storage regardless of object identity. `unique_fws`
+    # holds one representative per distinct value; `framework_of[n]` names system `n`'s index into
+    # it, and every array below this point is built once per entry of `unique_fws`, not once per
+    # entry of `fws`.
+    framework_key(fw::Framework) = (fw.cell, fw.replication, fw.frac, fw.symbols, fw.charges)
+    fw_index = Dict{Any, Int32}()
+    framework_of = Vector{Int32}(undef, length(fws))
+    unique_fws = Framework{T}[]
+    for (n, fw) in pairs(fws)
+        key = framework_key(fw)
+        idx = get(fw_index, key, Int32(0))
+        if iszero(idx)
+            push!(unique_fws, fw)
+            idx = Int32(length(unique_fws))
+            fw_index[key] = idx
+        end
+        framework_of[n] = idx
+    end
+
     positions = SVector{3, T}[]
     types = Int32[]
     charges = T[]
@@ -202,9 +281,9 @@ function FrameworkBatch(
     ncells = SVector{3, Int32}[]
     cell_offsets = Int32[]
     cellgrid_offsets = Int32[0]
-    bs = Vector{T}(undef, length(fws))
-    atom_ranges = Vector{UnitRange{Int32}}(undef, length(fws))
-    k_ranges = Vector{UnitRange{Int32}}(undef, length(fws))
+    bs = Vector{T}(undef, length(unique_fws))
+    atom_ranges = Vector{UnitRange{Int32}}(undef, length(unique_fws))
+    k_ranges = Vector{UnitRange{Int32}}(undef, length(unique_fws))
     kmin = T[]
     gcounts = [count(==(t), guest.types) for t in eachindex(ff.names)]
     α = ewald_alpha(ewald.cutoff, ewald.precision)
@@ -227,7 +306,7 @@ function FrameworkBatch(
     # any framework's atoms, union the guest's own sites: `ty_orig[n]` is framework `n`'s
     # ORIGINAL (force-field) type per atom, computed once up front so the compact index set is
     # known before any per-framework array is built.
-    ty_orig = [Int32[typeindex(ff, s * "_") for s in fw.symbols] for fw in fws]
+    ty_orig = [Int32[typeindex(ff, s * "_") for s in fw.symbols] for fw in unique_fws]
     guest_types_orig = Vector{Int32}(guest.types)
     compact_to_orig = sort(unique(vcat(reduce(vcat, ty_orig; init = Int32[]), guest_types_orig)))
     orig_to_compact = Dict(t => Int32(i) for (i, t) in enumerate(compact_to_orig))
@@ -237,7 +316,7 @@ function FrameworkBatch(
     guest_types = Int32[orig_to_compact[t] for t in guest_types_orig]
     guest_compact = Guest{T, N}(guest.sites, SVector{N, Int}(guest_types), guest.charges, guest.tc, guest.pc, guest.omega)
 
-    for (n, fw) in pairs(fws)
+    for (n, fw) in pairs(unique_fws)
         m = min_multiplicity(fw.cell, rc_guard)
         m == (1, 1, 1) || throw(
             ArgumentError(
@@ -336,7 +415,7 @@ function FrameworkBatch(
     memos = [Dict{NTuple{3, T}, T}() for _ in 1:Threads.maxthreadid()]
     # `:static` schedule: the memo is indexed by `threadid()`, which is fixed per iteration only
     # under the static schedule.
-    Threads.@threads :static for n in eachindex(fws)
+    Threads.@threads :static for n in eachindex(unique_fws)
         bs[n] = hardcore_bound(
             guest_compact, sigma_c, epsilon_c, positions, types, charges, atom_ranges[n], ff.cutoff, α,
             view(kprefactor, k_ranges[n]), view(Shost, k_ranges[n]); memo = memos[Threads.threadid()]
@@ -348,6 +427,6 @@ function FrameworkBatch(
         ncells, cell_offsets, cellgrid_offsets,
         sigma_c, epsilon_c, compact_to_orig, guest_types, guest_types_orig,
         Vector{SVector{3, T}}(guest.sites), Vector{T}(guest.charges), bs, kmin,
-        ff.cutoff, ewald.cutoff, fullk, length(fws)
+        ff.cutoff, ewald.cutoff, fullk, length(fws), framework_of
     )
 end

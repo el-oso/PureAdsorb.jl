@@ -43,13 +43,14 @@ end
     function oracle_total_energy_with_guests(
             batch, refpoints, orientations, gr, guest::PureAdsorb.Guest{T, N}, ff, n::Integer, precision
         ) where {T, N}
-        A = batch.cells[n]; invA = batch.invcells[n]
-        a0 = batch.atom_offsets[n]; natoms = batch.atom_offsets[n + 1] - a0
+        fw = batch.framework_of[n]
+        A = batch.cells[fw]; invA = batch.invcells[fw]
+        a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
         hpos = batch.positions[(a0 + 1):(a0 + natoms)]
         hq = batch.charges[(a0 + 1):(a0 + natoms)]
         htype = batch.compact_to_orig[batch.types[(a0 + 1):(a0 + natoms)]]
         Ng = length(gr)
-        alpha = batch.alphas[n]; ewald_cutoff = batch.ewald_cutoff
+        alpha = batch.alphas[fw]; ewald_cutoff = batch.ewald_cutoff
         ks, w, = PureAdsorb.kvectors(A, PureAdsorb.ewald_kmax(alpha, precision))
 
         gpos = SVector{3, T}[]; gq = T[]; gmol = Int[]; gtype_orig = Int[]
@@ -91,7 +92,7 @@ end
         for t in htype
             host_counts[t] += 1
         end
-        Etail = PureAdsorb.tail_delta(ff, host_counts, Ng .* gcounts, batch.volumes[n])
+        Etail = PureAdsorb.tail_delta(ff, host_counts, Ng .* gcounts, batch.volumes[fw])
         return Elj + Ecoul + Etail
     end
 
@@ -118,13 +119,14 @@ end
         w_ours = zeros(Float64, nposes)
         w_oracle = zeros(Float64, nposes)
         for m in 1:nposes
-            pos = b.cells[n] * rand(rng, SVector{3, Float64})
+            fw = b.framework_of[n]
+            pos = b.cells[fw] * rand(rng, SVector{3, Float64})
             q = normalize(SVector{4, Float64}(rand(rng, 4) .- 0.5))
-            rpos = inv(b.cells[n]) * pos
+            rpos = inv(b.cells[fw]) * pos
             ΔU = zeros(Float64, 1)
             PureAdsorb.widom_chain_kernel!(CPU())(
                 ΔU, Int32[n], [rpos], [q], b, guest_c, guest_types, st.refpoints, st.orientations,
-                st.guest_offsets, st.Sk, [const_term]; ndrange = 1
+                st.guest_offsets, st.Sk, st.k_offsets, [const_term]; ndrange = 1
             )
             w_ours[m] = exp(-ΔU[1] / kT)
             refpoints2 = vcat(st.refpoints, [pos])
@@ -329,7 +331,7 @@ end
     # the extra guests), and is finite.
     ct = PureAdsorb.insertion_constant_term(ff, b, g, 2, 4)
     @test isfinite(ct)
-    @test ct != b.constant_offset[2]
+    @test ct != b.constant_offset[b.framework_of[2]]
 end
 
 @testitem "widom_chain_kernel! adds zero guest-guest contribution when a system holds no guests" setup = [
@@ -347,7 +349,7 @@ end
     ΔU = zeros(Float64, 1)
     PureAdsorb.widom_chain_kernel!(CPU())(
         ΔU, sys_of, rpos, quat, b, guest_c, guest_types, st.refpoints, st.orientations, st.guest_offsets, st.Sk,
-        const_term; ndrange = 1
+        st.k_offsets, const_term; ndrange = 1
     )
     pos = b.cells[1] * rpos[1]
     e = PureAdsorb.insertion_energy(

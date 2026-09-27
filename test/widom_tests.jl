@@ -177,7 +177,7 @@ end
         b.ncells, b.cell_offsets, b.cellgrid_offsets,
         b.sigma, b.epsilon, b.compact_to_orig, b.guest_types, b.guest_types_orig,
         b.guest_sites_orig, b.guest_charges_orig, b.bs, b.kmin,
-        b.cutoff, b.ewald_cutoff, b.fullk, b.nsys
+        b.cutoff, b.ewald_cutoff, b.fullk, b.nsys, b.framework_of
     )
     @test_throws DimensionMismatch widom(bad, g; T = 300.0, ninsert = 100)
 end
@@ -358,26 +358,32 @@ end
     rho2_serial = zeros(Float64, b.nsys * N * ntypes_s)
     reach0_serial = Vector{SVector{3, Int32}}(undef, b.nsys)
     for s in 1:b.nsys
-        Bs = b.bs[s]
-        cs = b.constant_offset[s]
-        natoms_s = b.atom_offsets[s + 1] - b.atom_offsets[s]
-        nk_s = b.k_offsets[s + 1] - b.k_offsets[s]
+        # `fill(sc, 10)` dedups to ONE framework (item 2 of the ranked plan): `bs`/`constant_offset`/
+        # `atom_offsets`/`k_offsets`/`kmin`/`cells`/`ncells` are stored once per DISTINCT framework
+        # (`FrameworkBatch`'s docstring), resolved here through `framework_of`; `rho2`/`reach0`
+        # themselves stay sized one slice per SYSTEM (`build_rejection_tables`'s own docstring).
+        fwidx = b.framework_of[s]
+        Bs = b.bs[fwidx]
+        cs = b.constant_offset[fwidx]
+        natoms_s = b.atom_offsets[fwidx + 1] - b.atom_offsets[fwidx]
+        nk_s = b.k_offsets[fwidx + 1] - b.k_offsets[fwidx]
         n = N * natoms_s + nk_s + 8
         safety = 2 * n * eps(Float64) * (Bs + abs(cs)) + 4.0e-6 * Bs
         margin = isinf(Bs) ? Inf : (θ + 2) * kT + safety + Bs - cs
         rmax = 0.0
         base = (s - 1) * N * ntypes_s
+        base_fw = (fwidx - 1) * N * ntypes_s
         for a in 1:N, t in 1:ntypes_s
             gt = g_compact.types[a]
             σ = b.sigma[gt, t]
             ε = b.epsilon[gt, t]
-            kmin_at = b.kmin[base + (a - 1) * ntypes_s + t]
+            kmin_at = b.kmin[base_fw + (a - 1) * ntypes_s + t]
             r2 = PureAdsorb.find_rho2(σ, ε, kmin_at, margin, b.cutoff)
             rho2_serial[base + (a - 1) * ntypes_s + t] = r2
             rmax = max(rmax, r2)
         end
-        L = PureAdsorb.perpendicular_lengths(b.cells[s])
-        reach0_serial[s] = PureAdsorb.stencil_reaches(L, b.ncells[s], sqrt(rmax))
+        L = PureAdsorb.perpendicular_lengths(b.cells[fwidx])
+        reach0_serial[s] = PureAdsorb.stencil_reaches(L, b.ncells[fwidx], sqrt(rmax))
     end
     @test rho2 == rho2_serial
     @test reach0 == reach0_serial
@@ -411,11 +417,12 @@ end
         n_brute_not_flag = 0
         for i in 1:nposes
             s = sys_of[i]
-            A = b.cells[s]
-            invA = b.invcells[s]
+            fw = b.framework_of[s]
+            A = b.cells[fw]
+            invA = b.invcells[fw]
             pos = A * rpos[i]
             gsites = [PureAdsorb.rotate(quat[i], sv) for sv in g.sites]
-            atoms = (b.atom_offsets[s] + 1):b.atom_offsets[s + 1]
+            atoms = (b.atom_offsets[fw] + 1):b.atom_offsets[fw + 1]
             base = (s - 1) * N * ntypes
             brute = false
             for a in 1:N, h in atoms

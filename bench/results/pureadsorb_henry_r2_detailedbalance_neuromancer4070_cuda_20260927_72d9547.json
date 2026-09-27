@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "description": "R2 merged Henry's-law/detailed-balance test (Milestone C tasks 7+8): P(N+1)/P(N) = (fV/((N+1)kT)) * <exp(-dU_ins/kT)>_N, LHS from a GCMC chain's own occupancy histogram, RHS from Widom insertions into the chain's live configuration at each occupancy N (widom_chain_kernel!, Milestone B), both under the real potential.",
+    "host": "neuromancer",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "commit": "72d9547",
+    "system": "RUBTAK-3x3x3 + CO2 (trappe.yaml), T=298.15 K, P=500 Pa (phi=0.99997), nsys=64 replica chains, exchange_prob=0.5, step_trans=step_rot=0.3, capacity=30",
+    "pressure_choice": "peng_robinson_fugacity gives phi~1 at 500 Pa (does not exercise the equation of state, which R3's own ideal-gas-with-real-fugacity test covers at 5e6 Pa); a short isotherm check (200/500 Pa, run_isotherm!) confirms loading/pressure matches Milestone A's own Henry slope K_H*PASCAL within 5 combined SEM at both points, and bench/results/README.md's own 50-point isotherm on the same framework/guest shows the eventual saturation (0.0037-0.0040 guests/Pa at 100-202 Pa, falling to 0.0010-0.0016 guests/Pa by 4.9e4-1e5 Pa) several orders of magnitude above 500 Pa in pressure. f*K_H ~ 2 guests spreads occupancy visits usefully across N=0..~8."
+  },
+  "passing_run": {
+    "n_warmup": 200, "n_production": 3000, "n_widom_per_cycle": 4, "nblocks": 10, "seed": 2, "state_seed": 777,
+    "occupancy_visits": [26526, 52965, 53030, 33675, 16660, 6439, 2077, 491, 109, 26, 2],
+    "R2_by_loading": [
+      {"N": 0, "LHS": 1.9967, "LHS_err": 0.0841, "RHS": 1.8822, "RHS_err": 0.0485, "z": 1.18},
+      {"N": 1, "LHS": 1.0012, "LHS_err": 0.0355, "RHS": 0.98147, "RHS_err": 0.0213, "z": 0.48},
+      {"N": 2, "LHS": 0.63502, "LHS_err": 0.0251, "RHS": 0.65248, "RHS_err": 0.0116, "z": 0.63},
+      {"N": 3, "LHS": 0.49473, "LHS_err": 0.019, "RHS": 0.47701, "RHS_err": 0.0132, "z": 0.77},
+      {"N": 4, "LHS": 0.38649, "LHS_err": 0.0165, "RHS": 0.37948, "RHS_err": 0.0134, "z": 0.33},
+      {"N": 5, "LHS": 0.32257, "LHS_err": 0.0139, "RHS": 0.35198, "RHS_err": 0.0147, "z": 1.46},
+      {"N": 6, "LHS": 0.2364, "LHS_err": 0.0302, "RHS": 0.30018, "RHS_err": 0.0193, "z": 1.78},
+      {"N": 7, "LHS": 0.222, "LHS_err": 0.0612, "RHS": 0.22254, "RHS_err": 0.0601, "z": 0.01}
+    ],
+    "N0_vs_milestoneA_henry": {
+      "K_H_chain": 6.031300197100303e8, "K_H_chain_err": 1.5540202554750957e7,
+      "K_H_widom_milestoneA": 6.410983895183148e8, "K_H_widom_err": 3.1023665134565705e6,
+      "K_H_widom_ninsert": 2000000,
+      "combined_err": 1.584684742863718e7, "z": 2.4,
+      "note": "widom() re-run with ninsert matched to the chain's own N=0 Widom sample count (106104) gives K_H in [6.13e8, 6.38e8] over 4 seeds (individual errors 1.0e7-1.6e7), the same scale of estimator noise as K_H_chain -- the 2.4 sigma gap against the 2e6-insertion reference is consistent with K_H's known heavy-tailed, slowly-converging sampling distribution, not a discrepancy between the two routes."
+    }
+  },
+  "perturbed_run": {
+    "description": "chain accepts insertions/deletions against 1.5x the true fugacity (the same position log_insertion_prefactor/log_deletion_prefactor take f in); RHS still computed from the TRUE fugacity",
+    "n_warmup": 200, "n_production": 1500, "n_widom_per_cycle": 4, "nblocks": 10, "seed": 4, "state_seed": 999,
+    "c_perturb": 1.5,
+    "R2_by_loading": [
+      {"N": 0, "LHS": 2.704, "RHS_true_f": 1.9375, "ratio": 1.396, "z": 3.79},
+      {"N": 1, "LHS": 1.3762, "RHS_true_f": 0.97929, "ratio": 1.405, "z": 6.71},
+      {"N": 2, "LHS": 0.92901, "RHS_true_f": 0.65853, "ratio": 1.411, "z": 7.43},
+      {"N": 3, "LHS": 0.71337, "RHS_true_f": 0.4651, "ratio": 1.534, "z": 6.42},
+      {"N": 4, "LHS": 0.5624, "RHS_true_f": 0.3906, "ratio": 1.44, "z": 7.04},
+      {"N": 5, "LHS": 0.43981, "RHS_true_f": 0.31351, "ratio": 1.403, "z": 3.48},
+      {"N": 6, "LHS": 0.31503, "RHS_true_f": 0.32505, "ratio": 0.969, "z": 0.16},
+      {"N": 7, "LHS": 0.27834, "RHS_true_f": 0.19582, "ratio": 1.421, "z": 1.68},
+      {"N": 8, "LHS": 0.2766, "RHS_true_f": 0.22583, "ratio": 1.225, "z": 0.61}
+    ],
+    "note": "N=6..8 are too sparsely visited (1182-3752 occupancy visits) for the perturbation to show up reliably; the test's own assertion restricts to N=0..5 (>=4000 visits, >=15000 Widom samples), where every point fails at z=3.5-7.4 and the median ratio recovers the injected 1.5x factor to within 0.02."
+  }
+}

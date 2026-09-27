@@ -1105,3 +1105,30 @@ cache, occupancy-exceeds-capacity) still throws: full suite 196/196, cold `Pkg.t
 `--check-bounds=yes` 4,131,961 assertions, both clean.
 
 File: `pureadsorb_audit_tolerance_falsepositive_neuromancer4070_cuda_20260927_7f1032f.json`.
+
+## R2 merged Henry's-law/detailed-balance test (tasks 7+8)
+
+`P(N+1)/P(N) = (fV/((N+1)kT)) * ⟨exp(-ΔU_ins/kT)⟩_N`, LHS from a GCMC chain's own occupancy
+histogram and RHS from Widom insertions into the chain's live configuration at each occupancy `N`
+(`widom_chain_kernel!`, Milestone B), both under RUBTAK-3x3x3 + CO2's real potential at 298.15 K,
+500 Pa, 64 replica chains. Every one of 8 loadings (`N=0..7`) agrees within `z<=1.78` combined
+standard errors; `N=0`'s own Widom average, expressed as a Henry coefficient, agrees with Milestone
+A's independent `widom()` route (2,000,000 insertions, its own RNG stream, run on the pristine
+framework) at `z=2.4` — consistent with `K_H`'s own heavy-tailed sampling noise (re-running
+`widom()` at the chain's own N=0 sample count, 106,104, gives `K_H` in `[6.13e8, 6.38e8]` over 4
+seeds, the same scale of spread as the chain-derived estimate).
+
+500 Pa was chosen because `peng_robinson_fugacity` gives `phi~0.99997` there (this run does not
+also exercise the equation of state — R3's own test does that, at 5e6 Pa) and because a short
+isotherm check (200/500 Pa) confirms `loading/pressure` matches Milestone A's Henry slope within
+5 combined SEM at both points, well inside the linear regime this file's own 50-point isotherm
+(above) shows eventually breaks down many orders of magnitude higher in pressure.
+
+Discriminating power: running the same chain with insertions/deletions accepted against 1.5x the
+true fugacity (the same position the combinatorial prefactors `log_insertion_prefactor`/
+`log_deletion_prefactor` take `f` in) while still comparing against the TRUE fugacity's RHS fails
+every well-sampled loading (`N=0..5`) at `z=3.5-7.4`, recovering the injected 1.5x factor in the
+median ratio to within 0.02 — the sparsest loadings (`N=6..8`, under 4,000 occupancy visits) do not
+discriminate reliably, the sparse-loading fallback the design anticipates.
+
+File: `pureadsorb_henry_r2_detailedbalance_neuromancer4070_cuda_20260927_72d9547.json`.

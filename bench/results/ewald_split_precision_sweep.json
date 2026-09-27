@@ -1,0 +1,191 @@
+{
+  "empty_box_cutoff13.5_oracle1e-12": [
+    {
+      "precision": 0.0001,
+      "alpha_gg": 0.17806191101922447,
+      "n_k_gg": 353,
+      "relerr": 2.6187244109036284e-5
+    },
+    {
+      "precision": 1.0e-5,
+      "alpha_gg": 0.20872378354323684,
+      "n_k_gg": 754,
+      "relerr": 2.5874313110975424e-6
+    },
+    {
+      "precision": 1.0e-6,
+      "alpha_gg": 0.23577679777815774,
+      "n_k_gg": 1416,
+      "relerr": 2.49460356195211e-7
+    },
+    {
+      "precision": 1.0e-7,
+      "alpha_gg": 0.2602373902610848,
+      "n_k_gg": 2354,
+      "relerr": 2.372413327086735e-8
+    },
+    {
+      "precision": 1.0e-8,
+      "alpha_gg": 0.282722327440781,
+      "n_k_gg": 3683,
+      "relerr": 2.136705539964199e-9
+    },
+    {
+      "precision": 3.0e-9,
+      "alpha_gg": 0.293834386649918,
+      "n_k_gg": 4440,
+      "relerr": 4.886969621132008e-10
+    }
+  ],
+  "meta": {
+    "date": "2026-09-28",
+    "description": "Gate-4 diagnosis check: does the ewald_gg split-vs-oracle discrepancy scale with Ewald precision (pure truncation error) or plateau at a fixed floor (a formula bug)?",
+    "julia_version": "1.13.0"
+  },
+  "rubtak_cutoff13_oracle1e-12": [
+    {
+      "precision": 0.0001,
+      "alpha_gg": 0.18547107356668519,
+      "n_k_gg": 896,
+      "relerr": 7.283153541810445e-7
+    },
+    {
+      "precision": 1.0e-5,
+      "alpha_gg": 0.21723858585921527,
+      "n_k_gg": 1974,
+      "relerr": 1.8286125238560735e-7
+    },
+    {
+      "precision": 1.0e-6,
+      "alpha_gg": 0.24528101812439201,
+      "n_k_gg": 3594,
+      "relerr": 3.6530230405909455e-8
+    },
+    {
+      "precision": 1.0e-7,
+      "alpha_gg": 0.2706443892642614,
+      "n_k_gg": 5937,
+      "relerr": 6.169830715187777e-9
+    },
+    {
+      "precision": 1.0e-8,
+      "alpha_gg": 0.29396445943542804,
+      "n_k_gg": 9155,
+      "relerr": 6.025554314080822e-10
+    },
+    {
+      "precision": 3.0e-9,
+      "alpha_gg": 0.3054907777171077,
+      "n_k_gg": 11296,
+      "relerr": 1.7873666965389877e-11
+    }
+  ],
+  "rubtak_cutoff13_oracle1e-8": [
+    {
+      "precision": 0.0001,
+      "alpha_gg": 0.18547107356668519,
+      "n_k_gg": 896,
+      "relerr": 7.274786139688605e-7
+    },
+    {
+      "precision": 1.0e-5,
+      "alpha_gg": 0.21723858585921527,
+      "n_k_gg": 1974,
+      "relerr": 1.8202451171701965e-7
+    },
+    {
+      "precision": 1.0e-6,
+      "alpha_gg": 0.24528101812439201,
+      "n_k_gg": 3594,
+      "relerr": 3.56934896148806e-8
+    },
+    {
+      "precision": 1.0e-7,
+      "alpha_gg": 0.2706443892642614,
+      "n_k_gg": 5937,
+      "relerr": 5.333089898755139e-9
+    },
+    {
+      "precision": 1.0e-8,
+      "alpha_gg": 0.29396445943542804,
+      "n_k_gg": 9155,
+      "relerr": 2.341853896280796e-10
+    },
+    {
+      "precision": 3.0e-9,
+      "alpha_gg": 0.3054907777171077,
+      "n_k_gg": 11296,
+      "relerr": 8.546144878454863e-10
+    }
+  ],
+  "rubtak_cutoff16_oracle1e-12": [
+    {
+      "precision": 0.0001,
+      "alpha_gg": 0.14817399532637054,
+      "n_k_gg": 481,
+      "relerr": 4.8857776989502465e-5
+    },
+    {
+      "precision": 1.0e-5,
+      "alpha_gg": 0.17431950295138776,
+      "n_k_gg": 1024,
+      "relerr": 4.813856192227397e-6
+    },
+    {
+      "precision": 1.0e-6,
+      "alpha_gg": 0.19733511412217908,
+      "n_k_gg": 1882,
+      "relerr": 4.701065978802494e-7
+    },
+    {
+      "precision": 1.0e-7,
+      "alpha_gg": 0.21811448673803469,
+      "n_k_gg": 3152,
+      "relerr": 4.608912217064371e-8
+    },
+    {
+      "precision": 1.0e-8,
+      "alpha_gg": 0.2371958160497023,
+      "n_k_gg": 4896,
+      "relerr": 4.741088253545613e-9
+    },
+    {
+      "precision": 3.0e-9,
+      "alpha_gg": 0.24662008132798618,
+      "n_k_gg": 6011,
+      "relerr": 1.6078907457803316e-9
+    }
+  ],
+  "rubtak_cutoff_sweep_precision1e-6_oracle1e-12": [
+    {
+      "cutoff_gg": 13.0,
+      "alpha_gg": 0.24528101812439201,
+      "n_k_gg": 3594,
+      "relerr": 3.6530230405909455e-8
+    },
+    {
+      "cutoff_gg": 14.0,
+      "alpha_gg": 0.22696554389944318,
+      "n_k_gg": 2820,
+      "relerr": 3.115010303770096e-8
+    },
+    {
+      "cutoff_gg": 15.0,
+      "alpha_gg": 0.21114121714430212,
+      "n_k_gg": 2282,
+      "relerr": 9.44491868423959e-9
+    },
+    {
+      "cutoff_gg": 16.0,
+      "alpha_gg": 0.19733511412217908,
+      "n_k_gg": 1882,
+      "relerr": 4.701065978802494e-7
+    },
+    {
+      "cutoff_gg": 16.5,
+      "alpha_gg": 0.19107274210298467,
+      "n_k_gg": 1692,
+      "relerr": 5.078549685713724e-10
+    }
+  ]
+}

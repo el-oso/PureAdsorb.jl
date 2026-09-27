@@ -213,16 +213,21 @@ end
     # gate 4 asks for): measured NOT to hold reliably. Comparing two INDEPENDENT Ewald
     # decompositions (cross at `alpha`'s sparse table, self at `alpha_gg`'s full table) against
     # an oracle that uses one decomposition throughout loses the exact cancellation of Ewald
-    # truncation error the non-split comparison gets for free — each decomposition's own
-    # truncation, bounded by how tight `precision` can go before `alpha*cutoff` exceeds
-    # PAIR_ERFC_XMAX (4.0), leaves an ~1e-10-to-1e-9 relative floor here, worse than at 12.0/1e-8
-    # (5e-10) and not reliably fixed by a tighter cutoff_gg/precision pair (measured 1.6e-10 at
-    # the tightest precision (3e-9) PAIR_ERFC_XMAX allows for these cutoffs, and non-monotonic in
-    # between) or a different seed. Confirmed NOT a formula bug by two independent checks:
-    # (1) a from-scratch synthetic 4-point-charge system (host and guest each net-charged) with
-    # this same split matches a single-alpha reference to 7e-12 relative; (2) here, restricting
-    # the cross term to the coupled subset changes it by 5e-16 eV (of an 0.0093 eV cross term) —
-    # the residual is entirely in the guest-guest piece, consistent with independent truncation.
+    # truncation error the non-split comparison gets for free.
+    #
+    # `bench/ewald_split_precision_sweep.jl` isolates this: holding `ewald_gg.cutoff` fixed and
+    # sweeping `ewald_gg.precision` against a much tighter (1e-12) oracle shows the residual
+    # tracking `ewald_gg.precision` monotonically over every decade tested, down to 1.8e-11 at the
+    # tightest precision PAIR_ERFC_XMAX (4.0) allows for this cutoff — no floor independent of
+    # precision. Rerunning that same sweep with the oracle pinned at 1e-8 (as it is here)
+    # reproduces the plateau/non-monotonicity seen below once `ewald_gg.precision` passes below
+    # the oracle's own fixed resolution: the residual is then dominated by the oracle's own
+    # truncation, not the split's. So the ~1e-10-to-1e-9 floor below is this oracle's own
+    # resolution limit, not a formula bug — confirmed independently by two more checks: (1) a
+    # from-scratch synthetic 4-point-charge system (host and guest each net-charged) with this
+    # same split matches a single-alpha reference to 7e-12 relative; (2) here, restricting the
+    # cross term to the coupled subset changes it by 5e-16 eV (of an 0.0093 eV cross term) — the
+    # residual is entirely in the guest-guest piece, consistent with independent truncation.
     st_broken = PureAdsorb.SystemState(b, g, [4, 3], ff; T = 298.15, seed = 42)
     ref_broken = oracle_total_energy(b, st_broken, g, ff, 2, 1.0e-8)
     prod_broken = PureAdsorb.total_energy(b, st_broken, g, ff, 2)

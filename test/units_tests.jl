@@ -74,3 +74,83 @@ end
         end
     end
 end
+
+# `ustrip_maybe` (`src/units.jl`) is the mechanism the remaining boundaries below use: Julia
+# dispatches on POSITIONAL argument types but not on KEYWORD argument types (two methods that
+# differ only in a keyword's annotated type replace each other rather than overloading, unlike
+# `peng_robinson_fugacity`/`mc_insert!`'s positional `P`/`Tgas`/`fugacity` above), so `T` on
+# `SystemState`, `widom`, `run_nvt!`, `run_gcmc!`, `run_isotherm!` and `pressures`/`fugacity` on
+# `run_isotherm!`/`run_gcmc!` are converted at their own one usage site rather than through a
+# second, wholly separate method.
+
+@testitem "SystemState's Unitful T boundary matches the bare-Float call" setup = [UnitsOracle] begin
+    using Unitful
+    b, st_bare, g, gc, gt, ff = units_probe_setup(Float64)
+    st_unitful = SystemState(b, g, [5], ff; T = 298.15u"K", seed = 33, capacities = [40])
+    @test st_bare.refpoints == st_unitful.refpoints
+    @test st_bare.orientations == st_unitful.orientations
+    @test st_bare.energy == st_unitful.energy
+    @test st_bare.Sk == st_unitful.Sk
+end
+
+@testitem "widom's Unitful T boundary matches the bare-Float call" setup = [UnitsOracle] begin
+    using Unitful
+    b, st, g, gc, gt, ff = units_probe_setup(Float64; ncounts = [0], capacities = [0])
+    wr_bare = widom(b, g; T = 298.15, ninsert = 20_000, seed = 1)
+    wr_unitful = widom(b, g; T = 298.15u"K", ninsert = 20_000, seed = 1)
+    @test wr_bare[1].mu_ex == wr_unitful[1].mu_ex
+    @test wr_bare[1].K_H == wr_unitful[1].K_H
+    @test wr_bare[1].q_st == wr_unitful[1].q_st
+end
+
+@testitem "run_nvt!'s Unitful T boundary matches the bare-Float call" setup = [UnitsOracle] begin
+    using Unitful
+    b, st0, g, gc, gt, ff = units_probe_setup(Float64)
+    st1 = deepcopy(st0)
+    st2 = deepcopy(st0)
+    kwargs = (
+        n_warmup = 3, n_production = 6, n_widom_per_cycle = 2, n_audit = 1000, step_trans = [0.5], step_rot = [0.3],
+        seed = 7, widom_seed = 99, nblocks = 2,
+    )
+    r1 = run_nvt!(b, st1, g, ff; T = 298.15, kwargs...)
+    r2 = run_nvt!(b, st2, g, ff; T = 298.15u"K", kwargs...)
+    @test r1[1].energy == r2[1].energy
+    @test r1[1].mu_ex == r2[1].mu_ex
+    @test st1.refpoints == st2.refpoints
+end
+
+@testitem "run_gcmc!'s Unitful T and fugacity boundaries match the bare-Float call" setup = [UnitsOracle] begin
+    using Unitful: Quantity, @u_str
+    b, st0, g, gc, gt, ff = units_probe_setup(Float64)
+    st1 = deepcopy(st0)
+    st2 = deepcopy(st0)
+    kwargs = (n_warmup = 3, n_production = 6, n_audit = 1000, step_trans = [0.5], step_rot = [0.3], seed = 7, nblocks = 2)
+    r1 = run_gcmc!(b, st1, g, ff; T = 298.15, fugacity = [2.0e4], kwargs...)
+    r2 = run_gcmc!(b, st2, g, ff; T = 298.15u"K", fugacity = [2.0e4 * u"Pa"], kwargs...)
+    @test r1[1].loading == r2[1].loading
+    @test r1[1].energy == r2[1].energy
+    @test st1.occupancy == st2.occupancy
+    for fname in fieldnames(typeof(st2))
+        v = getfield(st2, fname)
+        v isa AbstractArray || continue
+        @test !(eltype(v) <: Quantity)
+    end
+end
+
+@testitem "run_isotherm!'s Unitful T and pressures boundaries match the bare-Float call" begin
+    using Unitful
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"); T = Float64)
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff; T = Float64)
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"); T = Float64)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    kwargs = (
+        nreplicas = 1, capacity = 10, n_warmup = 3, n_production = 6, n_audit = 1000, step_trans = 0.5, step_rot = 0.3,
+        seed = 7, nblocks = 2,
+    )
+    i1 = run_isotherm!(sc, ff, g, ewald; T = 298.15, pressures = [1.0e4, 5.0e4], kwargs...)
+    i2 = run_isotherm!(sc, ff, g, ewald; T = 298.15u"K", pressures = [1.0e4, 5.0e4] .* u"Pa", kwargs...)
+    @test i1.loading == i2.loading
+    @test i1.pressure == i2.pressure
+    @test !(eltype(i2.pressure) <: Unitful.Quantity)
+end

@@ -119,8 +119,9 @@ end
               groupsize = DEFAULT_GROUPSIZE,
               nblocks_per_chain = default_nblocks_per_chain(F, state.nsys)) -> Vector{GCMCResult{F}}
 
-Run `state`'s chains at temperature `T` (K) and per-system fugacity `fugacity[n]` (Pa, the units
-`peng_robinson_fugacity` returns): `n_warmup` cycles are discarded, then `n_production` cycles are
+Run `state`'s chains at temperature `T` (K, or any `Unitful.Temperature`) and per-system fugacity
+`fugacity[n]` (Pa, the units `peng_robinson_fugacity` returns, or any `Unitful.Pressure`;
+`src/units.jl`'s `ustrip_maybe`): `n_warmup` cycles are discarded, then `n_production` cycles are
 recorded. Mirrors `run_nvt!`'s cycle structure with two differences:
 
 Each of a cycle's move attempts is an exchange attempt with probability `exchange_prob` and an NVT
@@ -177,8 +178,8 @@ function run_gcmc!(
     0 <= exchange_prob <= 1 || throw(ArgumentError("exchange_prob=$exchange_prob must be in [0, 1]"))
     nsys = state.nsys
     length(fugacity) == nsys || throw(DimensionMismatch("fugacity must have one entry per system (nsys=$nsys), got $(length(fugacity))"))
-    kT = F(KB * T)
-    fug = F.(fugacity)
+    kT = F(KB * ustrip_maybe(u"K", T))
+    fug = F[ustrip_maybe(u"Pa", f) for f in fugacity]
     # See `run_nvt!`'s own comment: `select_and_propose`'s clamp needs at least one reserved guest
     # slot SOMEWHERE in the batch; with none at all there is no valid slot to clamp into, so move
     # attempts (of either kind) are skipped entirely rather than launching on an empty index space.

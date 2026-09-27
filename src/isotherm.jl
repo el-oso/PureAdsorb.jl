@@ -70,9 +70,11 @@ end
                  nblocks_per_chain = default_nblocks_per_chain(F, length(pressures)*nreplicas)) -> IsothermResult{F}
 
 The convenience constructor task 6 asks for: "this framework, these pressures, this many
-replicas". Builds ONE batch of `length(pressures)*nreplicas` systems, system
-`(p-1)*nreplicas + r` at pressure `pressures[p]`'s Peng-Robinson fugacity
-(`peng_robinson_fugacity(pressures[p], T, guest)`), replica `r` — `fw` repeated `nsys` times
+replicas". `T` and every entry of `pressures` (Pa) may also be any
+`Unitful.Temperature`/`Unitful.Pressure` (`src/units.jl`'s `ustrip_maybe`). Builds ONE batch of
+`length(pressures)*nreplicas` systems, system `(p-1)*nreplicas + r` at pressure `pressures[p]`'s
+Peng-Robinson fugacity (`peng_robinson_fugacity(pressures[p], T, guest)`), replica `r` — `fw`
+repeated `nsys` times
 collapses to ONE stored framework (`FrameworkBatch`'s own dedup), so build cost does not grow
 with the number of pressure points or replicas, only with the number of DISTINCT frameworks
 (here, one); `bench/results/README.md`'s isotherm section has the measured build time. Every
@@ -101,7 +103,7 @@ capacity (`run_gcmc!`'s own docstring).
 """
 function run_isotherm!(
         fw::Framework{F}, ff::ForceField{F}, guest::Guest{F, N}, ewald::EwaldParams{F};
-        T::Real, pressures::AbstractVector{<:Real}, nreplicas::Integer, capacity::Integer,
+        T, pressures::AbstractVector, nreplicas::Integer, capacity::Integer,
         n_warmup::Integer, n_production::Integer, n_audit::Integer, step_trans::Real, step_rot::Real,
         exchange_prob::Real = 0.5, min_cycle_length::Integer = 1, seed::Integer = 0, nblocks::Integer = 10,
         backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE,
@@ -112,18 +114,19 @@ function run_isotherm!(
     npress >= 1 || throw(ArgumentError("run_isotherm!: pressures must be non-empty"))
     nsys = npress * nreplicas
 
+    Tk = F(ustrip_maybe(u"K", T))
     batch = FrameworkBatch(fill(fw, nsys), ff, guest, ewald; fullk = true)
     fugacity = Vector{F}(undef, nsys)
     for p in 1:npress
-        f = peng_robinson_fugacity(F(pressures[p]), F(T), guest).f
+        f = peng_robinson_fugacity(F(ustrip_maybe(u"Pa", pressures[p])), Tk, guest).f
         for r in 1:nreplicas
             fugacity[(p - 1) * nreplicas + r] = f
         end
     end
-    state = SystemState(batch, guest, zeros(Int, nsys), ff; T = F(T), seed, capacities = fill(capacity, nsys))
+    state = SystemState(batch, guest, zeros(Int, nsys), ff; T = Tk, seed, capacities = fill(capacity, nsys))
 
     results = run_gcmc!(
-        batch, state, guest, ff; T = F(T), n_warmup, n_production, n_audit, step_trans = fill(F(step_trans), nsys),
+        batch, state, guest, ff; T = Tk, n_warmup, n_production, n_audit, step_trans = fill(F(step_trans), nsys),
         step_rot = fill(F(step_rot), nsys), fugacity, exchange_prob, min_cycle_length, seed, nblocks, backend,
         groupsize, nblocks_per_chain
     )
@@ -139,7 +142,7 @@ function run_isotherm!(
         rr = ((p - 1) * nreplicas + 1):(p * nreplicas)
         loading[p], loading_err[p] = combine_replicas([results[n].loading for n in rr], [results[n].loading_err for n in rr])
         energy[p], energy_err[p] = combine_replicas([results[n].energy for n in rr], [results[n].energy_err for n in rr])
-        pressure_out[p] = F(pressures[p])
+        pressure_out[p] = F(ustrip_maybe(u"Pa", pressures[p]))
         max_occ[p] = maximum(results[n].max_occupancy for n in rr)
         cap_out[p] = results[rr[1]].capacity
     end

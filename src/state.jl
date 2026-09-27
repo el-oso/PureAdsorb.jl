@@ -317,7 +317,8 @@ built from, needed to seed each system's `energy` with its total configuration e
 
 Each of the `ncounts[n]` initial guests' pose is drawn uniformly (position in the cell,
 orientation on SO(3)) and resampled until it clears `widom`'s hard-core rejection test at
-temperature `T` (K) against the host — see `initial_poses`; guest–guest overlap is not checked,
+temperature `T` (K, or any `Unitful.Temperature`; `src/units.jl`'s `ustrip_maybe`) against the
+host — see `initial_poses`; guest–guest overlap is not checked,
 since an overlapping placement only drives `total_energy` to a very large (or infinite) value
 here, not an error. `seed` seeds both the placement draws and (via `splitmix64`) each chain's own
 RNG stream. `backend` runs the placement's rejection kernel (`CPU()` by default). Any of
@@ -377,7 +378,7 @@ function SystemState(
         sys_of[j] = Int32(n)
     end
 
-    kT = F(KB * T)
+    kT = F(KB * ustrip_maybe(u"K", T))
     rng = Xoshiro(seed)
     rpos, quat_occ = initial_poses(batch, guest, sys_of, kT, rng, backend)
 

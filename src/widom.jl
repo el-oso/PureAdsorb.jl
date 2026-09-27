@@ -256,7 +256,8 @@ end
     widom(batch::FrameworkBatch, guest::Guest; T, ninsert, backend = CPU(), seed = 0,
           chunk = 2^16, nblocks = 10, run = nothing) -> Vector{WidomResult}
 
-Widom test-particle insertion at temperature `T` (K): `ninsert` random poses per system give
+Widom test-particle insertion at temperature `T` (K, or any `Unitful.Temperature`; `src/units.jl`'s
+`ustrip_maybe`): `ninsert` random poses per system give
 the Boltzmann-weighted insertion average `W = ⟨exp(-ΔU/kT)⟩`, split into `nblocks` blocks for a
 standard-error estimate, and reduced to a `WidomResult` per system in `batch`. Insertions are
 generated and evaluated in chunks of `chunk` poses per `backend` kernel launch. `seed` sets the
@@ -363,7 +364,7 @@ function _widom(
     end
     N = length(guest.sites)
     guest_compact = Guest{F, N}(guest.sites, SVector{N, Int}(batch.guest_types), guest.charges, guest.tc, guest.pc, guest.omega)
-    kT = F(KB * T)
+    kT = F(KB * ustrip_maybe(u"K", T))
     dbatch = adapt(backend, batch)
     rng = Xoshiro(seed)
     sys_of = Vector{Int32}(undef, chunk)

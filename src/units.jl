@@ -1,11 +1,31 @@
-# Unitful at the boundary, bare floats in the kernels: this file wraps exactly the path E1 broke
-# (a caller-supplied pressure crossing into `peng_robinson_fugacity` and the μVT exchange moves'
-# `fugacity` argument, `log_insertion_prefactor`/`log_deletion_prefactor`'s `PASCAL` conversion).
-# Every method below strips a `Unitful.Quantity` to a bare pascal/kelvin float and forwards to the
-# existing bare-Float method that every kernel, `FrameworkBatch` and `SystemState` field already
-# runs on; none of those keep a `Quantity` anywhere, and this file adds no method any of them call
-# into. A caller with no `Unitful` values sees no change at all: the bare-Float methods this file
-# forwards to are unmodified originals, selected by the same dispatch that already existed.
+# Unitful at the boundary, bare floats in the kernels: this file wraps every remaining path where a
+# pressure or a temperature crosses from a caller's units into this package's internal eV/Å/K
+# convention — the same class of bug E1 was (a factor of 1.6e11 between pascals and eV/Å³, invisible
+# to every energy check). A caller with no `Unitful` values sees no change at all.
+#
+# Two different mechanisms are needed, because Julia dispatches on POSITIONAL argument types but
+# NOT on keyword argument types: two methods that differ only in a keyword's annotated type do not
+# overload each other, the second DEFINITION REPLACES the first (measured directly: defining
+# `f(a; T::AbstractString, kwargs...)` after `f(a; T, n::Integer)` leaves exactly one method, with
+# `n` silently absorbed into `kwargs` and `T`'s type frozen to `AbstractString` for every caller).
+#
+# Where the physical quantity is a POSITIONAL argument (`peng_robinson_fugacity`'s `P`/`Tgas`,
+# `mc_insert!`/`mc_delete!`/`mc_exchange!`'s `fugacity`), a genuinely separate, additive method
+# below strips it and forwards to the existing bare-Float method, which is never touched.
+#
+# Where it is a KEYWORD-only argument (`T` on `run_nvt!`, `run_gcmc!`, `run_isotherm!`, `widom` and
+# `SystemState`; `pressures` on `run_isotherm!`; `fugacity` on `run_gcmc!`), no such second method is
+# possible, so `ustrip_maybe` — an ordinary two-argument function, which DOES dispatch on its
+# argument's type — is called at the one line in each of those functions' own bodies that first
+# turns the keyword into a bare float. It is the identity for anything already a `Real`, so a
+# bare-Float caller's behavior, including the exact bits its dispatch and arithmetic produce, is
+# unchanged; only `nvt.jl`/`gcmc.jl`/`widom.jl`/`state.jl`/`isotherm.jl`'s own use of that one
+# keyword is touched, never their signatures or any other line.
+#
+# `ustrip_maybe`'s own two methods ARE a genuine additive dispatch pair (its argument, unlike a
+# keyword, is positional), so it needs no forwarding trick of its own.
+ustrip_maybe(unit, x::Real) = x
+ustrip_maybe(unit, x::Unitful.Quantity) = ustrip(unit, x)
 
 """
     peng_robinson_fugacity(P::Unitful.Pressure, Tgas::Unitful.Temperature, tc, pc, omega) -> (; f, phi, Z)

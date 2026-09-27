@@ -146,7 +146,8 @@ end
              groupsize = DEFAULT_GROUPSIZE,
              nblocks_per_chain = default_nblocks_per_chain(F, state.nsys)) -> Vector{NVTResult{F}}
 
-Run `state`'s chains at temperature `T` (K): `n_warmup` cycles are discarded, then `n_production`
+Run `state`'s chains at temperature `T` (K, or any `Unitful.Temperature`; `src/units.jl`'s
+`ustrip_maybe`): `n_warmup` cycles are discarded, then `n_production`
 cycles are recorded. A cycle is `max(maximum(nguests(state, n) for n in 1:nsys), min_cycle_length)`
 Metropolis move attempts (one shared movetype per attempt, translation/rotation/reinsertion drawn
 uniformly since exchange has no counterpart in this package — task 1's normalization with
@@ -208,7 +209,7 @@ function run_nvt!(
     n_widom_per_cycle >= 1 || throw(ArgumentError("n_widom_per_cycle=$n_widom_per_cycle must be >= 1"))
     n_audit >= 1 || throw(ArgumentError("n_audit=$n_audit must be >= 1"))
     nsys = state.nsys
-    kT = F(KB * T)
+    kT = F(KB * ustrip_maybe(u"K", T))
     nsteps_per_cycle = max(maximum(nguests(state, n) for n in 1:nsys), Int(min_cycle_length))
     # `select_and_propose` (moves.jl) clamps a chain's guest index into `1:length(refpoints)`,
     # which assumes at least one guest exists SOMEWHERE in the batch; with none at all there is no

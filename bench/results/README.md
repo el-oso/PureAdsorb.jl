@@ -1024,6 +1024,33 @@ Float32), which is why the *rate* of increase from nsys=1 to nsys=256 (13-19x) i
 Files: `pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_before_20260927_f4a0503.json`,
 `pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_after_20260927_f4a0503.json`.
 
+## Units rollout: the Unitful-fugacity boundary's overhead on `mc_exchange!`
+
+Now that the workgroup fan-out above brings `mc_exchange!` down to roughly 150-200 us/call at
+nsys=1, a fixed per-call cost invisible at the pre-fan-out 18 ms scale could plausibly be a
+meaningful fraction of the call. `bench/gpu/units_overhead_bench.jl` isolates the Unitful
+boundary's own cost by measuring `mc_exchange!` with a bare `Vector{F}` fugacity against the same
+call with a `Vector{<:Unitful.Pressure}` fugacity (`src/units.jl`'s wrapper strips it to a bare
+`Vector{F}` and forwards), RUBTAK 3×3×3 + CO2, nsys=1, both precisions, RTX 4070. Each
+(precision, bare-or-unitful) combination runs in its own process, warmed on wall-clock time; the
+file's own header explains two measurement traps found and fixed while building it (closing over
+top-level globals, and `mc_exchange!`'s own insert/delete coin flip needing BOTH kernel variants
+pre-compiled before timing either one).
+
+| precision | bare (us/call) | Unitful (us/call) | difference (us) |
+|---|---|---|---|
+| Float64 | 198.9 | 151.4 | -47.5 |
+| Float32 | 165.8 | 154.2 | -11.6 |
+
+Both differences are NEGATIVE — the "Unitful" call measured faster than "bare" — which is itself
+the tell that this is run-to-run noise, not a real cost: four repeated bare-only Float64
+measurements (same code, same call, nothing changed between runs) read 147.4, 141.3, 163.0 and
+198.9 us/call, a 57.6 us spread on their own, several times the -47.5/-11.6 us "difference" above.
+The Unitful boundary's own extra work per call — `ustrip.(u"Pa", fugacity)` plus one small
+`Vector{F}` allocation — is not measurably distinguishable from zero against this noise floor.
+
+Files: `pureadsorb_units_overhead_neuromancer4070_cuda_{f64,f32}_{bare,unitful}_0281172.json`.
+
 ## A real isotherm: CO2 in RUBTAK 3x3x3 (Milestone C task 6)
 
 `bench/gpu/isotherm_bench.jl` runs `run_isotherm!` (`src/isotherm.jl`) at 298.15 K over 50

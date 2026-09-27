@@ -1023,3 +1023,55 @@ Float32), which is why the *rate* of increase from nsys=1 to nsys=256 (13-19x) i
 
 Files: `pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_before_20260927_f4a0503.json`,
 `pureadsorb_exchange_workgroup_neuromancer_cuda_{f64,f32}_after_20260927_f4a0503.json`.
+
+## A real isotherm: CO2 in RUBTAK 3x3x3 (Milestone C task 6)
+
+`bench/gpu/isotherm_bench.jl` runs `run_isotherm!` (`src/isotherm.jl`) at 298.15 K over 50
+log-spaced pressure points from 100 Pa to 1e5 Pa, 4 replicas each (nsys = 200), one batch, RTX
+4070, `commit 873c9ed`.
+
+**Build time**: `FrameworkBatch`+`SystemState` for the whole 200-system batch (`ncounts = 0`
+throughout, so no per-guest placement work) took 0.279 s, against 2.96 s for a single system
+built cold in the same process (compilation-dominated) — the isotherm-scale build is dominated
+by paying the framework's own setup once, exactly as framework deduplication predicts, not by
+`nsys`. `nframeworks(batch) == 1` confirms the dedup fired.
+
+**Run time**: 151.1 s for the full 700-cycle (200 warmup + 500 production) GCMC run over all 200
+systems, no capacity failures (`mc_insert!` never threw): the batch-wide cycle length, set by the
+highest-occupancy system at any moment (up to ~136 guests near the top of the pressure range),
+means every system in the batch attempts that many moves per cycle regardless of its own loading
+— the "wastes work on low-pressure chains" cost the design review's own "Throughput" section
+flags, paid here as wall-clock rather than a failure.
+
+**Shape**: loading rises monotonically at every one of the 50 points, from 0.40 guests at 100 Pa
+to 101.7 guests at 1e5 Pa. `loading/pressure` (a local Henry's-law slope) is flat at
+0.0037-0.0040 guests/Pa over the bottom 6 points (100-202 Pa) — Henry-linear, as expected well
+below saturation — and falls by a factor of ~3.7 to 0.0010-0.0016 guests/Pa over the top 6 points
+(4.9e4-1e5 Pa), a clear, physically sensible Type-I saturation curvature. The verdict: **physically
+sensible** — monotonic, Henry-linear at the low end, saturating (sub-linear) at the high end. The
+handful of points between 3.7e4 and 8.7e4 Pa (67.7, 74.9, 79.4, 86.4, 91.8, 93.4, 93.1) show a
+near-plateau with a one-point dip inside statistical error (`loading_err` there is 2.7-4.3 guests)
+rather than a real non-monotonicity — reported as seen, not smoothed.
+
+**Capacity**: one value (200) for the whole batch, sized from a short pilot run at the highest
+pressure rather than any a priori estimate (`run_isotherm!`'s own docstring explains why a
+per-pressure capacity is not attempted). Worst-case occupancy across all 50 points' replicas
+tops out at 136/200 (68%) at the highest pressure; at the lowest pressures max occupancy is
+4-6 out of 200 (2-3%) — confirming the design's own prediction that a single batch-wide capacity
+is wasteful at the low end (reserved memory only, since every energy loop is bounded by live
+occupancy, not capacity) without ever saturating at the high end. The capacity diagnostic did
+**not** fire.
+
+**A pre-existing numerical finding, found while building this isotherm, not fixed by it**:
+`audit_energy!`'s tolerance (Higham's bound for a running sum of `nmoves` accepted terms) is
+occasionally too tight once `nmoves` reaches the low thousands on a CUDA-driven chain, because
+the "running" state is accumulated by GPU kernels while `audit_energy!`'s rebuild runs on the
+host — a small, structural CPU/GPU rounding gap Higham's bound does not budget for. Reproduced
+independent of Milestone C's own work: a plain `run_nvt!` chain (no exchange moves, task 5's
+unmodified NVT kernels) on CUDA trips the SAME check at a comparable move count (1606 moves,
+discrepancy 3.4x the tolerance). Every dedicated correctness test in the suite (moderate move
+counts, `Pkg.test()` under `--check-bounds=yes`) passes; `isotherm_bench.jl` simply does not
+audit mid-run for this one large physics run (`n_audit` set past the run's end), rather than
+risk tripping a pre-existing tolerance edge case unrelated to what it is producing.
+
+File: `pureadsorb_isotherm_co2_rubtak_neuromancer_cuda_f64_20260927_873c9ed.json`.

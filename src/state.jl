@@ -11,12 +11,31 @@ total energy, one RNG stream per chain, and per-move-type accepted/attempted cou
 `FrameworkBatch` itself stays immutable and holds only the host data, so one batch can be
 reused to build several independent `SystemState`s.
 
-Guests use the same ragged, offset-indexed layout `FrameworkBatch` uses for atoms:
-`guest_offsets[n]+1:guest_offsets[n+1]` (`guest_range`) indexes system `n`'s slice of
-`refpoints`/`orientations`, and NVT holds each system's slice length fixed after construction
-even though nothing here assumes systems share a count — Milestone C varies it. `refpoints`
-(Å, Cartesian, wrapped into the cell) and `orientations` (unit quaternions, `rotate`'s
-`(x, y, z, w)` convention, the same one Milestone A uses) together give each guest's pose.
+Guests use the same ragged, offset-indexed layout `FrameworkBatch` uses for atoms, but with a
+capacity/occupancy split NVT itself never exercises (`capacity(state, n) ==
+nguests(state, n)` always, there): `guest_offsets[n]+1:guest_offsets[n+1]` is system `n`'s full
+reserved SLOT range in `refpoints`/`orientations`/`host_energy` — its capacity, fixed once at
+construction and never resized afterward — while `occupancy[n] <= capacity(state, n)` counts how
+many of those slots, starting from the first, currently hold a live guest. `guest_range` (system
+`n`'s LIVE range, `guest_offsets[n]+1:guest_offsets[n]+occupancy[n]`) and `nguests` (`occupancy[n]`)
+are what every energy computation and move reads; a reserved-but-unoccupied slot holds a fixed
+sentinel pose (zero reference point, identity orientation) and a zero cached host energy, and nothing
+reads it until an insertion claims it. Insertion writes the new guest at slot
+`guest_offsets[n]+occupancy[n]+1` and increments `occupancy[n]`; deletion of an occupied slot
+copies the pose and cached host energy of the system's LAST occupied slot into the freed one and
+decrements `occupancy[n]`, which keeps the live slots contiguous from the start of the block
+without shifting any array (`insert_guest!`, `delete_guest!`). Both fail loudly — `insert_guest!`
+throws rather than writing past `capacity(state, n)`, and `audit_energy!` throws if `occupancy[n]`
+ever exceeds it — since a chain that silently saturated its capacity would sample a truncated
+distribution while still looking healthy. `refpoints` (Å, Cartesian, wrapped into the cell) and
+`orientations` (unit quaternions, `rotate`'s `(x, y, z, w)` convention, the same one Milestone A
+uses) together give each guest's pose. `insert_guest!`/`delete_guest!` update only these arrays
+and `occupancy`; a caller applying a μVT move is responsible for updating `Sk` and `energy` to
+match, exactly as `mc_step!`'s kernels already do for the NVT moves. Those kernels, and
+`select_and_propose`, currently index a system's guests as `guest_offsets[n]+1:guest_offsets[n+1]`
+directly rather than through `guest_range` — correct only as long as `occupancy[n] ==
+capacity(state, n)`, which holds for every `SystemState` this package's moves actually run
+against today, since nothing yet calls `insert_guest!`/`delete_guest!` on a state a move touches.
 
 `k_offsets` (`kvec_range`) gives each system its OWN slice of `Sk`, one system at a time, so that
 `Sk[i] = Shost(k_i) + Σ_guests S_guest(k_i)` for every k-vector that system's framework carries —
@@ -66,8 +85,9 @@ generator is a later task; this only allocates and initializes its inputs.
 (translation, rotation, reinsertion) — the three NVT moves (`exchange_prob = 0` excludes the
 fourth) — both starting at zero.
 """
-struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM, VA}
+struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM, VA, VO}
     guest_offsets::VI
+    occupancy::VO
     refpoints::VP
     orientations::VQ
     k_offsets::VI
@@ -85,35 +105,44 @@ end
 Adapt.@adapt_structure SystemState
 
 function SystemState(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
-        rng_seed, rng_counter, accepted, attempted, nsys
+        guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
     )
     F = eltype(energy)
     return SystemState{F}(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
-        rng_seed, rng_counter, accepted, attempted, nsys
+        guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
     )
 end
 
 function SystemState{F}(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
-        rng_seed, rng_counter, accepted, attempted, nsys
+        guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
     ) where {F}
     return SystemState{
         F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed),
-        typeof(accepted), typeof(sk_abs_accum),
+        typeof(accepted), typeof(sk_abs_accum), typeof(occupancy),
     }(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
-        rng_seed, rng_counter, accepted, attempted, Int(nsys)
+        guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
+        host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys)
     )
 end
 
 """
+    capacity(state::SystemState, n::Integer) -> Integer
+
+System `n`'s reserved slot count in `refpoints`/`orientations`/`host_energy` — fixed at
+construction and never resized, whether or not every slot currently holds a live guest.
+"""
+capacity(state::SystemState, n::Integer) = state.guest_offsets[n + 1] - state.guest_offsets[n]
+
+"""
     guest_range(state::SystemState, n::Integer) -> UnitRange
 
-System `n`'s slice of `refpoints`/`orientations`.
+System `n`'s LIVE slice of `refpoints`/`orientations`/`host_energy`: its first `nguests(state, n)`
+reserved slots, out of `capacity(state, n)` total.
 """
-guest_range(state::SystemState, n::Integer) = (state.guest_offsets[n] + 1):state.guest_offsets[n + 1]
+guest_range(state::SystemState, n::Integer) = (state.guest_offsets[n] + 1):(state.guest_offsets[n] + state.occupancy[n])
 
 """
     kvec_range(state::SystemState, n::Integer) -> UnitRange
@@ -125,9 +154,69 @@ kvec_range(state::SystemState, n::Integer) = (state.k_offsets[n] + 1):state.k_of
 """
     nguests(state::SystemState, n::Integer) -> Integer
 
-Number of guests in system `n`.
+Number of LIVE guests in system `n` (its occupancy), out of `capacity(state, n)` reserved slots.
 """
-nguests(state::SystemState, n::Integer) = state.guest_offsets[n + 1] - state.guest_offsets[n]
+nguests(state::SystemState, n::Integer) = state.occupancy[n]
+
+"""
+    insert_guest!(state::SystemState{F}, n::Integer, pos::SVector{3,F}, orient::SVector{4,F},
+                  host_energy_new::F = zero(F)) -> Integer
+
+Writes a new guest's pose (and, if given, its host-guest real-space energy) into system `n`'s next
+free slot, `guest_offsets[n] + occupancy[n] + 1`, and increments `occupancy[n]` — the slot
+immediately after the system's current last occupant, so occupied slots stay contiguous from the
+start of the system's reserved block. Returns the global slot index written. Updates only
+`refpoints`/`orientations`/`host_energy`/`occupancy`; a caller applying a μVT move is responsible
+for updating `Sk` and `energy` to match.
+
+Throws `ArgumentError` if system `n` is already at capacity (`nguests(state, n) ==
+capacity(state, n)`).
+"""
+function insert_guest!(
+        state::SystemState{F}, n::Integer, pos::SVector{3, F}, orient::SVector{4, F}, host_energy_new::F = zero(F)
+    ) where {F}
+    occ = state.occupancy[n]
+    cap = capacity(state, n)
+    occ < cap || throw(
+        ArgumentError("insert_guest!: system $n is already at capacity ($cap); cannot insert another guest")
+    )
+    slot = state.guest_offsets[n] + occ + 1
+    state.refpoints[slot] = pos
+    state.orientations[slot] = orient
+    state.host_energy[slot] = host_energy_new
+    state.occupancy[n] = occ + 1
+    return slot
+end
+
+"""
+    delete_guest!(state::SystemState, n::Integer, slot::Integer) -> Nothing
+
+Removes the guest at global slot `slot`, one of system `n`'s currently occupied slots
+(`guest_range(state, n)`): copies the pose and cached host-guest energy of the system's LAST
+occupied slot into `slot` (a no-op when `slot` already is that last slot), then decrements
+`occupancy[n]`. Occupied slots stay contiguous from the start of the system's reserved block, the
+array itself is never shifted, and the multiset of poses among every OTHER occupied guest of
+system `n` is unchanged. Updates only `refpoints`/`orientations`/`host_energy`/`occupancy`; a
+caller applying a μVT move is responsible for updating `Sk` and `energy` to match.
+
+Throws `ArgumentError` if system `n` has no guests, or if `slot` is not one of its occupied slots.
+"""
+function delete_guest!(state::SystemState, n::Integer, slot::Integer)
+    occ = state.occupancy[n]
+    occ > 0 || throw(ArgumentError("delete_guest!: system $n has no guests to delete"))
+    lo = state.guest_offsets[n] + 1
+    hi = state.guest_offsets[n] + occ
+    (lo <= slot <= hi) || throw(
+        ArgumentError("delete_guest!: slot $slot is not one of system $n's occupied slots ($lo:$hi)")
+    )
+    if slot != hi
+        state.refpoints[slot] = state.refpoints[hi]
+        state.orientations[slot] = state.orientations[hi]
+        state.host_energy[slot] = state.host_energy[hi]
+    end
+    state.occupancy[n] = occ - 1
+    return nothing
+end
 
 # SplitMix64's finalizer (Steele, Lea & Flood 2014), one round: a fast, deterministic bijective
 # mix from a (seed, index) pair to a per-chain seed, so distinct chain indices built from the same
@@ -214,24 +303,29 @@ end
 
 """
     SystemState(batch::FrameworkBatch{F}, guest::Guest{F,N}, ncounts::AbstractVector{<:Integer},
-                ff::ForceField{F}; T, seed = 0, backend = CPU()) -> SystemState
+                ff::ForceField{F}; T, seed = 0, backend = CPU(),
+                capacities = ncounts) -> SystemState
 
-Build a `SystemState` for `batch`'s `nsys` systems, `ncounts[n]` guests in system `n`. `guest`
-must be the same guest (by value) `batch` was built from, checked the same way `widom` checks
-it. `batch` must have been built with `fullk = true` (see `SystemState`'s docstring). `ff` is
-the force field `batch` was built from, needed to seed each system's `energy` with its total
-configuration energy (`total_energy`, `src/guest.jl`).
+Build a `SystemState` for `batch`'s `nsys` systems, `ncounts[n]` guests in system `n` and
+`capacities[n] >= ncounts[n]` reserved guest slots in system `n` (`capacity(state, n)`;
+`capacities` defaults to `ncounts` itself, reserving no slack). `guest` must be the same guest (by
+value) `batch` was built from, checked the same way `widom` checks it. `batch` must have been
+built with `fullk = true` (see `SystemState`'s docstring). `ff` is the force field `batch` was
+built from, needed to seed each system's `energy` with its total configuration energy
+(`total_energy`, `src/guest.jl`).
 
-Each guest's initial pose is drawn uniformly (position in the cell, orientation on SO(3)) and
-resampled until it clears `widom`'s hard-core rejection test at temperature `T` (K) against the
-host — see `initial_poses`; guest–guest overlap is not checked, since an overlapping placement
-only drives `total_energy` to a very large (or infinite) value here, not an error. `seed` seeds both the
-placement draws and (via `splitmix64`) each chain's own RNG stream. `backend` runs the
-placement's rejection kernel (`CPU()` by default).
+Each of the `ncounts[n]` initial guests' pose is drawn uniformly (position in the cell,
+orientation on SO(3)) and resampled until it clears `widom`'s hard-core rejection test at
+temperature `T` (K) against the host — see `initial_poses`; guest–guest overlap is not checked,
+since an overlapping placement only drives `total_energy` to a very large (or infinite) value
+here, not an error. `seed` seeds both the placement draws and (via `splitmix64`) each chain's own
+RNG stream. `backend` runs the placement's rejection kernel (`CPU()` by default). Any of
+`capacities[n] - ncounts[n]` slots reserved beyond that hold a fixed sentinel pose (zero reference
+point, identity orientation) and a zero cached host energy until an `insert_guest!` claims one.
 """
 function SystemState(
         batch::FrameworkBatch{F}, guest::Guest{F, N}, ncounts::AbstractVector{<:Integer}, ff::ForceField{F};
-        T, seed::Integer = 0, backend = CPU()
+        T, seed::Integer = 0, backend = CPU(), capacities::AbstractVector{<:Integer} = ncounts
     ) where {F, N}
     (
         guest.types == batch.guest_types_orig && guest.sites == batch.guest_sites_orig &&
@@ -254,25 +348,44 @@ function SystemState(
     length(ncounts) == nsys || throw(
         DimensionMismatch("ncounts must have one entry per system (nsys=$nsys), got $(length(ncounts))")
     )
+    length(capacities) == nsys || throw(
+        DimensionMismatch("capacities must have one entry per system (nsys=$nsys), got $(length(capacities))")
+    )
     all(>=(0), ncounts) || throw(ArgumentError("ncounts must be non-negative, got $ncounts"))
+    all(ncounts .<= capacities) ||
+        throw(ArgumentError("capacities must be >= ncounts in every system: ncounts=$ncounts, capacities=$capacities"))
 
+    # `guest_offsets` brackets each system's full reserved CAPACITY block; `occ_offsets` (below,
+    # used only to build the initial placement) brackets its initially OCCUPIED guests within that
+    # same block, always a prefix of it.
     guest_offsets = Vector{Int32}(undef, nsys + 1)
     guest_offsets[1] = 0
     for n in 1:nsys
-        guest_offsets[n + 1] = guest_offsets[n] + Int32(ncounts[n])
+        guest_offsets[n + 1] = guest_offsets[n] + Int32(capacities[n])
     end
     ntot = Int(guest_offsets[end])
-    sys_of = Vector{Int32}(undef, ntot)
-    for n in 1:nsys, i in (guest_offsets[n] + 1):guest_offsets[n + 1]
-        sys_of[i] = Int32(n)
+
+    occ_offsets = Vector{Int32}(undef, nsys + 1)
+    occ_offsets[1] = 0
+    for n in 1:nsys
+        occ_offsets[n + 1] = occ_offsets[n] + Int32(ncounts[n])
+    end
+    ntot_occ = Int(occ_offsets[end])
+    sys_of = Vector{Int32}(undef, ntot_occ)
+    for n in 1:nsys, j in (occ_offsets[n] + 1):occ_offsets[n + 1]
+        sys_of[j] = Int32(n)
     end
 
     kT = F(KB * T)
     rng = Xoshiro(seed)
-    rpos, quat = initial_poses(batch, guest, sys_of, kT, rng, backend)
-    refpoints = Vector{SVector{3, F}}(undef, ntot)
-    for i in 1:ntot
-        refpoints[i] = batch.cells[batch.framework_of[sys_of[i]]] * rpos[i]
+    rpos, quat_occ = initial_poses(batch, guest, sys_of, kT, rng, backend)
+
+    refpoints = fill(zero(SVector{3, F}), ntot)
+    orientations = fill(SVector{4, F}(0, 0, 0, 1), ntot)
+    for n in 1:nsys, j in (occ_offsets[n] + 1):occ_offsets[n + 1]
+        slot = guest_offsets[n] + (j - occ_offsets[n])
+        refpoints[slot] = batch.cells[batch.framework_of[n]] * rpos[j]
+        orientations[slot] = quat_occ[j]
     end
 
     # `state.Sk` cannot reuse `batch`'s own (per-FRAMEWORK, deduplicated) `Shost`/`k_offsets`
@@ -286,27 +399,28 @@ function SystemState(
     for n in 1:nsys
         k_offsets[n + 1] = k_offsets[n] + Int32(length(batch_kvec_range(batch, n)))
     end
+    occupancy = Vector{Int32}(Int32.(ncounts))
     Sk = Vector{Complex{F}}(undef, k_offsets[end])
     for n in 1:nsys
         kr = (k_offsets[n] + 1):k_offsets[n + 1]
         krb = batch_kvec_range(batch, n)
         Sk[kr] .= view(batch.Shost, krb)
-        gr = (guest_offsets[n] + 1):guest_offsets[n + 1]
+        gr = (guest_offsets[n] + 1):(guest_offsets[n] + occupancy[n])
         (isempty(kr) || isempty(gr)) && continue
-        sitepos, siteq = guest_site_positions_charges(guest, refpoints, quat, gr)
+        sitepos, siteq = guest_site_positions_charges(guest, refpoints, orientations, gr)
         Sk[kr] .+= structure_factor(view(batch.ks, krb), sitepos, siteq)
     end
 
     guest_types_c = SVector{N, Int}(batch.guest_types)
     guest_compact = Guest{F, N}(guest.sites, guest_types_c, guest.charges, guest.tc, guest.pc, guest.omega)
-    host_energy = Vector{F}(undef, ntot)
+    host_energy = zeros(F, ntot)
     for n in 1:nsys
         fw = batch.framework_of[n]
         a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
         A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
-        for i in (guest_offsets[n] + 1):guest_offsets[n + 1]
+        for i in (guest_offsets[n] + 1):(guest_offsets[n] + occupancy[n])
             host_energy[i] = host_guest_realspace_energy(
-                refpoints[i], quat[i], guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
+                refpoints[i], orientations[i], guest_compact, batch.sigma, batch.epsilon, batch.cutoff, batch.ewald_cutoff,
                 batch.positions, batch.types, batch.charges, a0, natoms, A, invA, alpha
             )
         end
@@ -320,8 +434,8 @@ function SystemState(
     accepted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     st = SystemState(
-        guest_offsets, refpoints, quat, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy, rng_seed,
-        rng_counter, accepted, attempted, nsys
+        guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys
     )
     for n in 1:nsys
         st.energy[n] = total_energy(batch, st, guest, ff, n)

@@ -68,7 +68,7 @@ select_and_propose_types(::Type{T}) where {T} = (
 # batch and state just to call `typeof` on them.
 systemstate_type(::Type{T}) where {T} = PureAdsorb.SystemState{
     T, Vector{SVector{3, T}}, Vector{SVector{4, T}}, Vector{Int32}, Vector{Complex{T}}, Vector{T}, Vector{UInt64}, Vector{SVector{3, Int32}},
-    Vector{T},
+    Vector{T}, Vector{Int32},
 }
 
 # `SystemState`'s accessors, which index into device arrays inside future kernels, and its
@@ -80,6 +80,18 @@ results = vcat(
     signature_findings(PureAdsorb.kvec_range, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.nguests, (systemstate_type(Float64), Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.nguests, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.capacity, (systemstate_type(Float64), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.capacity, (systemstate_type(Float32), Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(
+        PureAdsorb.insert_guest!, (systemstate_type(Float64), Int, SVector{3, Float64}, SVector{4, Float64}, Float64);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.insert_guest!, (systemstate_type(Float32), Int, SVector{3, Float32}, SVector{4, Float32}, Float32);
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(PureAdsorb.delete_guest!, (systemstate_type(Float64), Int, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.delete_guest!, (systemstate_type(Float32), Int, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.splitmix64, (UInt64, UInt64); guarantees = (:typestable, :noalloc)),
     # Phase-0 kernel (`hardcore_kernel!`) callees not already covered by `insertion_energy`'s own
     # (`rotate`, `minimum_image`): the cell-list stencil and per-site home-cell primitives that

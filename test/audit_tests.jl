@@ -101,6 +101,22 @@ end
     @test_throws "energy audit failed" PureAdsorb.audit_energy!(b, st_bad, g, ff, 1, naccept_bad)
 end
 
+@testitem "audit_energy! catches occupancy exceeding capacity" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [2], ff; T = 298.15, seed = 9, capacities = [5])
+    PureAdsorb.audit_energy!(b, st, g, ff, 1, 0)   # occupancy (2) <= capacity (5): must not throw
+
+    # `insert_guest!` itself refuses to write past capacity (a separate test in state_tests.jl);
+    # this corrupts `occupancy` directly to check the audit's OWN, independent defense against a
+    # state that reached an over-capacity occupancy some other way.
+    st.occupancy[1] = 6
+    @test_throws "occupancy 6 exceeds capacity 5" PureAdsorb.audit_energy!(b, st, g, ff, 1, 0)
+end
+
 @testsnippet WrongSignRecip begin
     using StaticArrays, LinearAlgebra, Random
 

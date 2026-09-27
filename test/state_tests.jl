@@ -198,3 +198,179 @@ end
         @test getfield(back, f) == getfield(st, f)
     end
 end
+
+@testitem "capacity and occupancy default to ncounts (no reserved slack)" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc, sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    ncounts = [5, 0, 2]
+    st = PureAdsorb.SystemState(b, g, ncounts, ff; T = 298.15, seed = 3)
+    for n in 1:3
+        @test PureAdsorb.capacity(st, n) == ncounts[n]
+        @test PureAdsorb.nguests(st, n) == ncounts[n]
+        @test length(PureAdsorb.guest_range(st, n)) == PureAdsorb.capacity(st, n)
+    end
+end
+
+@testitem "SystemState reserves slack capacity beyond the initial occupancy" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc, sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    ncounts = [2, 0, 1]
+    capacities = [5, 3, 4]
+    st = PureAdsorb.SystemState(b, g, ncounts, ff; T = 298.15, seed = 3, capacities)
+    @test st.nsys == 3
+    for n in 1:3
+        @test PureAdsorb.capacity(st, n) == capacities[n]
+        @test PureAdsorb.nguests(st, n) == ncounts[n]
+        @test length(PureAdsorb.guest_range(st, n)) == ncounts[n]
+    end
+    @test length(st.refpoints) == length(st.orientations) == length(st.host_energy) == sum(capacities)
+
+    # A reserved-but-unoccupied slot holds the fixed sentinel pose and a zero cached host energy.
+    for n in 1:3
+        for i in (st.guest_offsets[n] + ncounts[n] + 1):st.guest_offsets[n + 1]
+            @test st.refpoints[i] == zero(SVector{3, Float64})
+            @test st.orientations[i] == SVector{4, Float64}(0, 0, 0, 1)
+            @test iszero(st.host_energy[i])
+        end
+    end
+
+    # Reserving slack changes nothing about the occupied guests themselves: the placement RNG
+    # only ever draws for `ncounts`, so the poses, structure factor and energy of a state built
+    # with slack match a state built without it, for the same seed.
+    st_noslack = PureAdsorb.SystemState(b, g, ncounts, ff; T = 298.15, seed = 3)
+    for n in 1:3
+        @test collect(st.refpoints[PureAdsorb.guest_range(st, n)]) == collect(st_noslack.refpoints[PureAdsorb.guest_range(st_noslack, n)])
+        @test collect(st.orientations[PureAdsorb.guest_range(st, n)]) ==
+            collect(st_noslack.orientations[PureAdsorb.guest_range(st_noslack, n)])
+        @test st.energy[n] == st_noslack.energy[n]
+    end
+end
+
+@testitem "SystemState rejects capacities smaller than ncounts, or a mismatched length" begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc, sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    @test_throws "capacities must be >= ncounts" PureAdsorb.SystemState(b, g, [3, 2], ff; T = 298.15, capacities = [3, 1])
+    @test_throws DimensionMismatch PureAdsorb.SystemState(b, g, [3, 2], ff; T = 298.15, capacities = [3, 2, 1])
+end
+
+@testitem "insert_guest! writes at the next free slot and increments occupancy" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [2], ff; T = 298.15, seed = 3, capacities = [5])
+    before = collect(st.refpoints[PureAdsorb.guest_range(st, 1)])
+
+    pos = SVector{3, Float64}(1.0, 2.0, 3.0)
+    orient = SVector{4, Float64}(0, 0, 0, 1)
+    slot = PureAdsorb.insert_guest!(st, 1, pos, orient, 7.5)
+    @test slot == 3   # guest_offsets[1] (0) + occupancy-before-insert (2) + 1
+    @test PureAdsorb.nguests(st, 1) == 3
+    @test st.refpoints[slot] == pos
+    @test st.orientations[slot] == orient
+    @test st.host_energy[slot] == 7.5
+    # The two pre-existing guests are untouched.
+    @test collect(st.refpoints[PureAdsorb.guest_range(st, 1)[1:2]]) == before
+end
+
+@testitem "insert_guest! refuses to exceed capacity" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [2], ff; T = 298.15, seed = 3)   # capacity == occupancy == 2
+    @test_throws "already at capacity" PureAdsorb.insert_guest!(
+        st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1)
+    )
+    @test PureAdsorb.nguests(st, 1) == 2   # the rejected insert changed nothing
+end
+
+@testitem "delete_guest! swaps the last occupant into the freed slot and decrements occupancy" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [0], ff; T = 298.15, seed = 3, capacities = [4])
+    orient = SVector{4, Float64}(0, 0, 0, 1)
+    for i in 1:3
+        PureAdsorb.insert_guest!(st, 1, SVector{3, Float64}(i, 0, 0), orient, Float64(i))
+    end
+    last_pos, last_energy = st.refpoints[3], st.host_energy[3]
+
+    PureAdsorb.delete_guest!(st, 1, 1)   # delete the FIRST occupied slot, not the last
+    @test PureAdsorb.nguests(st, 1) == 2
+    @test st.refpoints[1] == last_pos   # the former last occupant now lives at the freed slot
+    @test st.host_energy[1] == last_energy
+    @test st.refpoints[2] == SVector{3, Float64}(2, 0, 0)   # untouched
+
+    PureAdsorb.delete_guest!(st, 1, 2)   # deleting the (new) last slot is a no-op swap
+    @test PureAdsorb.nguests(st, 1) == 1
+    @test st.refpoints[1] == last_pos
+end
+
+@testitem "delete_guest! rejects an empty system or an out-of-range slot" begin
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    st = PureAdsorb.SystemState(b, g, [0], ff; T = 298.15, seed = 3, capacities = [4])
+    @test_throws "no guests to delete" PureAdsorb.delete_guest!(st, 1, 1)
+
+    PureAdsorb.insert_guest!(st, 1, SVector{3, Float64}(0, 0, 0), SVector{4, Float64}(0, 0, 0, 1))
+    @test_throws "not one of system 1's occupied slots" PureAdsorb.delete_guest!(st, 1, 2)   # a reserved, unoccupied slot
+end
+
+@testitem "delete_guest! preserves the multiset of occupied poses over many random deletions" begin
+    using StaticArrays, Random
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    b = FrameworkBatch([sc], ff, g, EwaldParams(cutoff = 12.0, precision = 1.0e-6); fullk = true)
+    ncap = 40
+    st = PureAdsorb.SystemState(b, g, [0], ff; T = 298.15, seed = 1, capacities = [ncap])
+    orient = SVector{4, Float64}(0, 0, 0, 1)
+    # Distinct tag positions (not physically meaningful — `insert_guest!` is a raw bookkeeping
+    # primitive and does not check overlap) with a host energy tied to the same tag, so a slot's
+    # identity and the fact that its OTHER fields moved with it are both checkable after a swap.
+    for i in 1:ncap
+        PureAdsorb.insert_guest!(st, 1, SVector{3, Float64}(i, 0, 0), orient, 10.0 * i)
+    end
+    tags(st) = Set(Float64[st.refpoints[i][1] for i in PureAdsorb.guest_range(st, 1)])
+    current = tags(st)
+    @test length(current) == ncap
+
+    rng = Xoshiro(123)
+    for _ in 1:(ncap - 1)
+        slot = rand(rng, PureAdsorb.guest_range(st, 1))
+        removed_tag = st.refpoints[slot][1]
+        PureAdsorb.delete_guest!(st, 1, slot)
+        delete!(current, removed_tag)
+        @test tags(st) == current
+        @test length(current) == PureAdsorb.nguests(st, 1)
+        # Every surviving slot's host energy still matches its own position tag: the swap moved
+        # `host_energy` together with `refpoints`, not just the position alone.
+        for i in PureAdsorb.guest_range(st, 1)
+            @test st.host_energy[i] == 10.0 * st.refpoints[i][1]
+        end
+    end
+    @test PureAdsorb.nguests(st, 1) == 1
+end

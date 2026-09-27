@@ -57,9 +57,15 @@ sk_audit_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
 """
     audit_energy!(batch, state, guest, ff, n, nmoves; tol = nothing, sk_tol = nothing) -> nothing
 
-Audit system `n` in two stages, in this order.
+Audit system `n` in three stages, in this order.
 
-First, rebuild `state.Sk`'s slice for system `n` from the current poses alone
+First, check `nguests(state, n) <= capacity(state, n)`. Throws an `ArgumentError` naming the
+system, its occupancy and its capacity if it does not: `insert_guest!` already refuses to write
+past capacity, so this only fires if some other code path corrupted `occupancy` directly, but a
+chain that silently saturated its capacity would sample a truncated distribution while still
+looking healthy, so this is checked here too rather than trusted to have held.
+
+Then, rebuild `state.Sk`'s slice for system `n` from the current poses alone
 (`guest_site_positions_charges`, `structure_factor` — the same construction `SystemState`'s
 constructor uses) and compare it element-wise against the running value. Throws an
 `ArgumentError` naming the system, the k-vector index, the running and rebuilt values and the
@@ -80,13 +86,18 @@ value and the discrepancy when they disagree by more than `tol` (default
 `energy_audit_tolerance`). On success, resets `state.energy[n]` to the freshly recomputed value
 and zeroes `state.energy_abs_accum[n]`.
 
-Both stages are fail-fast, never a warning: a discrepancy at either one means the running state
-no longer tracks the true configuration.
+All three stages are fail-fast, never a warning: a discrepancy at any one of them means the
+running state no longer tracks the true configuration.
 """
 function audit_energy!(
         batch::FrameworkBatch{F}, state::SystemState{F}, guest::Guest{F}, ff::ForceField{F}, n::Integer, nmoves::Integer;
         tol::Union{Nothing, F} = nothing, sk_tol::Union{Nothing, F} = nothing
     ) where {F}
+    occ = nguests(state, n)
+    cap = capacity(state, n)
+    occ <= cap ||
+        throw(ArgumentError("energy audit failed for system $n ($F): occupancy $occ exceeds capacity $cap"))
+
     gr = guest_range(state, n)
     kr = kvec_range(state, n)
     krb = batch_kvec_range(batch, n)

@@ -1,3 +1,14 @@
-RUBTAK.cif, trappe.yaml and co2.yaml are copied unchanged from the kUPS
-examples (https://github.com/cusp-ai-oss/kups, commit e183c9a),
+RUBTAK.cif, trappe.yaml, co2.yaml and ch4.yaml are copied unchanged from the
+kUPS examples (https://github.com/cusp-ai-oss/kups, commit e183c9a),
 Copyright 2024-2026 Cusp AI, licensed under the Apache License 2.0.
+
+raspa2_IRMOF-1.cif is copied unchanged from RASPA2
+(https://github.com/iRASPA/RASPA2, structures/mofs/cif/IRMOF-1.cif, commit
+matching the file's own citation to Eddaoudi et al., Science 2002, 295, 469),
+Copyright 2006-2019 David Dubbeldam, Sofia Calero, Thijs Vlugt, Donald E.
+Ellis and Randall Q. Snurr, licensed under the MIT License.
+
+IRMOF-1_P1.cif is derived from raspa2_IRMOF-1.cif by expanding its own listed
+F m -3 m (#225) symmetry operators to a full P1 unit cell
+(bench/irmof1_expand_to_p1.jl); every charge is carried through unchanged
+(the source file's own charge column is all zero).

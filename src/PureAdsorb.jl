@@ -12,6 +12,7 @@ include("constants.jl")
 include("cell.jl")
 include("structure.jl")
 include("forcefield.jl")
+include("fugacity.jl")
 include("ewald.jl")
 include("energy.jl")
 include("reject.jl")
@@ -28,6 +29,6 @@ include("nvt.jl")
 export Framework, read_cif, replicate, ForceField, read_forcefield, Guest, read_guest,
     EwaldParams, FrameworkBatch, widom, WidomResult, SystemState,
     MoveWorkspace, mc_step!, MOVE_TRANSLATION, MOVE_ROTATION, MOVE_REINSERTION,
-    run_nvt!, NVTResult
+    run_nvt!, NVTResult, peng_robinson_fugacity
 
 end

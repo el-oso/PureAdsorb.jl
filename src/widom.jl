@@ -1,5 +1,5 @@
 """
-    WidomResult{T}
+    WidomResult
 
 Per-system result of Widom test-particle insertion, with `W = exp(-ΔU/kT)` the Boltzmann
 insertion weight:
@@ -10,14 +10,19 @@ insertion weight:
   heat of adsorption).
 - `mu_ex_err`, `K_H_err`, `q_st_err`: standard errors of the above, from block statistics.
 - `nsamples`: total insertions used; `nblocks`: number of blocks the standard errors are from.
+
+Every field is `Float64` regardless of the `FrameworkBatch`'s own float type: `K_H` scales with
+`exp(well depth/kT)`, so a strongly binding site can legitimately exceed Float32's range (a
+Henry's constant too large to distinguish from certainty is a physically honest result, not an
+error), and narrowing it to a smaller float type would silently turn that result into `Inf`.
 """
-struct WidomResult{T}
-    mu_ex::T
-    mu_ex_err::T
-    K_H::T
-    K_H_err::T
-    q_st::T
-    q_st_err::T
+struct WidomResult
+    mu_ex::Float64
+    mu_ex_err::Float64
+    K_H::Float64
+    K_H_err::Float64
+    q_st::Float64
+    q_st_err::Float64
     nsamples::Int
     nblocks::Int
 end
@@ -259,7 +264,10 @@ random-pose generator. `guest` must be the same guest (by value) that `batch` wa
 Each insertion's energy is computed on the device in `batch`'s float type, but its Boltzmann
 weight accumulates on the host in Float64 regardless (`boltzmann_weight`), so a well far deeper
 than Float32's overflow point (about 88.7 kT) is still reported correctly; `WidomResult`'s fields
-carry `batch`'s own float type, and a result that does not fit in it throws naming the system.
+are always `Float64`, independent of `batch`'s own float type, so a strongly binding site's `K_H`
+is returned as a finite number rather than silently narrowed to `Inf`. `mu_ex`/`q_st` throw naming
+the system if they come out non-finite, since both scale with the well depth itself and a
+non-finite value there indicates a genuine problem rather than a legitimate range issue.
 
 Each chunk runs two kernels: a phase-0 kernel flags every insertion whose guest sites all come
 no closer than a rigorous rejection radius to every host atom of the matching type (E3's
@@ -374,7 +382,7 @@ function _widom(
     drho2 = adapt(backend, rho2)
     dreach0 = adapt(backend, reach0)
     # Boltzmann weights accumulate in Float64 regardless of `F` (see `boltzmann_weight`); `_reduce`
-    # converts the final per-system results to `F`.
+    # reduces them into a `WidomResult`, whose fields stay `Float64` regardless of `F` too.
     sW = zeros(Float64, nsys, nblocks)
     sUW = zeros(Float64, nsys, nblocks)
     n = zeros(Int, nsys, nblocks)
@@ -429,16 +437,17 @@ function _widom(
         end
         done += m
     end
-    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[batch.framework_of[s]], s, F) for s in 1:nsys]
+    return [_reduce(view(sW, s, :), view(sUW, s, :), view(n, s, :), kT, batch.volumes[batch.framework_of[s]], s) for s in 1:nsys]
 end
 
 # Block-averaged mean and standard error of the Widom weight W and the energy-weighted
 # average UW = ⟨ΔU·exp(-ΔU/kT)⟩, propagated through μ_ex = -kT log W, K_H = V·W/kT and
 # q_st = kT - UW/W via the delta method (first-order error propagation of a ratio of means).
 # `sW`/`sUW` accumulate in Float64 (see `boltzmann_weight`); this runs the whole reduction in
-# Float64 and converts every field to `F` only at the end. `kT`/`V` arrive in `F` (from
-# `FrameworkBatch`/`widom`'s own `kT`), so they are converted here too.
-function _reduce(sW, sUW, n, kT, V, s::Integer, ::Type{F}) where {F}
+# Float64 and returns every field in Float64 (`WidomResult`'s fields are Float64 regardless of
+# `FrameworkBatch`'s own float type). `kT`/`V` arrive in whatever type the caller holds them in
+# (`FrameworkBatch`/`widom`'s own `kT`), so they are converted to Float64 here.
+function _reduce(sW, sUW, n, kT, V, s::Integer)
     nb = length(sW)
     all(>(0), n) || throw(ArgumentError("block $(findfirst(iszero, n)) of $nb has zero samples"))
     kT64, V64 = Float64(kT), Float64(V)
@@ -462,22 +471,21 @@ function _reduce(sW, sUW, n, kT, V, s::Integer, ::Type{F}) where {F}
     # term dominates; the true variance is non-negative, so clamp at zero.
     #
     # mu_ex and q_st scale with the well depth itself (order a few eV even for a very favorable
-    # site), so a value that does not fit `F` indicates a genuine problem and throws rather than
-    # silently narrowing to `±Inf`. The other four fields are not held to the same standard:
-    # K_H/K_H_err scale with W itself, i.e. with exp(well depth/kT), and so can legitimately
-    # exceed any finite float type's range for a strongly binding site (an infinite Henry's
-    # constant in `F` represents an insertion probability too large to distinguish from certainty
-    # in that type, not a computation error); mu_ex_err/q_st_err are a delta-method error
-    # propagation through a ratio of block means, which can diverge to `Inf`/`NaN` in Float64
-    # itself when a system's samples are too few or too skewed to bound its own uncertainty, a
-    # property of the estimator rather than of the float type.
+    # site), so a non-finite value indicates a genuine problem and throws rather than silently
+    # returning `±Inf`/`NaN`. The other four fields are not held to the same standard: K_H/K_H_err
+    # scale with W itself, i.e. with exp(well depth/kT), and so can legitimately be astronomically
+    # large for a strongly binding site (an enormous Henry's constant represents an insertion
+    # probability too large to distinguish from certainty, not a computation error); mu_ex_err/
+    # q_st_err are a delta-method error propagation through a ratio of block means, which can
+    # diverge to `Inf`/`NaN` when a system's samples are too few or too skewed to bound its own
+    # uncertainty, a property of the estimator rather than of any float type.
     mu_ex = -kT64 * log(W)
     q_st = kT64 - ratio
     for (name, v) in ((:mu_ex, mu_ex), (:q_st, q_st))
-        isfinite(F(v)) || throw(ArgumentError("system $s: $name = $v does not fit in $F"))
+        isfinite(v) || throw(ArgumentError("system $s: $name = $v is not finite"))
     end
-    return WidomResult{F}(
-        F(mu_ex), F(kT64 * semW / W), F(V64 * W / kT64), F(V64 * semW / kT64),
-        F(q_st), F(sqrt(max(var_ratio, 0.0))), sum(n), nb
+    return WidomResult(
+        mu_ex, kT64 * semW / W, V64 * W / kT64, V64 * semW / kT64,
+        q_st, sqrt(max(var_ratio, 0.0)), sum(n), nb
     )
 end

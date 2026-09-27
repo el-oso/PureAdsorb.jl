@@ -125,7 +125,8 @@ itself is, rejected or not — a guest site within about 1e-3 Å of a host atom 
 Lennard-Jones term to `Inf`, and `Inf * 0.0` is `NaN`), with each system's blocks drawn from that
 system's own sample order (`system_counts` gives the exact per-system count up front). `widom`
 drives this loop and reduces the accumulated sums into a `WidomResult` per system (`_reduce`),
-converting to `FrameworkBatch`'s float type only at that point. `widom_singlephase` (non-exported, test-only) runs every
+whose fields stay Float64 regardless of `FrameworkBatch`'s own float type — `K_H` can legitimately
+exceed a smaller float type's range for a strongly binding site. `widom_singlephase` (non-exported, test-only) runs every
 insertion through phase 1 directly, skipping phase 0 entirely, so its results can be checked for
 exact equality against `widom`'s.
 

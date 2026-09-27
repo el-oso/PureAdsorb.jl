@@ -31,8 +31,10 @@ adsorption at zero loading.
 `insertion_energy` computes ``\Delta U`` in `FrameworkBatch`'s own float type, but `widom`
 accumulates ``W`` and ``\Delta U\, W`` on the host in Float64 regardless of that type, since
 `exp(-\Delta U/k_B T)` overflows past a well only about 88.7 ``k_B T`` deep in Float32 — well
-within the depths a real binding site reaches. `widom` converts the four block-averaged
-quantities above to `FrameworkBatch`'s float type only at the end.
+within the depths a real binding site reaches. `WidomResult`'s fields — the four block-averaged
+quantities above and their standard errors — stay Float64 regardless of `FrameworkBatch`'s own
+float type, since ``K_H`` scales with ``\exp(\text{well depth}/k_BT)`` and can legitimately
+exceed a smaller float type's range for a strongly binding site.
 
 ## Units
 

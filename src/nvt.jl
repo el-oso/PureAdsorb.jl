@@ -15,7 +15,8 @@ Per-system result of an NVT Monte Carlo run with Widom insertion along the chain
   cycle-block standard error.
 - `mu_ex`, `mu_ex_err`, `K_H`, `K_H_err`, `q_st`, `q_st_err`: as `WidomResult`, but from
   insertions into the chain's occupied configuration (host and every guest), block-averaged over
-  cycles rather than insertions.
+  cycles rather than insertions. Always `Float64`, following `WidomResult`'s own convention,
+  since `K_H` can legitimately exceed a smaller float type's range for a strongly binding site.
 - `acceptance`: per-move-type (translation, rotation, reinsertion) acceptance rate over the
   production phase only.
 - `ncycles`: number of production cycles.
@@ -23,12 +24,12 @@ Per-system result of an NVT Monte Carlo run with Widom insertion along the chain
 struct NVTResult{T}
     energy::T
     energy_err::T
-    mu_ex::T
-    mu_ex_err::T
-    K_H::T
-    K_H_err::T
-    q_st::T
-    q_st_err::T
+    mu_ex::Float64
+    mu_ex_err::Float64
+    K_H::Float64
+    K_H_err::Float64
+    q_st::Float64
+    q_st_err::Float64
     acceptance::SVector{NMOVETYPES, T}
     ncycles::Int
 end
@@ -329,7 +330,7 @@ function run_nvt!(
 
     results = Vector{NVTResult{F}}(undef, nsys)
     for n in 1:nsys
-        wr = _reduce(view(sW, n, :), view(sUW, n, :), view(ncount, n, :), kT, batch.volumes[batch.framework_of[n]], n, F)
+        wr = _reduce(view(sW, n, :), view(sUW, n, :), view(ncount, n, :), kT, batch.volumes[batch.framework_of[n]], n)
         ē, ē_err = block_mean_sem(view(energy_samples, n, :), nblocks)
         acc = state.attempted[n]
         rate = SVector{NMOVETYPES, F}(ntuple(k -> iszero(acc[k]) ? zero(F) : F(state.accepted[n][k]) / F(acc[k]), NMOVETYPES))

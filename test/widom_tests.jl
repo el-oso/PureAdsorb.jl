@@ -55,7 +55,7 @@ end
     @test r.nsamples == 10_000
 end
 
-@testitem "empty box in Float32 stays Float32 throughout" begin
+@testitem "empty box in Float32 returns Float64 WidomResult fields" begin
     using StaticArrays
     A = SMatrix{3, 3}(30.0f0, 0, 0, 0, 30.0f0, 0, 0, 0, 30.0f0)
     fw = Framework{Float32}(A, SVector{3, Float32}[], String[], String[], Float32[])
@@ -65,7 +65,7 @@ end
     r = widom(b, g; T = 300.0f0, ninsert = 10_000, seed = 1)[1]
     kT = Float32(PureAdsorb.KB) * 300.0f0
     for field in (:mu_ex, :mu_ex_err, :K_H, :K_H_err, :q_st, :q_st_err)
-        @test getfield(r, field) isa Float32
+        @test getfield(r, field) isa Float64
     end
     @test r.K_H ≈ 30.0f0^3 / kT
 end
@@ -116,8 +116,9 @@ end
 @testitem "a deep well stays finite in Float32" begin
     using StaticArrays
     # Single LJ atom, ε = 0.2 eV at T = 20 K: well depth ε/kT ≈ 116, well past Float32's
-    # exp() overflow point (about 88.7): a Boltzmann weight accumulated in Float32 would overflow
-    # to Inf32, giving mu_ex = -Inf32.
+    # exp() overflow point (about 88.7), so K_H ~ exp(well depth/kT) is far outside Float32's
+    # range. `WidomResult`'s fields are Float64 regardless of the batch's own float type
+    # (`F = Float32` here), so this stays finite rather than silently narrowing to Inf32.
     σ, ε, rc, Tk = 3.4, 0.2, 12.0, 20.0
     L32 = 40.0f0
     A32 = SMatrix{3, 3}(L32, 0, 0, 0, L32, 0, 0, 0, L32)
@@ -127,7 +128,7 @@ end
     b32 = FrameworkBatch([fw32], ff32, g32, EwaldParams(cutoff = Float32(rc), precision = 1.0f-6))
     r32 = widom(b32, g32; T = Float32(Tk), ninsert = 100_000, seed = 7, nblocks = 10)[1]
     @test isfinite(r32.mu_ex)
-    @test r32.mu_ex isa Float32
+    @test r32.mu_ex isa Float64
 
     L64 = 40.0
     A64 = SMatrix{3, 3}(L64, 0, 0, 0, L64, 0, 0, 0, L64)
@@ -138,9 +139,9 @@ end
     r64 = widom(b64, g64; T = Tk, ninsert = 100_000, seed = 8, nblocks = 10)[1]
     @test abs(r32.mu_ex - r64.mu_ex) < 4 * hypot(r32.mu_ex_err, r64.mu_ex_err)
 
-    # K_H itself scales with exp(well depth/kT), so it legitimately exceeds Float32's range for
-    # this well: an infinite Henry's constant in Float32 is the honest representation, not a bug.
-    @test isinf(r32.K_H)
+    # K_H itself scales with exp(well depth/kT): astronomically large for this well, but no
+    # longer silently narrowed to Inf now that WidomResult's fields are always Float64.
+    @test isfinite(r32.K_H)
     @test isfinite(r64.K_H)
 end
 
@@ -151,7 +152,7 @@ end
     n = [50, 50]
     sW = [Inf, Inf]
     sUW = [-Inf, -Inf]
-    @test_throws "system 4" PureAdsorb._reduce(sW, sUW, n, 1.0, 1.0, 4, Float64)
+    @test_throws "system 4" PureAdsorb._reduce(sW, sUW, n, 1.0, 1.0, 4)
 end
 
 @testitem "RUBTAK CO2 runs and is finite" begin

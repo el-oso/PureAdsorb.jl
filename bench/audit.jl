@@ -52,6 +52,17 @@ reciprocal_move_delta_bang_types(::Type{T}) where {T} = (Vector{Complex{T}}, rec
 guest_sites_at_types(::Type{T}) where {T} = (PureAdsorb.Guest{T, 3}, SVector{3, T}, SVector{4, T})
 total_reciprocal_energy_types(::Type{T}) where {T} = (Vector{T}, Vector{Complex{T}}, Vector{Complex{T}})
 
+# Task 5's moves (`src/moves.jl`): the proposal/acceptance primitives `move_kernel!` calls, both
+# precisions. The kernels themselves are not audited here (a `@kernel function`'s calling
+# convention is not a plain function signature `StrictMode.findings` can probe).
+propose_move_types(::Type{T}) where {T} = (
+    PureAdsorb.ChainRNG, Int32, SVector{3, T}, SVector{4, T}, T, T, SMatrix{3, 3, T, 9},
+)
+select_and_propose_types(::Type{T}) where {T} = (
+    Int, Vector{Int32}, Vector{UInt64}, Vector{UInt64}, Int32, Vector{T}, Vector{T}, SMatrix{3, 3, T, 9},
+    Vector{SVector{3, T}}, Vector{SVector{4, T}}, Int,
+)
+
 # `SystemState`'s field types for a concrete precision, matching exactly what `SystemState`'s
 # own constructor produces (`src/state.jl`), for auditing its accessors without building a real
 # batch and state just to call `typeof` on them.
@@ -133,6 +144,26 @@ results = vcat(
     signature_findings(PureAdsorb.shoemake_quaternion, (Float32, Float32, Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.rand_quaternion, (PureAdsorb.ChainRNG, Type{Float64}); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.rand_quaternion, (PureAdsorb.ChainRNG, Type{Float32}); guarantees = (:typestable, :noalloc)),
+    # Task 5's moves (`src/moves.jl`).
+    signature_findings(PureAdsorb.qmul, (SVector{4, Float64}, SVector{4, Float64}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.qmul, (SVector{4, Float32}, SVector{4, Float32}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.quaternion_pow, (SVector{4, Float64}, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.quaternion_pow, (SVector{4, Float32}, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_translation, (PureAdsorb.ChainRNG, SVector{3, Float64}, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_translation, (PureAdsorb.ChainRNG, SVector{3, Float32}, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_rotation, (PureAdsorb.ChainRNG, SVector{4, Float64}, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_rotation, (PureAdsorb.ChainRNG, SVector{4, Float32}, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_reinsertion, (PureAdsorb.ChainRNG, SMatrix{3, 3, Float64, 9}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_reinsertion, (PureAdsorb.ChainRNG, SMatrix{3, 3, Float32, 9}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_move, propose_move_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.propose_move, propose_move_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.metropolis_accept, (Float64, Float64, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.metropolis_accept, (Float32, Float32, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.onehot_movetype, (Int32,); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.select_and_propose, select_and_propose_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.select_and_propose, select_and_propose_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float64}, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float32}, Int); guarantees = (:typestable, :noalloc)),
 )
 StrictMode.format_findings(stdout, results; format = :text)
 exit(StrictMode.nfailures(results))

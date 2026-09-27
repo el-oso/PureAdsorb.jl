@@ -5,7 +5,7 @@ using KernelAbstractions
 using Adapt
 using SpecialFunctions: erfc
 using Random: Xoshiro, AbstractRNG
-using LinearAlgebra: det, norm, cross, dot, I, Diagonal
+using LinearAlgebra: det, norm, normalize, cross, dot, I, Diagonal
 using YAML
 
 include("constants.jl")
@@ -21,9 +21,11 @@ include("widom.jl")
 include("state.jl")
 include("rng.jl")
 include("guest.jl")
+include("moves.jl")
 include("audit.jl")
 
 export Framework, read_cif, replicate, ForceField, read_forcefield, Guest, read_guest,
-    EwaldParams, FrameworkBatch, widom, WidomResult, SystemState
+    EwaldParams, FrameworkBatch, widom, WidomResult, SystemState,
+    MoveWorkspace, mc_step!, MOVE_TRANSLATION, MOVE_ROTATION, MOVE_REINSERTION
 
 end

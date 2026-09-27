@@ -102,12 +102,15 @@ function guest_guest_energy(
 end
 
 # Guest-guest real-space delta from moving guest `i` (global index into `refpoints`/
-# `orientations`) of system `n` from `(oldpos, oldq)` to `(newpos, newq)`: every OTHER guest in
-# `gr` pairs once against the old pose and once against the new one. The constant terms
-# (self energy, exclusion, tail correction, net charge) do not depend on any guest's pose and so
-# never appear in a `ΔU`.
+# `orientations`) of system `n` from `(oldpos, oldq)` to `(newpos, newq)`: every OTHER guest whose
+# index appears in `gr` pairs once against the old pose and once against the new one. `gr` is
+# normally system `n`'s full `guest_range`, but any range or strided range over it is exact too —
+# summing this over a partition of `guest_range(state, n)` into disjoint strided ranges (as
+# `moves.jl`'s workgroup fan-out does) gives the same total, since the pair sum is just a plain
+# sum over `gr`. The constant terms (self energy, exclusion, tail correction, net charge) do not
+# depend on any guest's pose and so never appear in a `ΔU`.
 function guest_guest_move_delta(
-        guest::Guest{T, N}, refpoints, orientations, gr::UnitRange, i::Integer,
+        guest::Guest{T, N}, refpoints, orientations, gr, i::Integer,
         oldpos::SVector{3, T}, oldq::SVector{4, T}, newpos::SVector{3, T}, newq::SVector{4, T},
         sigma, epsilon, guest_types::SVector{N, Int}, cutoff::T, ewald_cutoff::T, A, invA, alpha::T
     ) where {T, N}
@@ -126,27 +129,26 @@ function guest_guest_move_delta(
 end
 
 """
-    host_guest_realspace_energy(pos, q, guest, sigma, epsilon, cutoff, ewald_cutoff,
-                                 positions, types, charges, atom_base, natoms, A, invA, alpha) -> energy
+    host_guest_realspace_energy_range(pos, q, guest, sigma, epsilon, cutoff, ewald_cutoff,
+                                       positions, types, charges, atom_range, A, invA, alpha) -> energy
 
-Lennard-Jones plus real-space (screened-Coulomb) energy between one guest pose and the host
-atoms `positions[(atom_base+1):(atom_base+natoms)]`: `insertion_energy`'s real-space loop with
-the reciprocal-space cross term omitted, since Milestone B's reciprocal energy is a single sum
-over the running total structure factor instead (`total_reciprocal_energy`,
-`reciprocal_move_delta!`). Isolating this from the reciprocal term is what lets the per-move
-throughput measurement (`bench/guest_bench.jl`) time real-space and reciprocal work separately.
-All arguments are isbits scalars, SVectors, or plain/view array reads with no throwing branches,
-so this runs unchanged inside a GPU kernel.
+`host_guest_realspace_energy`'s loop body, over the caller-supplied `atom_range` (host atom
+indices into `positions`/`types`/`charges`) rather than a whole system's contiguous block: any
+range is exact, since the sum is just a plain sum over `atom_range`, so summing this over a
+partition of a system's atom block into disjoint strided ranges (`moves.jl`'s workgroup fan-out)
+gives the same total as one call over the whole block. All arguments are isbits scalars,
+SVectors, or plain/view array reads with no throwing branches, so this runs unchanged inside a
+GPU kernel.
 """
-function host_guest_realspace_energy(
+function host_guest_realspace_energy_range(
         pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
-        positions, types, charges, atom_base::Integer, natoms::Integer, A, invA, alpha
+        positions, types, charges, atom_range, A, invA, alpha
     ) where {T, N}
     rc_lj2 = cutoff * cutoff
     rc_ew2 = ewald_cutoff * ewald_cutoff
     gsites = map(s -> rotate(q, s), guest.sites)
     E_lj = zero(T); E_sr = zero(T)
-    for j in (atom_base + 1):(atom_base + natoms)
+    for j in atom_range
         Δ0 = minimum_image(A, invA, pos - positions[j])
         ht = types[j]; hqj = charges[j]
         for s in 1:N
@@ -165,6 +167,28 @@ function host_guest_realspace_energy(
         end
     end
     return E_lj + T(KE) * E_sr
+end
+
+"""
+    host_guest_realspace_energy(pos, q, guest, sigma, epsilon, cutoff, ewald_cutoff,
+                                 positions, types, charges, atom_base, natoms, A, invA, alpha) -> energy
+
+Lennard-Jones plus real-space (screened-Coulomb) energy between one guest pose and the host
+atoms `positions[(atom_base+1):(atom_base+natoms)]`: `insertion_energy`'s real-space loop with
+the reciprocal-space cross term omitted, since Milestone B's reciprocal energy is a single sum
+over the running total structure factor instead (`total_reciprocal_energy`,
+`reciprocal_move_delta!`). Isolating this from the reciprocal term is what lets the per-move
+throughput measurement (`bench/guest_bench.jl`) time real-space and reciprocal work separately.
+`host_guest_realspace_energy_range` over `(atom_base+1):(atom_base+natoms)`.
+"""
+function host_guest_realspace_energy(
+        pos::SVector{3, T}, q::SVector{4, T}, guest::Guest{T, N}, sigma, epsilon, cutoff, ewald_cutoff,
+        positions, types, charges, atom_base::Integer, natoms::Integer, A, invA, alpha
+    ) where {T, N}
+    return host_guest_realspace_energy_range(
+        pos, q, guest, sigma, epsilon, cutoff, ewald_cutoff, positions, types, charges,
+        (atom_base + 1):(atom_base + natoms), A, invA, alpha
+    )
 end
 
 """

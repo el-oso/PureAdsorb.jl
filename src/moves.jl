@@ -617,6 +617,16 @@ end
 # range (`docs/superpowers/specs/2026-09-27-milestone-c-gcmc.md`, "What is genuinely hard: a
 # variable particle count"): correctness first, GPU divergence measured before it is optimized away.
 #
+# That single work-item is also where most of an exchange attempt's cost now sits. Measured on an
+# RTX 4070 (RUBTAK 3×3×3 + CO2, nsys=1, `bench/gpu/exchange_bench.jl`/`exchange_bench_decompose.jl`):
+# `mc_insert_kernel!`'s own launch+execution is ~15.5 ms, `mc_delete_kernel!`'s (no host-atom loop,
+# since it reads `host_energy`'s cache) ~10.4 ms, both dominated by one GPU thread serially summing
+# the reciprocal-space loop over every one of the framework's ~4,600 k-vectors — an order of
+# magnitude more than `mc_step!`'s own ~187 us/move on the same hardware, which fans that same kind
+# of loop across a workgroup (`evaluate_move_kernel!`). Raising exchange throughput to `mc_step!`'s
+# order of magnitude needs the same workgroup fan-out and cross-workgroup reduction `mc_step!`
+# already has, not a change to how `mc_insert!`/`mc_delete!` prepare their host-side arguments.
+#
 # This file's own opening comment argues that translation, rotation and reinsertion each satisfy
 # detailed balance ON THEIR OWN, so applying any fixed (even non-random) sequence of them still
 # preserves the target distribution. That argument does NOT extend to insertion and deletion:
@@ -741,6 +751,26 @@ device-kernel-safe at all) on every one of a chain's insertion/deletion attempts
 function exchange_constant_coeffs(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer) where {T, N}
     p = exchange_constant_term(ff, batch, guest, n, 0)
     q = exchange_constant_term(ff, batch, guest, n, 1) - p
+    return p, q
+end
+
+"""
+    exchange_constant_coeffs(ff, batch, guest) -> (p::Vector{T}, q::Vector{T})
+
+`exchange_constant_coeffs(ff, batch, guest, n)` for every one of `batch.nsys` systems, from a
+HOST-resident `batch` (this indexes `batch.charges`/`batch.types` etc. by scalar, which a
+device-resident array does not support). `batch` and `guest` are fixed for an entire run, so
+`mc_insert!`/`mc_delete!`/`mc_exchange!` take the result as a precomputed pair rather than
+deriving it internally on every call -- see their own docstrings for why that distinction
+matters when `batch` is device-resident.
+"""
+function exchange_constant_coeffs(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}) where {T, N}
+    nsys = batch.nsys
+    p = Vector{T}(undef, nsys)
+    q = Vector{T}(undef, nsys)
+    for n in 1:nsys
+        p[n], q[n] = exchange_constant_coeffs(ff, batch, guest, n)
+    end
     return p, q
 end
 
@@ -954,8 +984,8 @@ no-op when the removed slot already is the last one), decrements `occupancy[n]`,
 end
 
 """
-    mc_insert!(batch, state, guest, guest_types, ff, fugacity, kT; backend = CPU()) -> nothing
-    mc_delete!(batch, state, guest, guest_types, ff, fugacity, kT; backend = CPU()) -> nothing
+    mc_insert!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend = CPU()) -> nothing
+    mc_delete!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend = CPU()) -> nothing
 
 One μVT insertion (`mc_insert!`) or deletion (`mc_delete!`) attempt for every chain in `state`, at
 fixed fugacity `fugacity[n]` per system in PASCALS — the units `peng_robinson_fugacity` returns.
@@ -964,12 +994,21 @@ need (`PASCAL`, `src/constants.jl`) exactly once, here, at this entry point; nei
 the prefactor functions do any unit conversion of their own. `ws`-free, unlike `mc_step!`: each
 chain's attempt is one work-item with no workgroup fan-out (`mc_insert_kernel!`/
 `mc_delete_kernel!`'s own docstrings). `batch` and `state` must already be resident on `backend`,
-matching `mc_step!`'s own contract; a host-resident copy for the pose-independent term's affine
-coefficients (`exchange_constant_coeffs`, a scalar-indexing computation `FrameworkBatch`'s device
-storage cannot support) is made internally via `adapt(CPU(), batch)`, a no-op reconstruction when
-`batch` is already CPU-resident. `guest` must already be reindexed to `batch`'s compact type
-(`compact_guest`). `ff` is the force field `batch` was built from. `kT` is Boltzmann's constant
-times the temperature, in the same energy units as `batch`/`guest`.
+matching `mc_step!`'s own contract. `const_p`/`const_q` are the pose-independent term's affine
+coefficients (`exchange_constant_coeffs(ff, host_batch, guest)`, one entry per system), already
+resident on `backend` — the CALLER computes these ONCE per run from a host-resident `batch` (a
+scalar-indexing computation `FrameworkBatch`'s device storage cannot support) and adapts them once,
+exactly as `run_nvt!` precomputes `insertion_constant_term` before its cycle loop: `batch` and
+`guest` do not change between calls, so re-deriving `const_p`/`const_q` on every attempt would force
+a host round-trip of a device-resident `batch` every time. Measured on an RTX 4070 (RUBTAK 3×3×3 +
+CO2, nsys=1, `bench/gpu/exchange_bench.jl`): deriving them via `adapt(CPU(), batch)` inside this
+function costs 18.7 ms/call; taking them as precomputed device arrays instead costs 12.8 ms/call.
+That remaining cost is `mc_insert_kernel!`/`mc_delete_kernel!`'s own single-work-item-per-chain
+reciprocal-space loop, not a host round trip (this file's own comment on the μVT exchange moves,
+above `no_guest_sites`) — closing the rest of the gap to `mc_step!`'s ~187 us/move needs the same
+workgroup fan-out `mc_step!` already has. `guest` must already be reindexed to `batch`'s compact
+type (`compact_guest`). `kT` is Boltzmann's constant times the temperature, in the same energy
+units as `batch`/`guest`.
 
 Attempting a deletion on an empty chain is handled by forcing that chain's acceptance to `false`
 (`mc_delete_kernel!`'s own docstring), not by throwing: a kernel may not throw, so only
@@ -981,19 +1020,15 @@ distribution, so this is fail-fast rather than a diagnostic left for a later aud
 """
 function mc_insert!(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        ff::ForceField{T}, fugacity, kT::T; backend = CPU()
+        const_p, const_q, fugacity, kT::T; backend = CPU()
     ) where {T, N}
     nsys = state.nsys
-    host_batch = adapt(CPU(), batch)
-    p = T[exchange_constant_coeffs(ff, host_batch, guest, n)[1] for n in 1:nsys]
-    q = T[exchange_constant_coeffs(ff, host_batch, guest, n)[2] for n in 1:nsys]
-    dp = adapt(backend, p); dq = adapt(backend, q)
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
     dhits = adapt(backend, zeros(UInt8, nsys))
     mc_insert_kernel!(backend)(
         state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
         state.Sk, state.sk_abs_accum, state.rng_counter, dhits, batch, guest, guest_types, state.guest_offsets,
-        state.k_offsets, state.rng_seed, dfug, kT, dp, dq; ndrange = nsys
+        state.k_offsets, state.rng_seed, dfug, kT, const_p, const_q; ndrange = nsys
     )
     KernelAbstractions.synchronize(backend)
     hits = Array(dhits)
@@ -1009,30 +1044,28 @@ end
 
 function mc_delete!(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        ff::ForceField{T}, fugacity, kT::T; backend = CPU()
+        const_p, const_q, fugacity, kT::T; backend = CPU()
     ) where {T, N}
     nsys = state.nsys
-    host_batch = adapt(CPU(), batch)
-    p = T[exchange_constant_coeffs(ff, host_batch, guest, n)[1] for n in 1:nsys]
-    q = T[exchange_constant_coeffs(ff, host_batch, guest, n)[2] for n in 1:nsys]
-    dp = adapt(backend, p); dq = adapt(backend, q)
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
     mc_delete_kernel!(backend)(
         state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
         state.Sk, state.sk_abs_accum, state.rng_counter, batch, guest, guest_types, state.guest_offsets,
-        state.k_offsets, state.rng_seed, dfug, kT, dp, dq; ndrange = nsys
+        state.k_offsets, state.rng_seed, dfug, kT, const_p, const_q; ndrange = nsys
     )
     KernelAbstractions.synchronize(backend)
     return nothing
 end
 
 """
-    mc_exchange!(rng::AbstractRNG, batch, state, guest, guest_types, ff, fugacity, kT;
+    mc_exchange!(rng::AbstractRNG, batch, state, guest, guest_types, const_p, const_q, fugacity, kT;
                 backend = CPU()) -> Bool
 
 The μVT exchange move: draws ONE fair coin from `rng` (`rand(rng, Bool)`) — shared across every
 chain in the batch for this launch, exactly as `run_nvt!` draws one shared `movetype` per call to
 `mc_step!` — and calls `mc_insert!` on `true`, `mc_delete!` on `false`. Returns which one ran.
+`const_p`/`const_q` are forwarded unchanged to whichever one runs; see `mc_insert!`'s docstring for
+why they are precomputed once per run rather than derived here.
 
 This is the ONLY sanctioned way to attempt insertion/deletion moves: `mc_insert!`/`mc_delete!`
 individually do NOT satisfy detailed balance (this file's own opening comment on the μVT moves), so
@@ -1043,13 +1076,13 @@ launch, or substituting a biased draw, breaks that assumption silently.
 """
 function mc_exchange!(
         rng::AbstractRNG, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N},
-        guest_types::SVector{N, Int}, ff::ForceField{T}, fugacity, kT::T; backend = CPU()
+        guest_types::SVector{N, Int}, const_p, const_q, fugacity, kT::T; backend = CPU()
     ) where {T, N}
     do_insert = rand(rng, Bool)
     if do_insert
-        mc_insert!(batch, state, guest, guest_types, ff, fugacity, kT; backend)
+        mc_insert!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend)
     else
-        mc_delete!(batch, state, guest, guest_types, ff, fugacity, kT; backend)
+        mc_delete!(batch, state, guest, guest_types, const_p, const_q, fugacity, kT; backend)
     end
     return do_insert
 end

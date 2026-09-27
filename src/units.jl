@@ -27,9 +27,9 @@ function peng_robinson_fugacity(P::Unitful.Pressure, Tgas::Unitful.Temperature, 
 end
 
 """
-    mc_insert!(batch, state, guest, guest_types, ff, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
-    mc_delete!(batch, state, guest, guest_types, ff, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
-    mc_exchange!(rng, batch, state, guest, guest_types, ff, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
+    mc_insert!(batch, state, guest, guest_types, const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
+    mc_delete!(batch, state, guest, guest_types, const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
+    mc_exchange!(rng, batch, state, guest, guest_types, const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT; kwargs...)
 
 Unitful boundary for the μVT exchange moves' fugacity argument: strips each system's fugacity to a
 bare pascal `T` and forwards to the bare-Float method, which does the SAME `PASCAL`-scaled
@@ -39,21 +39,21 @@ themselves, keeps every kernel argument and device array a plain `T`.
 """
 function mc_insert!(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        ff::ForceField{T}, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
+        const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
     ) where {T, N}
-    return mc_insert!(batch, state, guest, guest_types, ff, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
+    return mc_insert!(batch, state, guest, guest_types, const_p, const_q, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
 end
 
 function mc_delete!(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        ff::ForceField{T}, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
+        const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
     ) where {T, N}
-    return mc_delete!(batch, state, guest, guest_types, ff, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
+    return mc_delete!(batch, state, guest, guest_types, const_p, const_q, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
 end
 
 function mc_exchange!(
         rng::AbstractRNG, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
-        ff::ForceField{T}, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
+        const_p, const_q, fugacity::AbstractVector{<:Unitful.Pressure}, kT::T; kwargs...
     ) where {T, N}
-    return mc_exchange!(rng, batch, state, guest, guest_types, ff, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
+    return mc_exchange!(rng, batch, state, guest, guest_types, const_p, const_q, T.(ustrip.(u"Pa", fugacity)), kT; kwargs...)
 end

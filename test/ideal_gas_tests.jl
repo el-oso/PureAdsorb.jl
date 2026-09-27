@@ -36,12 +36,13 @@
         gc = PureAdsorb.compact_guest(b, g)
         N = length(g.sites)
         gt = SVector{N, Int}(b.guest_types)
+        p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
         Ns = Vector{Int}(undef, K)
         for k in 1:K
             st = SystemState(b, g, [0], ff; T = F(1), seed = seed0 + k, capacities = [capacity])
             rng = Xoshiro(seed0 + 7 * k + 3)
             for _ in 1:nattempts
-                PureAdsorb.mc_exchange!(rng, b, st, gc, gt, ff, [fugacity_pa], kT)
+                PureAdsorb.mc_exchange!(rng, b, st, gc, gt, p, q, [fugacity_pa], kT)
             end
             Ns[k] = st.occupancy[1]
         end
@@ -134,10 +135,11 @@ end
     st = SystemState(b, g, [0], ff; T = F(1), seed = 99, capacities = [40])
     gc = PureAdsorb.compact_guest(b, g)
     gt = SVector{1, Int}(b.guest_types)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
     rng = Xoshiro(42)
     maxocc = Ref(0)
     for _ in 1:5000
-        PureAdsorb.mc_exchange!(rng, b, st, gc, gt, ff, [1.0e4], F(PureAdsorb.KB * 298.15))
+        PureAdsorb.mc_exchange!(rng, b, st, gc, gt, p, q, [1.0e4], F(PureAdsorb.KB * 298.15))
         maxocc[] = max(maxocc[], st.occupancy[1])
         @test st.energy[1] === 0.0
     end

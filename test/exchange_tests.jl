@@ -34,21 +34,25 @@
 
     # Attempts `mc_insert!`/`mc_delete!` until the FIRST accepted move, returning its `ΔU` -- an
     # acceptance that never happens in `maxtries` attempts is a test-setup error (widen the
-    # fugacity), not something to silently skip.
+    # fugacity), not something to silently skip. `ff` is used once, here, to precompute the
+    # affine coefficients `mc_insert!`/`mc_delete!` now take as an argument rather than
+    # rederiving on every call (job 1).
     function insert_until_accept!(b, st, gc, gt, ff, fug::F, kT::F; backend = CPU(), maxtries = 500) where {F}
+        p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
         n0 = st.occupancy[1]
         for _ in 1:maxtries
             e0 = st.energy[1]
-            PureAdsorb.mc_insert!(b, st, gc, gt, ff, F[fug], kT; backend)
+            PureAdsorb.mc_insert!(b, st, gc, gt, p, q, F[fug], kT; backend)
             st.occupancy[1] == n0 + 1 && return st.energy[1] - e0
         end
         return error("insert_until_accept!: no insertion accepted in $maxtries attempts")
     end
     function delete_until_accept!(b, st, gc, gt, ff, fug::F, kT::F; backend = CPU(), maxtries = 500) where {F}
+        p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
         n0 = st.occupancy[1]
         for _ in 1:maxtries
             e0 = st.energy[1]
-            PureAdsorb.mc_delete!(b, st, gc, gt, ff, F[fug], kT; backend)
+            PureAdsorb.mc_delete!(b, st, gc, gt, p, q, F[fug], kT; backend)
             st.occupancy[1] == n0 - 1 && return st.energy[1] - e0
         end
         return error("delete_until_accept!: no deletion accepted in $maxtries attempts")
@@ -124,9 +128,10 @@ end
 
 @testitem "mc_delete! on an empty chain is a no-op" setup = [ExchangeOracle] begin
     b, st, g, guest_c, guest_types, ff = rubtak_co2_exchange_setup(Float64; ncounts = [0], capacities = [4], seed = 5)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     kT = PureAdsorb.KB * 298.15
     before = deepcopy(st)
-    PureAdsorb.mc_delete!(b, st, guest_c, guest_types, ff, [1.0], kT)   # must not throw
+    PureAdsorb.mc_delete!(b, st, guest_c, guest_types, p, q, [1.0], kT)   # must not throw
     @test iszero(st.occupancy[1])
     @test st.energy[1] == before.energy[1]
     @test st.Sk == before.Sk
@@ -137,10 +142,11 @@ end
     ExchangeOracle,
 ] begin
     b, st, g, guest_c, guest_types, ff = rubtak_co2_exchange_setup(Float64; ncounts = [0], capacities = [3], seed = 5)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     kT = PureAdsorb.KB * 298.15
     @test_throws "hit capacity" begin
         for _ in 1:50
-            PureAdsorb.mc_insert!(b, st, guest_c, guest_types, ff, [1.0e12], kT)
+            PureAdsorb.mc_insert!(b, st, guest_c, guest_types, p, q, [1.0e12], kT)
         end
     end
 end
@@ -149,13 +155,14 @@ end
     ExchangeOracle,
 ] begin
     b, st, g, guest_c, guest_types, ff, V = ideal_gas_setup(Float64; capacities = [25])
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     kT = PureAdsorb.KB * 298.15
     fV_over_kT = 20.0   # <N> = fV/kT for an ideal gas: comfortably above capacity=25's tail
     fugacity_pa = fV_over_kT * kT / V / PureAdsorb.PASCAL
     rng = Xoshiro(1)
     @test_throws "hit capacity" begin
         for _ in 1:500
-            PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, ff, [fugacity_pa], kT)
+            PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, p, q, [fugacity_pa], kT)
         end
     end
     @test st.occupancy[1] == 25   # aborted AT capacity, not merely rejected forever below it
@@ -165,11 +172,12 @@ end
     ExchangeOracle,
 ] begin
     b, st, g, guest_c, guest_types, ff = rubtak_co2_exchange_setup(Float64; ncounts = [3], capacities = [40], seed = 8)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     kT = PureAdsorb.KB * 298.15
     rng = Xoshiro(1234)
     ncalls = 400
     n_ins = count(
-        _ -> PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, ff, [2.0e4], kT),
+        _ -> PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, p, q, [2.0e4], kT),
         1:ncalls
     )
     # p_ins = p_del = 1/2 is what log_insertion_prefactor/log_deletion_prefactor assume; a 4-sigma
@@ -182,10 +190,11 @@ end
     ExchangeOracle,
 ] begin
     b, st, g, guest_c, guest_types, ff = rubtak_co2_exchange_setup(Float64; ncounts = [3], capacities = [15], seed = 42)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     kT = PureAdsorb.KB * 298.15
     rng = Xoshiro(7)
     for _ in 1:600
-        PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, ff, [2.0e4], kT)
+        PureAdsorb.mc_exchange!(rng, b, st, guest_c, guest_types, p, q, [2.0e4], kT)
     end
     naccept_ish = 300   # attempts, not accepted moves -- a loose over-estimate is fine for a tolerance scale
     PureAdsorb.audit_energy!(b, st, g, ff, 1, naccept_ish)   # must not throw
@@ -211,15 +220,17 @@ end
 
     b, st_cpu, g, guest_c, guest_types, ff = rubtak_co2_exchange_setup(Float64; ncounts = [3], capacities = [10], seed = 3)
     st_gpu = deepcopy(st_cpu)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
     db = PureAdsorb.adapt(backend, b)
     dst = PureAdsorb.adapt(backend, st_gpu)
+    dp = PureAdsorb.adapt(backend, p); dq = PureAdsorb.adapt(backend, q)
     kT = PureAdsorb.KB * 298.15
     rng_cpu = Xoshiro(99)
     rng_gpu = Xoshiro(99)
 
     for _ in 1:200
-        PureAdsorb.mc_exchange!(rng_cpu, b, st_cpu, guest_c, guest_types, ff, [2.0e4], kT; backend = CPU())
-        PureAdsorb.mc_exchange!(rng_gpu, db, dst, guest_c, guest_types, ff, [2.0e4], kT; backend)
+        PureAdsorb.mc_exchange!(rng_cpu, b, st_cpu, guest_c, guest_types, p, q, [2.0e4], kT; backend = CPU())
+        PureAdsorb.mc_exchange!(rng_gpu, db, dst, guest_c, guest_types, dp, dq, [2.0e4], kT; backend)
     end
 
     @test Array(dst.occupancy) == st_cpu.occupancy

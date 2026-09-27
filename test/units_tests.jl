@@ -35,17 +35,18 @@ end
     using Unitful
     b, st_bare, g, gc, gt, ff = units_probe_setup(Float64)
     st_unitful = deepcopy(st_bare)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
     kT = PureAdsorb.KB * 298.15
     fug_pa = 2.0e4
 
     rng_bare = Xoshiro(1); rng_unitful = Xoshiro(1)
     for _ in 1:30
-        PureAdsorb.mc_insert!(b, st_bare, gc, gt, ff, [fug_pa], kT)
-        PureAdsorb.mc_insert!(b, st_unitful, gc, gt, ff, [fug_pa * u"Pa"], kT)
-        PureAdsorb.mc_delete!(b, st_bare, gc, gt, ff, [fug_pa], kT)
-        PureAdsorb.mc_delete!(b, st_unitful, gc, gt, ff, [fug_pa * u"Pa"], kT)
-        PureAdsorb.mc_exchange!(rng_bare, b, st_bare, gc, gt, ff, [fug_pa], kT)
-        PureAdsorb.mc_exchange!(rng_unitful, b, st_unitful, gc, gt, ff, [fug_pa * u"Pa"], kT)
+        PureAdsorb.mc_insert!(b, st_bare, gc, gt, p, q, [fug_pa], kT)
+        PureAdsorb.mc_insert!(b, st_unitful, gc, gt, p, q, [fug_pa * u"Pa"], kT)
+        PureAdsorb.mc_delete!(b, st_bare, gc, gt, p, q, [fug_pa], kT)
+        PureAdsorb.mc_delete!(b, st_unitful, gc, gt, p, q, [fug_pa * u"Pa"], kT)
+        PureAdsorb.mc_exchange!(rng_bare, b, st_bare, gc, gt, p, q, [fug_pa], kT)
+        PureAdsorb.mc_exchange!(rng_unitful, b, st_unitful, gc, gt, p, q, [fug_pa * u"Pa"], kT)
     end
     @test st_bare.occupancy == st_unitful.occupancy
     @test st_bare.energy == st_unitful.energy
@@ -56,10 +57,11 @@ end
 @testitem "the Unitful boundary never reaches FrameworkBatch or SystemState's arrays" setup = [UnitsOracle] begin
     using Unitful: Quantity
     b, st, g, gc, gt, ff = units_probe_setup(Float64)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, gc)
     kT = PureAdsorb.KB * 298.15
     rng = Xoshiro(1)
     for _ in 1:10
-        PureAdsorb.mc_exchange!(rng, b, st, gc, gt, ff, [2.0e4 * Unitful.u"Pa"], kT)
+        PureAdsorb.mc_exchange!(rng, b, st, gc, gt, p, q, [2.0e4 * Unitful.u"Pa"], kT)
     end
     for x in (b, st)
         for fname in fieldnames(typeof(x))

@@ -206,7 +206,11 @@ end
 Log of the μVT insertion acceptance ratio's combinatorial prefactor
 (`docs/superpowers/specs/2026-09-27-milestone-c-gcmc.md`, "Acceptance ratios"), `N` the system's
 occupancy BEFORE the insertion (so `N+1` is the occupancy the move would produce):
-`A_ins = min(1, exp(log_insertion_prefactor(f, V, kT, N) - ΔU/kT))`.
+`A_ins = min(1, exp(log_insertion_prefactor(f, V, kT, N) - ΔU/kT))`. `f` is fugacity in eV·Å⁻³ (the
+same units as `kT/V`), NOT the pascals `peng_robinson_fugacity` returns — `mc_insert!`/`mc_delete!`
+are the only places that cross a caller's pascal-valued fugacity into this eV·Å⁻³ convention
+(`PASCAL`, `src/constants.jl`), so this function and `log_deletion_prefactor` do no unit
+conversion of their own.
 """
 function log_insertion_prefactor(f::T, V::T, kT::T, N::Integer) where {T}
     return log(f * V) - log(T(N) + one(T)) - log(kT)
@@ -221,7 +225,8 @@ would add back is that insertion's detailed-balance partner, so this is defined 
 negative of `log_insertion_prefactor` evaluated at `N-1` guests, not as a second, independently
 typed formula that could disagree with the first: `log_insertion_prefactor(f, V, kT, N-1) ==
 log(f V) - log(N) - log(kT)`, whose negative is `log(N kT / (f V))` — `A_del`'s own log-prefactor,
-reached here by construction rather than by re-deriving it.
+reached here by construction rather than by re-deriving it. `f` is in eV·Å⁻³, exactly as
+`log_insertion_prefactor` documents.
 """
 function log_deletion_prefactor(f::T, V::T, kT::T, N::Integer) where {T}
     return -log_insertion_prefactor(f, V, kT, N - 1)
@@ -611,6 +616,19 @@ end
 # coordinate. Each chain loops its own guest count directly rather than a padded, capacity-wide
 # range (`docs/superpowers/specs/2026-09-27-milestone-c-gcmc.md`, "What is genuinely hard: a
 # variable particle count"): correctness first, GPU divergence measured before it is optimized away.
+#
+# This file's own opening comment argues that translation, rotation and reinsertion each satisfy
+# detailed balance ON THEIR OWN, so applying any fixed (even non-random) sequence of them still
+# preserves the target distribution. That argument does NOT extend to insertion and deletion:
+# neither move has an inverse of the SAME type (an insertion cannot be undone by another
+# insertion), so `K_ins` alone and `K_del` alone each fail detailed balance, and only the
+# equal-probability mixture `½K_ins + ½K_del` is π-preserving. A fixed alternation (or any other
+# deterministic schedule) between `mc_insert!`/`mc_delete!` samples the WRONG loading while every
+# existing energy audit still passes, since the audit checks energies, not the acceptance ratio's
+# statistics. `mc_exchange!`, below, is the only sanctioned way to call these two moves: it draws a
+# fresh, fair coin once per launch (shared across every chain in the batch, exactly as `movetype`
+# is shared across a batch in `mc_step!`/`run_nvt!`) and both `log_insertion_prefactor` and
+# `log_deletion_prefactor` are derived assuming `p_ins = p_del = 1/2` holds for that draw.
 
 # `N`-site guest with every site at the coordinate origin: the "old" or "new" side of a reciprocal
 # structure-factor exchange when a guest is being added (no "old" pose exists) or removed (no
@@ -662,31 +680,74 @@ function apply_exchange_sk!(guest::Guest{T, N}, old_sites, new_sites, ks, Sk, sk
 end
 
 """
-    insertion_constant_coeffs(ff, batch, guest, n) -> (p, q)
+    exchange_constant_term(ff, batch, guest, n, Ng) -> value
 
-`insertion_constant_term(ff, batch, guest, n, Ng)` (`nvt.jl`), as a function of the system's
-occupancy `Ng` alone — everything else it depends on (host/guest type counts, `V`, `α`, net
-charge) is fixed for system `n` — is exactly AFFINE in `Ng`: `guest_tail_correction`'s underlying
-`tail_delta` is quadratic in the guest count with no constant term
+The pose-independent part of a μVT exchange move's `ΔU` for system `n`, currently holding `Ng`
+guests: the intramolecular self-energy and exclusion correction `KE*(gself+gexcl)`
+(`guest_self_terms`, exact and Ng-independent — this is the cost of the guest's OWN geometry
+existing at all, not the reciprocal cross/self term below), plus the tail-correction and
+net-charge-correction CHANGES from adding one more guest (`guest_tail_correction(Ng+1) -
+guest_tail_correction(Ng)`, `net_at(Ng+1) - net_at(Ng)`).
+
+This is NOT `insertion_constant_term` (`nvt.jl`), and must not reuse it: `insertion_constant_term`
+is built on `FrameworkBatch.constant_offset`, which folds in `self_mean` — the ORIENTATION-AVERAGED
+reciprocal self term `KE Σ_k pref_k |S_guest(k)|²` (`FrameworkBatch`'s docstring) that Milestone A's
+`insertion_energy`/`widom_chain_kernel!` need because THEIR reciprocal term is cross-only
+(`2 Re(Shost*·Sg)`, `insertion_energy`'s own comment) and never computes `|S_guest|²` at all.
+`mc_insert_kernel!`/`mc_delete_kernel!` instead call `reciprocal_exchange_energy`, which computes
+the EXACT `|Sk+ΔS|² − |Sk|²` (`_reciprocal_move_delta_k`) — this already contains the guest's real,
+un-averaged `|ΔS|²` self term at its actual accepted orientation. Adding `self_mean` on top of that
+would double-count the reciprocal self term by exactly `self_mean` per accepted insertion — a
+discrepancy `test/exchange_tests.jl`'s reversibility and long-chain-audit tests are sized to catch
+against a from-scratch `total_energy` recomputation.
+
+`exchange_constant_coeffs`, below, exploits that this is exactly AFFINE in `Ng`: `tail_delta`
+(underlying `guest_tail_correction`) is quadratic in the guest count with no constant term
 (`8π/(3V) · Σ_ab (2·counts[i]·N·gcounts[j] + N²·gcounts[i]·gcounts[j])·c(a,b)`), so its forward
-difference at `Ng+1` vs `Ng` — exactly what `insertion_constant_term` takes — is affine in `Ng`;
-the net-charge correction `net_at(m)` is the same quadratic-in-`m` shape, so its own forward
-difference is affine too. `p = f(0)`, `q = f(1) - f(0)` therefore determine `f(Ng) = p + q·Ng` for
-every `Ng`, letting a μVT move's kernel evaluate the pose-independent term with two scalar
-multiplies per attempt instead of recomputing `insertion_constant_term`'s allocating
-type-histogram sums (not device-kernel-safe at all) on every one of a chain's insertion/deletion
-attempts.
+difference is affine in `Ng`; `net_at(m)` is the same quadratic-in-`m` shape, so its forward
+difference is affine too; and `KE*(gself+gexcl)` does not depend on `Ng` at all.
 """
-function insertion_constant_coeffs(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer) where {T, N}
-    p = insertion_constant_term(ff, batch, guest, n, 0)
-    q = insertion_constant_term(ff, batch, guest, n, 1) - p
+function exchange_constant_term(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer, Ng::Integer) where {T, N}
+    fw = batch.framework_of[n]
+    a0 = batch.atom_offsets[fw]; natoms = batch.atom_offsets[fw + 1] - a0
+    V = batch.volumes[fw]; alpha = batch.alphas[fw]
+    ntypes_ff = length(ff.names)
+    gcounts = zeros(Int, ntypes_ff)
+    for t in batch.guest_types_orig
+        gcounts[t] += 1
+    end
+    host_counts = zeros(Int, ntypes_ff)
+    for j in (a0 + 1):(a0 + natoms)
+        host_counts[batch.compact_to_orig[batch.types[j]]] += 1
+    end
+    Qh = sum(view(batch.charges, (a0 + 1):(a0 + natoms)))
+    Qg = sum(guest.charges)
+    net_at(m) = -T(KE) * T(π) / (2 * V * alpha^2) * ((Qh + m * Qg)^2 - Qh^2)
+    gself, gexcl = guest_self_terms(guest, alpha, batch.ewald_cutoff)
+    return T(KE) * (gself + gexcl) +
+        guest_tail_correction(ff, host_counts, gcounts, Ng + 1, V) - guest_tail_correction(ff, host_counts, gcounts, Ng, V) +
+        net_at(Ng + 1) - net_at(Ng)
+end
+
+"""
+    exchange_constant_coeffs(ff, batch, guest, n) -> (p, q)
+
+`exchange_constant_term(ff, batch, guest, n, Ng)`, as a function of `Ng` alone, is exactly affine
+(see its own docstring): `p = f(0)`, `q = f(1) - f(0)` determine `f(Ng) = p + q·Ng` for every `Ng`,
+letting a μVT move's kernel evaluate the pose-independent term with two scalar multiplies per
+attempt instead of recomputing `exchange_constant_term`'s allocating type-histogram sums (not
+device-kernel-safe at all) on every one of a chain's insertion/deletion attempts.
+"""
+function exchange_constant_coeffs(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer) where {T, N}
+    p = exchange_constant_term(ff, batch, guest, n, 0)
+    q = exchange_constant_term(ff, batch, guest, n, 1) - p
     return p, q
 end
 
 """
     mc_insert_kernel!(refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum,
-                      Sk, sk_abs_accum, rng_counter, batch, guest, guest_types, guest_offsets,
-                      k_offsets, rng_seed, fugacity, kT, const_p, const_q)
+                      Sk, sk_abs_accum, rng_counter, capacity_hits, batch, guest, guest_types,
+                      guest_offsets, k_offsets, rng_seed, fugacity, kT, const_p, const_q)
 
 One work-item per chain (`ndrange = nsys`). Draws a fresh uniform pose in the chain's own cell
 (`propose_reinsertion`, the same symmetric proposal translation/rotation/reinsertion already
@@ -696,7 +757,7 @@ the SAME per-chain move-attempt stream, sharing its counter. Computes `ΔU` from
 host-guest real-space energy (`host_guest_realspace_energy`), its real-space energy against every
 LIVE existing guest (`guest_pair_realspace_energy`, `occupancy[n]`-bounded), the reciprocal-space
 change against the running field `Sk` (`reciprocal_exchange_energy`) and the pose-independent term
-`const_p[n] + const_q[n]*occupancy[n]` (`insertion_constant_coeffs`), then accepts with probability
+`const_p[n] + const_q[n]*occupancy[n]` (`exchange_constant_coeffs`), then accepts with probability
 `min(1, exp(log_insertion_prefactor(fugacity[n], V, kT, occupancy[n]) - ΔU/kT))`
 (`metropolis_accept_muvt`). At capacity (`occupancy[n] == capacity(state, n)`) the draw and the
 energy evaluation still happen (keeping the RNG stream advance identical to every other chain
@@ -710,11 +771,20 @@ kernel may not call a throwing host function), increments `occupancy[n]`, applie
 factor change (`apply_exchange_sk!`) and updates `energy[n]`/`energy_abs_accum[n]`. On rejection,
 `refpoints`/`orientations`/`host_energy`/`occupancy`/`Sk`/`energy` are all left untouched.
 `rng_counter[n]` advances by one regardless of the outcome.
+
+`capacity_hits[n]` is set to `1` whenever the Metropolis test alone would have accepted (a
+genuine, physical insertion) but the chain sat at capacity, so the move was forced to reject
+anyway — the actual truncation event `mc_insert!` checks for and throws on — and to `0`
+otherwise (including an ordinary physical rejection at capacity, which truncates nothing since
+the untruncated chain would have rejected that attempt too). Without this signal, a kernel that
+merely forces `accept = false` at capacity makes `audit_energy!`'s `occupancy <= capacity` check
+vacuous: nothing written by this kernel can ever exceed capacity, so that check alone could never
+catch a saturating chain.
 """
 @kernel function mc_insert_kernel!(
         refpoints, orientations, host_energy, occupancy, energy, energy_abs_accum, Sk, sk_abs_accum, rng_counter,
-        batch, guest::Guest{T, N}, guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(k_offsets),
-        @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q)
+        capacity_hits, batch, guest::Guest{T, N}, guest_types::SVector{N, Int}, @Const(guest_offsets),
+        @Const(k_offsets), @Const(rng_seed), @Const(fugacity), kT::T, @Const(const_p), @Const(const_q)
     ) where {T, N}
     n = @index(Global, Linear)
     fw = batch.framework_of[n]
@@ -757,7 +827,10 @@ factor change (`apply_exchange_sk!`) and updates `energy[n]`/`energy_abs_accum[n
     ΔU = host_new + E_lj + T(KE) * E_sr + ΔU_recip + const_term_n
 
     log_pref = log_insertion_prefactor(fugacity[n], V, kT, Ng)
-    accept = metropolis_accept_muvt(ΔU, kT, log_pref, u) & (Ng < cap)
+    would_accept = metropolis_accept_muvt(ΔU, kT, log_pref, u)
+    at_capacity = !(Ng < cap)
+    accept = would_accept & !at_capacity
+    capacity_hits[n] = UInt8(would_accept & at_capacity)
 
     if accept
         apply_exchange_sk!(guest, zero_sites, test_sites, ks_n, Sk_n, view(sk_abs_accum, ks0:ks1))
@@ -783,13 +856,22 @@ Selects a guest uniformly among the chain's `occupancy[n]` LIVE guests via the s
 fictitious slot, matching `select_and_propose`'s own comment, since `accept` is forced `false`
 below in that case regardless). `ΔU` is the exact negative of `mc_insert_kernel!`'s formula for
 inserting THIS SAME guest, at its own current pose, back into the `occupancy[n]-1`-guest system its
-removal leaves: `host_energy[i]` (P2's cache, no host-atom rescan), the guest-guest real-space
-energy against every OTHER live guest, and `reciprocal_exchange_energy` with the sites swapped
-(`old_sites = guest i`, `new_sites = none`) compose the same three pieces `mc_insert_kernel!` does,
-with the opposite overall sign, so the two can never independently disagree about what "the
-guest's interaction with everything else" means. Accepts with probability
-`min(1, exp(log_deletion_prefactor(fugacity[n], V, kT, occupancy[n]) - ΔU/kT))`, forced `false`
-whenever `occupancy[n]` is zero.
+removal leaves — but NOT by negating every piece uniformly: `host_energy[i]` (P2's cache, no
+host-atom rescan), the guest-guest real-space energy against every OTHER live guest, and
+`const_term_n1` are each the SAME positive-convention quantity `mc_insert_kernel!` computes for
+this pose, so removing the guest subtracts them (one shared negation over that group). The
+reciprocal term is different: `reciprocal_exchange_energy` with the sites swapped (`old_sites =
+guest i`, `new_sites = none`), evaluated against the CURRENT `Sk` (which still includes this
+guest), already returns `-1` times the value the matching `mc_insert_kernel!` call would have
+returned against the field with this guest excluded — the reciprocal energy is quadratic in the
+total structure factor, not a per-guest additive term, so its delta is correctly signed for THIS
+removal on its own and must be added, not folded into the shared negation — folding it in would
+silently double-negate it, exactly what the reversibility test in `test/exchange_tests.jl` checks
+for. Accepts with probability
+`min(1, exp(log_deletion_prefactor(fugacity[n], V, kT, occupancy[n]) - ΔU/kT))`, explicitly forced
+`false` whenever `occupancy[n]` is zero (R7) rather than relying on the `-Inf`
+`log_deletion_prefactor(..., 0)` would otherwise produce — the prefactor itself is evaluated at
+`max(occupancy[n], 1)` so that `log(0)` is never actually computed.
 
 On acceptance: applies the structure-factor change (`apply_exchange_sk!`), copies the system's LAST
 occupied slot's pose and cached host energy into the freed slot (`delete_guest!`'s own swap rule, a
@@ -836,11 +918,24 @@ no-op when the removed slot already is the last one), decrements `occupancy[n]`,
         )
         E_lj += lj; E_sr += sr
     end
+    # `ΔU_recip` is the reciprocal-energy CHANGE from removing this guest from the CURRENT field
+    # `Sk_n` (which still includes it): `|Sk_n - ΔS_guest|² - |Sk_n|²` under the `sites_i -> zero`
+    # convention, already the correctly-signed system-energy delta on its own (the reciprocal
+    # energy is quadratic in the total structure factor, so this is NOT the guest's field-excluding
+    # self-interaction and must not be negated again). `host_energy[i]`, `E_lj`/`E_sr` and
+    # `const_term_n1` are each the POSITIVE-convention quantity `mc_insert_kernel!` would have
+    # added for this same guest at this same pose, so removing the guest subtracts them — hence the
+    # separate negation on that group only. Folding `ΔU_recip` into that same negation double-flips
+    # its sign, which a fixed alternation of `mc_insert!`/`mc_delete!` would not by itself reveal.
     ΔU_recip = reciprocal_exchange_energy(guest, sites_i, zero_sites, ks_n, kpref_n, Sk_n)
     const_term_n1 = const_p[n] + const_q[n] * T(Ng - one(Ng))
-    ΔU = -(host_energy[i] + E_lj + T(KE) * E_sr + ΔU_recip + const_term_n1)
+    ΔU = -(host_energy[i] + E_lj + T(KE) * E_sr + const_term_n1) + ΔU_recip
 
-    log_pref = log_deletion_prefactor(fugacity[n], V, kT, Ng)
+    # `Ng_eff` (already computed above for the guest-index draw) is reused here so `N=0` never
+    # evaluates `log_deletion_prefactor`'s `log(N)` at zero: `!iszero(Ng)` below is the sole,
+    # explicit rejection at empty occupancy (R7) rather than relying on the `-Inf` that `log(0)`
+    # would otherwise produce to reject by IEEE-754 comparison accident.
+    log_pref = log_deletion_prefactor(fugacity[n], V, kT, Ng_eff)
     accept = metropolis_accept_muvt(ΔU, kT, log_pref, u) & !iszero(Ng)
 
     if accept
@@ -862,37 +957,53 @@ end
     mc_insert!(batch, state, guest, guest_types, ff, fugacity, kT; backend = CPU()) -> nothing
     mc_delete!(batch, state, guest, guest_types, ff, fugacity, kT; backend = CPU()) -> nothing
 
-One μVT insertion (`mc_insert!`) or deletion (`mc_delete!`) attempt for every chain in `state`,
-at fixed fugacity `fugacity[n]` per system (`src/fugacity.jl`, computed by the caller once per
-system per run; same units as `kT / V`, i.e. energy per volume, so `fugacity[n]*V/kT` is
-dimensionless — this function does no unit conversion of its own). `ws`-free, unlike `mc_step!`:
-each chain's attempt is one work-item with no workgroup fan-out (`mc_insert_kernel!`/
-`mc_delete_kernel!`'s own docstrings). `batch` and `state` must already be resident on `backend`.
-`guest` must already be reindexed to `batch`'s compact type (`compact_guest`). `ff` is the force
-field `batch` was built from, used only to derive the pose-independent term's affine coefficients
-(`insertion_constant_coeffs`) — a cheap, allocating, host-side computation done once per call
-rather than per chain, since it does not depend on which chain's occupancy is being evaluated.
-`kT` is Boltzmann's constant times the temperature, in the same energy units as `batch`/`guest`.
-Exceeding a chain's capacity, or attempting a deletion on an empty chain, is handled by forcing
-that chain's acceptance to `false` (`mc_insert_kernel!`/`mc_delete_kernel!`'s own docstrings), not
-by throwing: only `insert_guest!`/`delete_guest!` (`state.jl`, not called by this device path) do
-that, since a kernel may not throw.
+One μVT insertion (`mc_insert!`) or deletion (`mc_delete!`) attempt for every chain in `state`, at
+fixed fugacity `fugacity[n]` per system in PASCALS — the units `peng_robinson_fugacity` returns.
+Both functions convert to the eV·Å⁻³ convention `log_insertion_prefactor`/`log_deletion_prefactor`
+need (`PASCAL`, `src/constants.jl`) exactly once, here, at this entry point; neither the kernels nor
+the prefactor functions do any unit conversion of their own. `ws`-free, unlike `mc_step!`: each
+chain's attempt is one work-item with no workgroup fan-out (`mc_insert_kernel!`/
+`mc_delete_kernel!`'s own docstrings). `batch` and `state` must already be resident on `backend`,
+matching `mc_step!`'s own contract; a host-resident copy for the pose-independent term's affine
+coefficients (`exchange_constant_coeffs`, a scalar-indexing computation `FrameworkBatch`'s device
+storage cannot support) is made internally via `adapt(CPU(), batch)`, a no-op reconstruction when
+`batch` is already CPU-resident. `guest` must already be reindexed to `batch`'s compact type
+(`compact_guest`). `ff` is the force field `batch` was built from. `kT` is Boltzmann's constant
+times the temperature, in the same energy units as `batch`/`guest`.
+
+Attempting a deletion on an empty chain is handled by forcing that chain's acceptance to `false`
+(`mc_delete_kernel!`'s own docstring), not by throwing: a kernel may not throw, so only
+`insert_guest!`/`delete_guest!` (`state.jl`, not called by this device path) do that. Exceeding a
+chain's capacity is different: `mc_insert!` throws `ArgumentError` immediately if
+`mc_insert_kernel!`'s `capacity_hits` reports any system where a physically-accepted insertion was
+forced to reject for lack of a free slot — a saturating chain samples a silently truncated
+distribution, so this is fail-fast rather than a diagnostic left for a later audit to notice.
 """
 function mc_insert!(
         batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N}, guest_types::SVector{N, Int},
         ff::ForceField{T}, fugacity, kT::T; backend = CPU()
     ) where {T, N}
     nsys = state.nsys
-    p = T[insertion_constant_coeffs(ff, batch, guest, n)[1] for n in 1:nsys]
-    q = T[insertion_constant_coeffs(ff, batch, guest, n)[2] for n in 1:nsys]
+    host_batch = adapt(CPU(), batch)
+    p = T[exchange_constant_coeffs(ff, host_batch, guest, n)[1] for n in 1:nsys]
+    q = T[exchange_constant_coeffs(ff, host_batch, guest, n)[2] for n in 1:nsys]
     dp = adapt(backend, p); dq = adapt(backend, q)
-    dfug = adapt(backend, T.(fugacity))
+    dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
+    dhits = adapt(backend, zeros(UInt8, nsys))
     mc_insert_kernel!(backend)(
         state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
-        state.Sk, state.sk_abs_accum, state.rng_counter, batch, guest, guest_types, state.guest_offsets,
+        state.Sk, state.sk_abs_accum, state.rng_counter, dhits, batch, guest, guest_types, state.guest_offsets,
         state.k_offsets, state.rng_seed, dfug, kT, dp, dq; ndrange = nsys
     )
     KernelAbstractions.synchronize(backend)
+    hits = Array(dhits)
+    any(!iszero, hits) && throw(
+        ArgumentError(
+            "mc_insert!: system(s) $(findall(!iszero, hits)) hit capacity on a move the Metropolis " *
+                "test would otherwise have accepted; the chain would sample a truncated distribution " *
+                "-- raise capacity, lower fugacity/pressure, or attempt fewer insertions per cycle"
+        )
+    )
     return nothing
 end
 
@@ -901,10 +1012,11 @@ function mc_delete!(
         ff::ForceField{T}, fugacity, kT::T; backend = CPU()
     ) where {T, N}
     nsys = state.nsys
-    p = T[insertion_constant_coeffs(ff, batch, guest, n)[1] for n in 1:nsys]
-    q = T[insertion_constant_coeffs(ff, batch, guest, n)[2] for n in 1:nsys]
+    host_batch = adapt(CPU(), batch)
+    p = T[exchange_constant_coeffs(ff, host_batch, guest, n)[1] for n in 1:nsys]
+    q = T[exchange_constant_coeffs(ff, host_batch, guest, n)[2] for n in 1:nsys]
     dp = adapt(backend, p); dq = adapt(backend, q)
-    dfug = adapt(backend, T.(fugacity))
+    dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
     mc_delete_kernel!(backend)(
         state.refpoints, state.orientations, state.host_energy, state.occupancy, state.energy, state.energy_abs_accum,
         state.Sk, state.sk_abs_accum, state.rng_counter, batch, guest, guest_types, state.guest_offsets,
@@ -912,4 +1024,32 @@ function mc_delete!(
     )
     KernelAbstractions.synchronize(backend)
     return nothing
+end
+
+"""
+    mc_exchange!(rng::AbstractRNG, batch, state, guest, guest_types, ff, fugacity, kT;
+                backend = CPU()) -> Bool
+
+The μVT exchange move: draws ONE fair coin from `rng` (`rand(rng, Bool)`) — shared across every
+chain in the batch for this launch, exactly as `run_nvt!` draws one shared `movetype` per call to
+`mc_step!` — and calls `mc_insert!` on `true`, `mc_delete!` on `false`. Returns which one ran.
+
+This is the ONLY sanctioned way to attempt insertion/deletion moves: `mc_insert!`/`mc_delete!`
+individually do NOT satisfy detailed balance (this file's own opening comment on the μVT moves), so
+calling them directly in a fixed or deterministic pattern samples the wrong equilibrium loading
+while every existing energy audit still passes. `p_ins = p_del = 1/2` here is exactly what
+`log_insertion_prefactor`/`log_deletion_prefactor` assume; passing an `rng` that is not fresh per
+launch, or substituting a biased draw, breaks that assumption silently.
+"""
+function mc_exchange!(
+        rng::AbstractRNG, batch::FrameworkBatch{T}, state::SystemState{T}, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, ff::ForceField{T}, fugacity, kT::T; backend = CPU()
+    ) where {T, N}
+    do_insert = rand(rng, Bool)
+    if do_insert
+        mc_insert!(batch, state, guest, guest_types, ff, fugacity, kT; backend)
+    else
+        mc_delete!(batch, state, guest, guest_types, ff, fugacity, kT; backend)
+    end
+    return do_insert
 end

@@ -23,12 +23,20 @@ matrix, fractional coordinates, labels, charges), `ForceField{T}` (per-pair σ/�
 Lorentz–Berthelot mixing), `Guest{T,N}` (rigid site geometry, charges, critical constants).
 Plain Julia structs, CPU only, generic over the element type `T`.
 
-**Batch** (`src/batch.jl`) — `FrameworkBatch{T,...}` concatenates every framework's atoms into
-flat arrays (`positions`, `types`, `charges`) with an `atom_offsets` vector marking where each
-system's atoms start, and likewise `ks`/`kprefactor`/`Shost` with `k_offsets` for the
-per-system reciprocal-space tables. `kprefactor[i]` (the weight times the reciprocal-space
-prefactor `pk`) and `Shost` (the host structure factor) are computed once per framework at
-batch-construction time, since neither depends on the insertion pose. `constant_offset[n]`
+**Batch** (`src/batch.jl`) — `FrameworkBatch{T,...}` concatenates atoms into flat arrays
+(`positions`, `types`, `charges`) with an `atom_offsets` vector, and likewise
+`ks`/`kprefactor`/`Shost` with `k_offsets` for the reciprocal-space tables. `kprefactor[i]` (the
+weight times the reciprocal-space prefactor `pk`) and `Shost` (the host structure factor) are
+computed once at batch-construction time, since neither depends on the insertion pose.
+
+Everything that depends only on the framework is stored **once per distinct framework**, not once
+per system: `framework_of[n]` names system `n`'s framework, and `batch_atom_range(batch, n)` and
+`batch_kvec_range(batch, n)` resolve a system to its framework's own slice. Frameworks are
+compared by value, so a batch built from many copies of one host stores one copy. This matters
+because the intended workloads — a pressure sweep for an isotherm, or many independent chains on
+the same material — are exactly the case where every system shares a framework: a batch of 4,096
+such systems holds 374 KB rather than 1,995 MiB and builds in 0.26 s rather than 685 s, and the
+host data is then small enough to stay resident in cache for every work-item that reads it. `constant_offset[n]`
 similarly collects every pose-independent energy term for system `n` (tail-correction change,
 guest self-energy, guest intramolecular exclusion, net-charge correction), so the kernel adds
 one precomputed scalar per insertion instead of recomputing these every time.
@@ -94,10 +102,10 @@ regardless of `FrameworkBatch`'s own float type; if so, the weight is recorded a
 ever calling `insertion_energy`. `theta_F(T)` is that underflow point for float type `T`, found
 by bisection on the float grid; `widom` always uses `theta_F(Float64)`. `hardcore_bound` (`B_s`) sums, over every guest-site/host-atom pair
 in a system plus a reciprocal-space cross-term bound, the most negative energy that pair could
-possibly contribute anywhere in its domain; it is computed once per system at `FrameworkBatch`
-construction, alongside `kmin_table` (`K_min(a,t)`, the most negative Coulomb prefactor over a
-system's atoms of a given compact type, for a given guest site), since neither depends on
-temperature. `find_rho2` combines both with the temperature-dependent underflow margin into a
+possibly contribute anywhere in its domain; it is computed once per distinct framework at
+`FrameworkBatch` construction, alongside `kmin_table` (`K_min(a,t)`, the most negative Coulomb
+prefactor over a framework's atoms of a given compact type, for a given guest site), since
+neither depends on temperature. `find_rho2` combines both with the temperature-dependent underflow margin into a
 squared rejection radius `ρ_at²`, on every `widom` call (`build_rejection_tables`): any guest
 site within `ρ_at` of any host atom of type `t` guarantees rejection is safe.
 
@@ -174,9 +182,10 @@ its inputs:
   charges (naming the mismatch); `nblocks >= 2`, `chunk >= 1`, an explicit `run` keyword must lie
   in `1:(ninsert ÷ nsys)`, every system's exact insertion count must be at least `2·nblocks`, the
   batch's index-matched array groups (`positions`/`types`/`charges` and
-  `ks`/`kprefactor`/`Shost`) must share axes, `ncells` must have one entry per system,
-  `cellgrid_offsets` must have `nsys+1` entries whose last equals `length(cell_offsets)`, and
-  each system's last local `cell_offsets` entry must equal its atom count (all
+  `ks`/`kprefactor`/`Shost`) must share axes, `ncells` must have one entry per framework,
+  `cellgrid_offsets` must have one entry per framework plus one, whose last equals
+  `length(cell_offsets)`, and each framework's last local `cell_offsets` entry must equal its
+  atom count (all
   `DimensionMismatch`, naming the numbers).
 
 ## GPU-compile constraint

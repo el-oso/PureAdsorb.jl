@@ -29,6 +29,18 @@ guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incr
 accepted moves thereafter, checked periodically against a from-scratch recomputation
 (`audit_energy!`).
 
+`sk_abs_accum` and `energy_abs_accum` are the per-k-vector and per-system running sums, over every
+accepted move since `Sk`/`energy` were last set exactly (construction, or the previous
+`audit_energy!`), of a per-move rounding scale: `2*Σ|guest.charges|` for `sk_abs_accum` (a proven
+upper bound on `abs(ΔS)` — `ΔS = Snew - Sold` with `|Snew|, |Sold| <= Σ|guest.charges|` — that
+stays representative when a small move makes `Snew` and `Sold` nearly cancel, unlike `abs(ΔS)`
+itself) and `abs(ΔU)` for `energy_abs_accum`. Either way, the scale Higham's recursive-summation
+bound actually calls for is the sum of the magnitudes of the terms summed, not the magnitude of
+the running total, which heavy cancellation across guests (for `Sk`) or across an equilibrated
+chain's fluctuations (for `energy`) can make far smaller than the terms that produced it.
+`apply_sk_kernel!`/`decide_move_kernel!` add to these on every acceptance; `audit_energy!` reads
+them to size its tolerance and zeroes them once it has re-set `Sk`/`energy` to an exact value.
+
 `host_energy` is a per-guest cache of guest `i`'s own host-guest real-space energy
 (`host_guest_realspace_energy`), index-matched to `refpoints`/`orientations`. The host is rigid,
 so that energy is a function of guest `i`'s own pose alone and is invalidated only by guest `i`'s
@@ -51,13 +63,15 @@ generator is a later task; this only allocates and initializes its inputs.
 (translation, rotation, reinsertion) — the three NVT moves (`exchange_prob = 0` excludes the
 fourth) — both starting at zero.
 """
-struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM}
+struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM, VA}
     guest_offsets::VI
     refpoints::VP
     orientations::VQ
     k_offsets::VI
     Sk::VS
+    sk_abs_accum::VA
     energy::VE
+    energy_abs_accum::VE
     host_energy::VE
     rng_seed::VU
     rng_counter::VU
@@ -68,24 +82,26 @@ end
 Adapt.@adapt_structure SystemState
 
 function SystemState(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
-        attempted, nsys
+        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
+        rng_seed, rng_counter, accepted, attempted, nsys
     )
     F = eltype(energy)
     return SystemState{F}(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
-        attempted, nsys
+        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
+        rng_seed, rng_counter, accepted, attempted, nsys
     )
 end
 
 function SystemState{F}(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted,
-        attempted, nsys
+        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
+        rng_seed, rng_counter, accepted, attempted, nsys
     ) where {F}
     return SystemState{
-        F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed), typeof(accepted),
+        F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed),
+        typeof(accepted), typeof(sk_abs_accum),
     }(
-        guest_offsets, refpoints, orientations, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys)
+        guest_offsets, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy,
+        rng_seed, rng_counter, accepted, attempted, Int(nsys)
     )
 end
 
@@ -280,14 +296,16 @@ function SystemState(
         end
     end
 
+    sk_abs_accum = zeros(F, length(Sk))
     energy = zeros(F, nsys)
+    energy_abs_accum = zeros(F, nsys)
     rng_seed = [splitmix64(UInt64(seed), UInt64(n)) for n in 1:nsys]
     rng_counter = zeros(UInt64, nsys)
     accepted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     st = SystemState(
-        guest_offsets, refpoints, quat, k_offsets, Sk, energy, host_energy, rng_seed, rng_counter, accepted, attempted,
-        nsys
+        guest_offsets, refpoints, quat, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum, host_energy, rng_seed,
+        rng_counter, accepted, attempted, nsys
     )
     for n in 1:nsys
         st.energy[n] = total_energy(batch, st, guest, ff, n)

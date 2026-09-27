@@ -27,8 +27,10 @@
                 state.refpoints[i] = newpos
                 state.orientations[i] = newq
                 state.Sk[kr] .+= ΔS
+                state.sk_abs_accum[kr] .+= 2 * sum(abs, guest.charges)
                 state.host_energy[i] = host_energy_new
                 state.energy[n] += ΔU
+                state.energy_abs_accum[n] += abs(ΔU)
             end
         end
         return naccept
@@ -130,11 +132,14 @@ end
         )
         # The real pose transition, paired with the wrong-signed reciprocal contribution: poses
         # and `Sk` now disagree, but `Sk` and `state.energy` stay self-consistent with each other.
+        ΔU_wrong = (ΔU_true - ΔU_recip_true) + ΔU_recip_wrong
         state.refpoints[i] = newpos
         state.orientations[i] = newq
         state.host_energy[i] = host_energy_new
         state.Sk[kr] .+= ΔS_wrong
-        state.energy[n] += (ΔU_true - ΔU_recip_true) + ΔU_recip_wrong
+        state.sk_abs_accum[kr] .+= 2 * sum(abs, guest.charges)
+        state.energy[n] += ΔU_wrong
+        state.energy_abs_accum[n] += abs(ΔU_wrong)
         return nothing
     end
 end
@@ -159,7 +164,8 @@ end
     # The energy-only comparison `audit_energy!` used before P1 (recompute from `Sk`, compare
     # against the running total): it passes, proving the corruption is invisible to it.
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
 
     # The real audit rebuilds `Sk` from the poses first and catches the mismatch.
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
@@ -183,7 +189,8 @@ end
     apply_wrong_sign_move!(b, st, g, n, i, newpos, newq)
 
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
@@ -213,11 +220,14 @@ end
         ΔU_recip_phase = F(PureAdsorb.KE) * sum(
             kpref[idx] * (2 * real(conj(Sk_before[idx]) * ΔS_phase[idx]) + abs2(ΔS_phase[idx])) for idx in eachindex(kpref)
         )
+        ΔU_phase = (ΔU_true - ΔU_recip_true) + ΔU_recip_phase
         state.refpoints[i] = newpos
         state.orientations[i] = newq
         state.host_energy[i] = host_energy_new
         state.Sk[kr] .+= ΔS_phase
-        state.energy[n] += (ΔU_true - ΔU_recip_true) + ΔU_recip_phase
+        state.sk_abs_accum[kr] .+= 2 * sum(abs, guest.charges)
+        state.energy[n] += ΔU_phase
+        state.energy_abs_accum[n] += abs(ΔU_phase)
         return nothing
     end
 
@@ -246,11 +256,14 @@ end
         )
         ΔU_realspace_j = ΔU_true_j - ΔU_recip_true_j
         # Guest i's pose is left untouched; only guest j's actually moves.
+        ΔU_wrong_guest = ΔU_realspace_j + ΔU_recip_i
         state.refpoints[j] = newpos_j
         state.orientations[j] = newq_j
         state.host_energy[j] = host_energy_new_j
         state.Sk[kr] .+= ΔS_i
-        state.energy[n] += ΔU_realspace_j + ΔU_recip_i
+        state.sk_abs_accum[kr] .+= 2 * sum(abs, guest.charges)
+        state.energy[n] += ΔU_wrong_guest
+        state.energy_abs_accum[n] += abs(ΔU_wrong_guest)
         return nothing
     end
 end
@@ -273,7 +286,8 @@ end
     apply_phase_error_move!(b, st, g, n, i, newpos, newq, 1.0)
 
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
@@ -295,7 +309,8 @@ end
     apply_phase_error_move!(b, st, g, n, i, newpos, newq, 1.0f0)
 
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
@@ -319,7 +334,8 @@ end
     apply_wrong_guest_move!(b, st, g, n, i, j, newpos_i, newq_i, newpos_j, newq_j)
 
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
@@ -343,7 +359,8 @@ end
     apply_wrong_guest_move!(b, st, g, n, i, j, newpos_i, newq_i, newpos_j, newq_j)
 
     legacy_recomputed = PureAdsorb.total_energy(b, st, g, ff, n)
-    @test abs(legacy_recomputed - st.energy[n]) <= PureAdsorb.energy_audit_tolerance(st.energy[n], legacy_recomputed, 1)
+    @test abs(legacy_recomputed - st.energy[n]) <=
+        PureAdsorb.energy_audit_tolerance(st.energy_abs_accum[n], max(abs(st.energy[n]), abs(legacy_recomputed)), 1)
     @test_throws "structure factor" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
@@ -373,26 +390,42 @@ end
     st.refpoints[i] = newpos
     st.orientations[i] = newq
     st.Sk[kr] .+= ΔS
+    st.sk_abs_accum[kr] .+= 2 * sum(abs, g.charges)
     st.host_energy[i] = host_energy_new   # the cache is fixed going forward...
     st.energy[n] += ΔU                    # ...but the running energy already absorbed the stale ΔU
+    st.energy_abs_accum[n] += abs(ΔU)
 
     @test_throws "energy audit failed" PureAdsorb.audit_energy!(b, st, g, ff, n, 1)
 end
 
-@testitem "energy_audit_tolerance scales with nmoves and precision" begin
-    @test PureAdsorb.energy_audit_tolerance(10.0, 10.0, 200) ≈ 200 * eps(Float64) * 10.0
-    @test PureAdsorb.energy_audit_tolerance(10.0f0, 10.0f0, 200) ≈ 200 * eps(Float32) * 10.0f0
-    # Float32's tolerance is looser than Float64's at the same (nmoves, energy scale): eps(F32) ≫
-    # eps(F64), which is the whole reason Float32 accumulation is the case worth testing directly.
+@testitem "energy_audit_tolerance scales with nmoves, abs_accum, magnitude and precision" begin
+    @test PureAdsorb.energy_audit_tolerance(10.0, 10.0, 200) ≈ 200 * eps(Float64) * 10.0 + eps(Float64) * 10.0
+    @test PureAdsorb.energy_audit_tolerance(10.0f0, 10.0f0, 200) ≈ 200 * eps(Float32) * 10.0f0 + eps(Float32) * 10.0f0
+    # Float32's tolerance is looser than Float64's at the same (nmoves, abs_accum, magnitude):
+    # eps(F32) ≫ eps(F64), which is the whole reason Float32 accumulation is the case worth
+    # testing directly.
     @test PureAdsorb.energy_audit_tolerance(10.0f0, 10.0f0, 200) > PureAdsorb.energy_audit_tolerance(10.0, 10.0, 200)
-    # A near-zero energy still gets a nonzero tolerance (the `one(F)` floor).
-    @test PureAdsorb.energy_audit_tolerance(0.0, 0.0, 50) ≈ 50 * eps(Float64)
+    # A near-zero accumulation and a near-zero energy still get a nonzero tolerance (the `one(F)`
+    # floor on each term: `50 * eps` from the accumulation term's own floor, `1 * eps` from the
+    # magnitude term's).
+    @test PureAdsorb.energy_audit_tolerance(0.0, 0.0, 50) ≈ 51 * eps(Float64)
+    # A larger sum of |ΔU| terms (heavier accepted-move traffic since the last audit) widens the
+    # tolerance even at the same (nmoves, magnitude), which is the whole point of tracking it
+    # separately from the running total's own magnitude.
+    @test PureAdsorb.energy_audit_tolerance(100.0, 10.0, 200) > PureAdsorb.energy_audit_tolerance(10.0, 10.0, 200)
+    # A larger recompute magnitude (at the same nmoves and abs_accum) also widens the tolerance:
+    # `total_energy`'s own from-scratch summation carries rounding proportional to its own scale,
+    # independent of how many moves preceded the recompute.
+    @test PureAdsorb.energy_audit_tolerance(10.0, 1000.0, 200) > PureAdsorb.energy_audit_tolerance(10.0, 10.0, 200)
 end
 
-@testitem "sk_audit_tolerance scales with nmoves and precision" begin
-    @test PureAdsorb.sk_audit_tolerance(3.0 + 4.0im, 3.0 + 4.0im, 200) ≈ 200 * eps(Float64) * 5.0
-    @test PureAdsorb.sk_audit_tolerance(3.0f0 + 4.0f0im, 3.0f0 + 4.0f0im, 200) ≈ 200 * eps(Float32) * 5.0f0
-    @test PureAdsorb.sk_audit_tolerance(3.0f0 + 4.0f0im, 3.0f0 + 4.0f0im, 200) > PureAdsorb.sk_audit_tolerance(3.0 + 4.0im, 3.0 + 4.0im, 200)
-    # A near-zero structure factor still gets a nonzero tolerance (the `one(F)` floor).
-    @test PureAdsorb.sk_audit_tolerance(0.0 + 0.0im, 0.0 + 0.0im, 50) ≈ 50 * eps(Float64)
+@testitem "sk_audit_tolerance scales with nmoves, abs_accum, magnitude and precision" begin
+    @test PureAdsorb.sk_audit_tolerance(5.0, 5.0, 200) ≈ 200 * eps(Float64) * 5.0 + eps(Float64) * 5.0
+    @test PureAdsorb.sk_audit_tolerance(5.0f0, 5.0f0, 200) ≈ 200 * eps(Float32) * 5.0f0 + eps(Float32) * 5.0f0
+    @test PureAdsorb.sk_audit_tolerance(5.0f0, 5.0f0, 200) > PureAdsorb.sk_audit_tolerance(5.0, 5.0, 200)
+    # A near-zero accumulation and a near-zero magnitude still get a nonzero tolerance (the
+    # `one(F)` floor on each term).
+    @test PureAdsorb.sk_audit_tolerance(0.0, 0.0, 50) ≈ 51 * eps(Float64)
+    @test PureAdsorb.sk_audit_tolerance(50.0, 5.0, 200) > PureAdsorb.sk_audit_tolerance(5.0, 5.0, 200)
+    @test PureAdsorb.sk_audit_tolerance(5.0, 500.0, 200) > PureAdsorb.sk_audit_tolerance(5.0, 5.0, 200)
 end

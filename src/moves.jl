@@ -381,8 +381,8 @@ written to `partial1[block, n]`/`partial2[block, n]`. `decide_move_kernel!` sums
 end
 
 """
-    decide_move_kernel!(refpoints, orientations, host_energy, energy, rng_counter, accepted,
-                        attempted, accept_flag, move_oldpos, move_oldq, move_newpos, move_newq,
+    decide_move_kernel!(refpoints, orientations, host_energy, energy, energy_abs_accum, rng_counter,
+                        accepted, attempted, accept_flag, move_oldpos, move_oldq, move_newpos, move_newq,
                         partial1, partial2, batch, guest, guest_offsets, rng_seed, movetype,
                         step_trans, step_rot, kT, nblocks_per_chain)
 
@@ -393,15 +393,16 @@ draws and flops, unlike `evaluate_move_kernel!`'s fanned-out scan), sums `evalua
 with the next draw from the same stream. `Ng` (the chain's guest count) being zero forces
 `accept = false` directly rather than branching around any of this, since a guest-less chain still
 needs a (fictitious) pose to read/propose without indexing out of range — see
-`select_and_propose`'s comment. On acceptance, commits the pose/`host_energy`/`energy` in place;
-always advances `rng_counter`/`accepted`/`attempted` (attempt counters, so they advance regardless
-of acceptance). Always records the outcome (`accept_flag`) and the old/new pose in the workspace,
-regardless of acceptance, for `apply_sk_kernel!` to read; it only acts on chains whose
+`select_and_propose`'s comment. On acceptance, commits the pose/`host_energy`/`energy` in place and
+adds `abs(ΔU)` to `energy_abs_accum[n]` (`audit_energy!`'s tolerance scale, `SystemState`'s
+docstring); always advances `rng_counter`/`accepted`/`attempted` (attempt counters, so they advance
+regardless of acceptance). Always records the outcome (`accept_flag`) and the old/new pose in the
+workspace, regardless of acceptance, for `apply_sk_kernel!` to read; it only acts on chains whose
 `accept_flag` is set.
 """
 @kernel function decide_move_kernel!(
-        refpoints, orientations, host_energy, energy, rng_counter, accepted, attempted, accept_flag, move_oldpos,
-        move_oldq, move_newpos, move_newq, @Const(partial1), @Const(partial2), batch, guest::Guest{T, N},
+        refpoints, orientations, host_energy, energy, energy_abs_accum, rng_counter, accepted, attempted, accept_flag,
+        move_oldpos, move_oldq, move_newpos, move_newq, @Const(partial1), @Const(partial2), batch, guest::Guest{T, N},
         @Const(guest_offsets), @Const(rng_seed), movetype::Int32, @Const(step_trans), @Const(step_rot), kT::T,
         nblocks_per_chain::Int32
     ) where {T, N}
@@ -424,6 +425,7 @@ regardless of acceptance, for `apply_sk_kernel!` to read; it only acts on chains
         orientations[i] = newq
         host_energy[i] = e_new
         energy[n] += ΔU
+        energy_abs_accum[n] += abs(ΔU)
     end
     delta = onehot_movetype(movetype)
     attempted[n] = attempted[n] + delta
@@ -436,20 +438,28 @@ regardless of acceptance, for `apply_sk_kernel!` to read; it only acts on chains
 end
 
 """
-    apply_sk_kernel!(Sk, ks, accept_flag, move_oldpos, move_oldq, move_newpos, move_newq, guest,
-                     k_offsets)
+    apply_sk_kernel!(Sk, sk_abs_accum, ks, accept_flag, move_oldpos, move_oldq, move_newpos,
+                     move_newq, guest, k_offsets)
 
 Applies the accepted chains' structure-factor change, fanned across `ndrange = (L, nsys)`
 work-items (`L` any convenient lane count — `mc_step!` reuses `nblocks_per_chain*groupsize`, but
 this kernel does not need it to match `evaluate_move_kernel!`'s own `L`) with no workgroup
 reduction needed: `Sk[kk] += ds` for a disjoint `kk` per work-item, since the `L` lanes assigned to
-one chain partition its k-range exactly once. Rotations are hoisted out of the k-loop
+one chain partition its k-range exactly once. `sk_abs_accum[kk] += 2*Σ|guest.charges|` alongside
+it, feeding `audit_energy!`'s tolerance (`SystemState`'s docstring): `ds = Snew - Sold` with
+`|Snew|, |Sold| <= Σ|guest.charges|` (each is a sum of unit-modulus phases times a charge), so
+`2*Σ|guest.charges|` is a guaranteed upper bound on `abs(ds)` that also, unlike `abs(ds)` itself,
+stays representative when a small move makes `Snew` and `Sold` nearly cancel — exactly the
+regime where `abs(ds)` alone understates the rounding a direct `Snew - Sold` subtraction carries.
+It is the same value at every k-vector and every accepted move (the guest's charges never
+change), so it costs nothing to recompute per work-item. Rotations are hoisted out of the k-loop
 (`guest_sites_at` once per chain, not per k — P3), matching every other reciprocal-space loop in
 this package. A rejected chain's `accept_flag` is `0` and this kernel does nothing for it, so a
-rejected move leaves `Sk` untouched, exactly as `guest_move_delta`'s own contract requires.
+rejected move leaves `Sk`/`sk_abs_accum` untouched, exactly as `guest_move_delta`'s own contract
+requires.
 """
 @kernel function apply_sk_kernel!(
-        Sk, @Const(ks), @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq), @Const(move_newpos),
+        Sk, sk_abs_accum, @Const(ks), @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq), @Const(move_newpos),
         @Const(move_newq), guest::Guest{T, N}, @Const(k_offsets)
     ) where {T, N}
     idx = @index(Global, NTuple)
@@ -458,10 +468,12 @@ rejected move leaves `Sk` untouched, exactly as `guest_move_delta`'s own contrac
     if !iszero(accept_flag[n])
         old_sites = guest_sites_at(guest, move_oldpos[n], move_oldq[n])
         new_sites = guest_sites_at(guest, move_newpos[n], move_newq[n])
+        ds_bound = 2 * sum(abs, guest.charges)
         kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
         for kk in (kr_lo + lane - 1):L:kr_hi
             ds, _ = _reciprocal_move_delta_k(ks[kk], guest.charges, old_sites, new_sites, Sk[kk])
             Sk[kk] += ds
+            sk_abs_accum[kk] += ds_bound
         end
     end
 end
@@ -513,16 +525,17 @@ function mc_step!(
     KernelAbstractions.synchronize(backend)
 
     decide_move_kernel!(backend)(
-        state.refpoints, state.orientations, state.host_energy, state.energy, state.rng_counter, state.accepted,
-        state.attempted, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos, ws.move_newq, ws.partial1,
-        ws.partial2, batch, guest, state.guest_offsets, state.rng_seed, mt, step_trans, step_rot, kT, nbpc;
+        state.refpoints, state.orientations, state.host_energy, state.energy, state.energy_abs_accum,
+        state.rng_counter, state.accepted, state.attempted, ws.accept_flag, ws.move_oldpos, ws.move_oldq,
+        ws.move_newpos, ws.move_newq, ws.partial1, ws.partial2, batch, guest, state.guest_offsets, state.rng_seed, mt,
+        step_trans, step_rot, kT, nbpc;
         ndrange = nsys
     )
     KernelAbstractions.synchronize(backend)
 
     apply_sk_kernel!(backend)(
-        state.Sk, batch.ks, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos, ws.move_newq, guest,
-        state.k_offsets;
+        state.Sk, state.sk_abs_accum, batch.ks, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos,
+        ws.move_newq, guest, state.k_offsets;
         ndrange = (nblocks_per_chain * G, nsys)
     )
     KernelAbstractions.synchronize(backend)

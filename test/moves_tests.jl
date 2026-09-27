@@ -330,6 +330,84 @@ end
     PureAdsorb.audit_energy!(b, st, g, ff, 1, naccept)   # must not throw
 end
 
+@testitem "reinsertion samples the Boltzmann distribution of a single-atom host (detailed balance)" begin
+    using StaticArrays, LinearAlgebra, KernelAbstractions, QuadGK, SpecialFunctions
+
+    # A host reduced to a single Lennard-Jones site lets the guest's equilibrium distance
+    # distribution be checked against a numerically exact reference instead of a coarse
+    # brute-force grid over a real framework: with the atom at the cell's center and the cutoff
+    # kept short of the distance to the nearest face, the ball of radius `cutoff` around it never
+    # touches a face, so the shell volume at distance r < cutoff is exactly `4*pi*r^2` with no
+    # periodic-image correction, and the reference density
+    #   p(r) ∝ 4*pi*r^2*exp(-U_LJ(r)/kT)      (r < cutoff)
+    #   p(r) ∝ 1                              (r >= cutoff: `U_LJ` is truncated to zero there)
+    # is a 1-D integral `quadgk` resolves to machine precision. `MOVE_REINSERTION` draws a fresh
+    # pose uniform over the whole cell on every attempt, independent of the current one, so a
+    # handful of steps is enough for each of many independent chains to forget its arbitrary
+    # initial pose; each chain then contributes one effectively independent sample of the actual
+    # `mc_step!`-driven equilibrium distribution to compare against that reference.
+    function boltzmann_case(::Type{F}; nsys = 4000, nsteps = 40, seed = 7) where {F}
+        L = F(14.0)
+        cell = SMatrix{3, 3, F}(L * I)
+        fw = PureAdsorb.Framework{F}(cell, [SVector(F(0.5), F(0.5), F(0.5))], ["X1"], ["X"], [F(0.0)])
+        sigma = F(3.0); epsilon = F(0.08); cutoff = F(5.0)   # cutoff < L/2 = 7: see the note above
+        ff = PureAdsorb.ForceField(["X_"], [sigma], [epsilon]; cutoff, tail = false)
+        g = PureAdsorb.Guest(SVector{1}(SVector(F(0), F(0), F(0))), SVector(1), SVector(F(0.0)), F(1.0), F(1.0), F(0.0))
+        ewald = EwaldParams(cutoff = cutoff, precision = F(1.0e-6))
+        b = FrameworkBatch(fill(fw, nsys), ff, g, ewald; fullk = true)
+        st = SystemState(b, g, fill(1, nsys), ff; T = F(298.15), seed)
+        guest_c = PureAdsorb.compact_guest(b, g)
+        guest_types = SVector{1, Int}(b.guest_types)
+        kT = F(PureAdsorb.KB * 298.15)
+        ws = PureAdsorb.MoveWorkspace(F, nsys, 1)
+        step_trans = fill(F(0.3), nsys); step_rot = fill(F(0.3), nsys)
+        for _ in 1:nsteps
+            PureAdsorb.mc_step!(ws, b, st, guest_c, guest_types, PureAdsorb.MOVE_REINSERTION, step_trans, step_rot, kT)
+        end
+        rs = Float64[
+            norm(PureAdsorb.minimum_image(b.cells[n], b.invcells[n], st.refpoints[n] - b.positions[b.atom_offsets[n] + 1]))
+                for n in 1:nsys
+        ]
+        return rs, Float64(L), Float64(sigma), Float64(epsilon), Float64(cutoff), Float64(kT), nsys
+    end
+
+    # χ² goodness-of-fit against the analytic reference. Bin edges are hand-chosen (not
+    # equiprobable) so every bin's expected count is far above the usual >=5 rule of thumb at
+    # `nsys = 4000`; the outside-cutoff category is the complement of the ball's volume in the
+    # cell, exact for the same no-clipping reason as the reference density above.
+    function chi2_pvalue(rs, L, sigma, epsilon, cutoff, kT, nsys)
+        U(r) = 4 * epsilon * ((sigma / r)^12 - (sigma / r)^6)
+        w(r) = 4 * pi * r^2 * exp(-U(r) / kT)
+        Zin, _ = quadgk(w, 0.0, cutoff; rtol = 1.0e-10)
+        Vout = L^3 - (4 / 3) * pi * cutoff^3
+        Z = Zin + Vout
+        edges = [0.0, 3.2, 3.6, 4.0, 4.5, 5.0]
+        pbins = [quadgk(w, edges[i], edges[i + 1]; rtol = 1.0e-10)[1] / Z for i in 1:(length(edges) - 1)]
+        pout = Vout / Z
+        obs = zeros(Int, length(pbins) + 1)
+        for r in rs
+            k = r >= edges[end] ? length(obs) : clamp(searchsortedlast(edges, r), 1, length(pbins))
+            obs[k] += 1
+        end
+        expected = nsys .* vcat(pbins, pout)
+        chi2 = sum((obs .- expected) .^ 2 ./ expected)
+        dof = length(expected) - 1
+        return gamma_inc(dof / 2, chi2 / 2)[2]   # upper-tail p-value
+    end
+
+    for F in (Float64, Float32)
+        rs, L, sigma, epsilon, cutoff, kT, nsys = boltzmann_case(F)
+        pval = chi2_pvalue(rs, L, sigma, epsilon, cutoff, kT, nsys)
+        # A broken accept/reject step (always-accept, always-reject, a sign error, or a proposal
+        # that silently depends on the current pose) puts the observed radii nowhere near this
+        # reference: substituting `MOVE_TRANSLATION` (which does not converge to this reference
+        # in only 40 steps) drives this same statistic to p ~ 1e-266. `1e-4` leaves ample margin
+        # above that while keeping this test's own false-positive rate low; the unmodified
+        # sampler gives p in 0.3-0.85 across several seeds and both precisions.
+        @test pval > 1.0e-4
+    end
+end
+
 @testitem "move_kernel! agrees with the CPU backend on CUDA" tags = [:gpu] setup = [MovesOracle] begin
     using StaticArrays, KernelAbstractions
     backend = nothing

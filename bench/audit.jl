@@ -177,6 +177,40 @@ results = vcat(
     signature_findings(PureAdsorb.select_and_propose, select_and_propose_types(Float32); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float64}, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.default_nblocks_per_chain, (Type{Float32}, Int); guarantees = (:typestable, :noalloc)),
+    # Milestone C task 3's μVT exchange moves (`src/moves.jl`): the device-kernel-safe primitives
+    # `mc_insert_kernel!`/`mc_delete_kernel!` call, both precisions. The kernels themselves are not
+    # audited here for the same reason `evaluate_move_kernel!`/`decide_move_kernel!`/
+    # `apply_sk_kernel!` are not; `exchange_constant_term`/`exchange_constant_coeffs` are host-only
+    # and allocating by design (their own docstrings) and are excluded for the same reason
+    # `insertion_constant_term` (`nvt.jl`) always has been.
+    signature_findings(PureAdsorb.log_insertion_prefactor, (Float64, Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.log_insertion_prefactor, (Float32, Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.log_deletion_prefactor, (Float64, Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.log_deletion_prefactor, (Float32, Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.metropolis_accept_muvt, (Float64, Float64, Float64, Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.metropolis_accept_muvt, (Float32, Float32, Float32, Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.no_guest_sites, (Type{Float64}, Val{3}); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.no_guest_sites, (Type{Float32}, Val{3}); guarantees = (:typestable, :noalloc)),
+    signature_findings(
+        PureAdsorb.reciprocal_exchange_energy,
+        (PureAdsorb.Guest{Float64, 3}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, Vector{SVector{3, Float64}}, Vector{Float64}, Vector{ComplexF64});
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.reciprocal_exchange_energy,
+        (PureAdsorb.Guest{Float32, 3}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, Vector{SVector{3, Float32}}, Vector{Float32}, Vector{ComplexF32});
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.apply_exchange_sk!,
+        (PureAdsorb.Guest{Float64, 3}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, Vector{SVector{3, Float64}}, Vector{ComplexF64}, Vector{Float64});
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.apply_exchange_sk!,
+        (PureAdsorb.Guest{Float32, 3}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, Vector{SVector{3, Float32}}, Vector{ComplexF32}, Vector{Float32});
+        guarantees = (:typestable, :noalloc)
+    ),
 )
 StrictMode.format_findings(stdout, results; format = :text)
 exit(StrictMode.nfailures(results))

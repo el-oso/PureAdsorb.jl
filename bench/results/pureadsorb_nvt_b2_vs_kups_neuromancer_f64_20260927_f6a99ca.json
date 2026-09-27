@@ -1,0 +1,38 @@
+{
+  "pureadsorb": {
+    "energy_per_system_eV": { "mean": -12.154340175744828, "sem": 0.02539381165259983, "n_blocks": 20 },
+    "acceptance": { "translation": 0.5528864687740941, "rotation": 0.3515125282547011, "reinsertion": 0.011524695776664281 },
+    "n_warmup_cycles": 2000,
+    "n_production_cycles": 5000,
+    "cycle_length": 50,
+    "seed": 42,
+    "step_trans_A": 0.3,
+    "step_rot": 0.3
+  },
+  "kups": {
+    "energy_full_system_eV": { "mean": -9274.10464747, "sem": 0.02424933, "n_blocks": 4 },
+    "energy_host_only_eV": { "mean": -9261.952, "sem": 0.0, "n_blocks": 2 },
+    "energy_guest_dependent_eV": { "mean": -12.15264747, "sem": 0.02424933 },
+    "loading": { "mean": 50.0, "sem": 0.0 },
+    "acceptance": { "translation": 0.49, "rotation": 0.48, "reinsertion": 0.0 }
+  },
+  "comparison": {
+    "quantity": "mean guest-dependent energy of RUBTAK 3x3x3 + 50 CO2 (kUPS's own total minus its own host-only run, since kUPS reports the full system energy including U_host-host, which PureAdsorb's total_energy never computes)",
+    "diff_eV": 0.0016927057448270435,
+    "combined_se_eV": 0.03511696205965521,
+    "diff_over_combined_se": 0.048200537864730962
+  },
+  "meta": {
+    "case": "B2: RUBTAK 3x3x3, 50 CO2, exchange_prob=0, written in kUPS's own config schema",
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "backend": "cpu",
+    "ewald_cutoff_A": 12.0,
+    "ewald_precision": 1.0e-6,
+    "temperature_K": 298.15,
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "pureadsorb_commit": "f6a99ca",
+    "date": "2026-09-27",
+    "note": "kUPS's energy_host_only_eV comes from a separate init_adsorbates=[0] run of the same host at the same seed/cutoff/precision (5 cycles, min_cycle_length=5, no guests possible so the value is exactly constant, sem=0). Acceptance rates: kUPS's step sizes adapt continuously toward 50% (R4); ours are frozen. Reinsertion acceptance near zero in both codes, consistent with a dense host making a fully random reinsertion almost always overlap."
+  }
+}

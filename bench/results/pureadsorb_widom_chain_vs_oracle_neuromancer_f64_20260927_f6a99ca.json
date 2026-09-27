@@ -1,0 +1,36 @@
+{
+  "b1_style_empty_box": {
+    "n_existing_guests": 10,
+    "n_test_poses": 2000,
+    "mean_boltzmann_weight_ours": 1.137689867026314,
+    "sem_ours": 0.012156661742126845,
+    "mean_boltzmann_weight_oracle": 1.1376919882577818,
+    "sem_oracle": 0.012156673196645979,
+    "diff": 2.121231467810958e-6,
+    "combined_se": 0.017192124008467983,
+    "diff_over_combined_se": 0.00012338390921134266
+  },
+  "b2_style_rubtak": {
+    "n_existing_guests": 10,
+    "n_test_poses": 150,
+    "mean_boltzmann_weight_ours": 505.742656275026,
+    "sem_ours": 227.08266909295438,
+    "mean_boltzmann_weight_oracle": 505.7447547512313,
+    "sem_oracle": 227.0834171794174,
+    "diff": 0.0020984762053330996,
+    "combined_se": 321.1439193885843,
+    "diff_over_combined_se": 6.534379381457141e-6
+  },
+  "meta": {
+    "purpose": "R5: the Widom-along-the-chain estimator has no kUPS counterpart to validate against (no shipped kUPS example runs N-guest NVT and Widom together). This validates widom_chain_kernel!'s test particle correctly seeing every OTHER existing guest (not only the host) against an independent, non-incremental oracle: a literal Ewald sum (ewald_energy) over every host-plus-guest position, computed once before and once after appending the test guest, never using the incremental Sk machinery under test.",
+    "why_boltzmann_weight_not_raw_deltaU": "insertion_constant_term/FrameworkBatch.constant_offset folds in an ORIENTATION-AVERAGED reciprocal self term (self_mean), not the exact per-orientation value, so any single insertion's raw ΔU carries a real, orientation-dependent error (bounded by self_term_halfrange). self_mean is defined as exactly the average of the true per-orientation value, so this error has zero mean and washes out in an average over enough random poses -- the same quantity Widom's own mu_ex estimator accumulates. A single-pose exact comparison was tried first and correctly failed at the ~1e-4 relative level for this reason before this statistical form was adopted.",
+    "test_items": [
+      "test/nvt_tests.jl::widom_chain_kernel! matches an independent oracle with other guests present: empty box (B1-style)",
+      "test/nvt_tests.jl::widom_chain_kernel! matches an independent oracle with other guests present: RUBTAK (B2-style)"
+    ],
+    "pureadsorb_commit": "f6a99ca",
+    "date": "2026-09-27",
+    "host": "neuromancer",
+    "julia": "1.13.0"
+  }
+}

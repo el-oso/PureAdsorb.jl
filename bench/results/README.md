@@ -843,3 +843,72 @@ is this project's own record of the "187 us/move" figure `be3f19e`'s commit mess
 never saved as JSON (the file at that name was overwritten by a later run before archival); the
 number differs from 187 by ordinary run-to-run GPU measurement noise, not a regression, and is
 now committed as part of the sweep JSON above rather than as a separate near-duplicate file.
+
+## Milestone B validation ladder (task 9)
+
+Run after fixing the energy audit's tolerance (`f6a99ca`). All PureAdsorb runs use the CPU
+backend (`neuromancer`), 298.15 K, real-space/Ewald cutoff 12 A, precision 1e-6, frozen step
+sizes (0.3 A translation, 0.3 rotation, R4), seed 42.
+
+**B0 — N=0 reproduces Milestone A exactly.** `run_nvt!` at `N=0` agrees with `widom_singlephase`
+to `rtol=1e-10` in μ_ex/K_H/q_st (not bit-for-bit: cycle-based blocking groups the same
+per-insertion Boltzmann weights differently from Milestone A's insertion-based blocking).
+`pureadsorb_nvt_b0_vs_milestone_a_neuromancer_20260927_f6a99ca.json`.
+
+**B1 — pure CO2 fluid, kUPS's own `examples/nvt_co2_pressure_test.yaml`** (50 CO2, 30 A cubic
+box, non-interacting host, `exchange_prob: 0`, 2000 warmup + 10000 production cycles, cycle
+length 50 — moves match exactly, `nsys*ncycles*50`):
+
+| | mean energy (eV) | SEM |
+|---|---|---|
+| PureAdsorb | -0.9632716 | 0.0101137 |
+| kUPS | -0.9639866 | 0.0080932 |
+
+Diff 0.05 combined SE. Acceptance: PureAdsorb 82.8/70.5/37.4% (translation/rotation/reinsertion,
+frozen steps) vs kUPS 54.6/70.7/38.2% (adapting steps, R4) — translation differs because our step
+is frozen and, at 0.3 A, happens to sit well above kUPS's adapted ~50%-target value; rotation and
+reinsertion (which kUPS never actually tunes, Task 1 finding #2) land close by construction.
+`pureadsorb_nvt_b1_vs_kups_neuromancer_f64_20260927_f6a99ca.json` (PureAdsorb on CPU, kUPS on the
+RTX 4070).
+
+**Float32 vs Float64 (B1).** Same case, same seed, Float32 vs Float64:
+
+| | mean energy (eV) | SEM |
+|---|---|---|
+| Float64 | -0.9632716 | 0.0101137 |
+| Float32 | -0.9726815 | 0.0095101 |
+
+Diff 0.68 combined SE — no statistically significant Float32 bias detected in mean energy.
+`pureadsorb_nvt_b1_float32_vs_float64_neuromancer_20260927_f6a99ca.json`.
+
+**B2 — RUBTAK 3x3x3 + 50 CO2, `exchange_prob: 0`**, written in kUPS's own config schema (2000
+warmup + 5000 production cycles). kUPS reports the FULL system energy (it computes
+`U_host-host`; PureAdsorb's `total_energy` never does, by design), so its number is compared
+against `energy(N=50) - energy(N=0)` from a separate kUPS run of the same host:
+
+| | mean guest-dependent energy (eV) | SEM |
+|---|---|---|
+| PureAdsorb | -12.154340 | 0.025394 |
+| kUPS (full − host-only) | -12.152647 | 0.024249 |
+
+Diff 0.05 combined SE. Acceptance: PureAdsorb 55.3/35.2/1.15% vs kUPS 49/48/0% — reinsertion is
+near zero in both codes (a dense host makes a fully random reinsertion almost always overlap).
+`pureadsorb_nvt_b2_vs_kups_neuromancer_f64_20260927_f6a99ca.json`.
+
+**Widom-along-the-chain vs an independent oracle (no kUPS counterpart, R5).** No kUPS example
+runs N-guest NVT and Widom together, so this validates `widom_chain_kernel!`'s test particle
+seeing every OTHER existing guest (not only the host) against a literal, non-incremental Ewald
+sum (`ewald_energy`) computed independently before and after appending the test guest. A single
+fixed pose does not match exactly — `constant_offset`'s orientation-AVERAGED reciprocal self term
+carries a real per-pose error (bounded by `self_term_halfrange`) whose mean is zero by
+construction — so this compares the mean Boltzmann weight over many random poses instead, the
+same quantity Widom's own μ_ex accumulates:
+
+| Case | poses | diff / combined SE |
+|---|---|---|
+| Empty box + 10 guests | 2000 | 0.00012 |
+| RUBTAK + 10 guests | 150 | 0.0000065 |
+
+`pureadsorb_widom_chain_vs_oracle_neuromancer_f64_20260927_f6a99ca.json`. Test items:
+`test/nvt_tests.jl`'s two `"...matches an independent oracle with other guests present..."` items
+(the RUBTAK one tagged `:slow`, ~1 s/pose from a full non-incremental Ewald sum over 3078+ atoms).

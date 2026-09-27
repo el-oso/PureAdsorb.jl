@@ -1,0 +1,13 @@
+{
+  "result": "pass",
+  "rtol": 1.0e-10,
+  "quantities": ["mu_ex", "K_H", "q_st"],
+  "meta": {
+    "case": "B0: N=0 reproduces Milestone A's widom exactly",
+    "test_item": "test/nvt_tests.jl::N=0 reproduces Milestone A's widom exactly (to floating-point rounding)",
+    "note": "Not bit-for-bit: cycle-based blocking (this milestone's run_nvt!) groups samples differently from Milestone A's insertion-based blocking (widom_singlephase), so the two estimators sum the same per-insertion Boltzmann weights in the same order into differently-shaped block partitions. Their totals therefore agree to floating-point rounding (rtol 1e-10) rather than bit for bit -- the same standard this project already applies to other independently-grouped floating-point sums (moves_tests.jl's GPU-vs-CPU comparison).",
+    "pureadsorb_commit": "f6a99ca",
+    "date": "2026-09-27",
+    "verified_after": "the energy-audit tolerance fix (item 1, commit f6a99ca)"
+  }
+}

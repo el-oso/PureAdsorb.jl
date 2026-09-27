@@ -56,3 +56,61 @@ computed from the same set of insertions in each code, their deviations from eac
 correlated rather than independent draws — a single set of Widom samples that happens to run
 slightly high or low in one code moves μ_ex, K_H and q_st together. The reference test's
 acceptance criterion is 3 combined standard errors, so this run passes with room to spare.
+
+## Milestone B (NVT) validation ladder
+
+Internal checks (the energy audit, `audit_energy!`, and reversibility) come first; they find
+bugs that cross-code agreement can hide. `audit_energy!`'s tolerance is derived from Higham's
+recursive-summation bound applied to the actual per-move rounding scale that accumulates in
+`SystemState.sk_abs_accum`/`energy_abs_accum`, not to the running total's own magnitude, which
+cancellation can make far smaller than the terms that produced it (`src/audit.jl`). Measured
+false-positive rate on a clean chain over 15 fresh seeds at 10, 100, 500, 3,000, 5,000 and 10,000
+accepted moves, both precisions: 0/15 at every checkpoint.
+
+**B0 — `N = 0` reproduces Milestone A.** `run_nvt!` at `N=0` agrees with `widom_singlephase` to
+`rtol = 1e-10` in μ_ex, K_H and q_st — not bit-for-bit: this milestone's cycle-based block
+averaging groups the same per-insertion Boltzmann weights differently from Milestone A's
+insertion-based blocking, so the two estimators' totals agree to floating-point rounding rather
+than bit for bit, the same standard this project already applies to other independently-grouped
+floating-point sums.
+
+**B1 — pure guest–guest, kUPS's `examples/nvt_co2_pressure_test.yaml`.** 50 CO2 in a 30 Å cubic
+box whose only host site is non-interacting (`exchange_prob: 0`), so the host contributes
+identically zero and the comparison isolates guest–guest Lennard-Jones and Ewald. Mean total
+energy agrees to 0.05 combined standard errors (both codes' own block-averaged SEM; kUPS's
+`optimal_block_average` and this package's fixed block count are different rules, so neither
+claims agreement tighter than the looser of the two). Acceptance rates differ in translation
+(82.8% here vs 54.6% for kUPS) because kUPS's step sizes adapt toward a 50% target continuously
+(R4) while this package freezes them after warmup — a known, deliberate divergence, not an error;
+rotation and reinsertion rates land close (kUPS never actually tunes reinsertion's step, Task 1
+finding #2).
+
+**Float32 vs Float64 (B1).** Same case, same seed: mean energy differs by 0.68 combined standard
+errors — no statistically significant Float32 bias detected. The design's own estimate was about
+0.005 kT of rounding error per move; this measurement, not the estimate, is what decides whether
+the Float32 row is publishable.
+
+**B2 — host and guests together.** RUBTAK 3×3×3 with 50 CO2, `exchange_prob: 0`, written in
+kUPS's own config schema. kUPS's own reported energy is the FULL system energy (it computes
+`U_host-host`; this package's `total_energy` never does, since that term is a constant that
+cancels in every difference and plays no role in an absolute value either). Comparing against
+kUPS's own `energy(N=50) - energy(N=0)` for the same host, mean guest-dependent energy agrees to
+0.05 combined standard errors.
+
+**Widom along the chain has no kUPS counterpart (R5).** No kUPS example runs N-guest NVT and
+Widom together: its Widom entry point (`mcmc_widom.py`) uses a different config class from the
+one that runs the NVT example (`mcmc_rigid.py`), and its only Widom example has zero guests. This
+piece is validated instead against an independent, non-incremental oracle: a literal Ewald sum
+(`ewald_energy`) over every host-plus-guest position, computed once before and once after
+appending the test guest — never touching the incremental `Sk` machinery under test. A single
+fixed pose does not match exactly: `FrameworkBatch.constant_offset` folds in an
+orientation-AVERAGED reciprocal self term (`self_mean`), not the exact per-orientation value, so
+any one insertion carries a real error bounded by `self_term_halfrange`. Since `self_mean` is
+defined as exactly the average of the true per-orientation value, this error has zero mean and
+washes out in a Boltzmann-weighted average over enough random poses — the same quantity Widom's
+own μ_ex accumulates — so that average, not a single pose, is what this validates: agreement to
+better than 0.001 combined standard errors for both an empty-box-plus-guests and a
+RUBTAK-plus-guests configuration (`test/nvt_tests.jl`).
+
+Every number and its provenance is in `bench/results/README.md`'s "Milestone B validation ladder"
+section and the JSON files it cites.

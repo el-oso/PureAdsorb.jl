@@ -1,0 +1,29 @@
+{
+  "float64": { "energy_per_system_eV": { "mean": -0.9632716355574094, "sem": 0.010113653768116017, "n_blocks": 20 } },
+  "float32": { "energy_per_system_eV": { "mean": -0.9726815, "sem": 0.0095101, "n_blocks": 20 } },
+  "comparison": {
+    "quantity": "mean total energy of 50 CO2 in a 30 A cubic box (B1 case), Float32 vs Float64, same seed/steps/cycles",
+    "diff_eV": 0.009409864442590608,
+    "combined_se_eV": 0.013883143576683879,
+    "diff_over_combined_se": 0.6778027704374943,
+    "verdict": "No statistically significant Float32 bias detected in mean energy at this precision (0.68 combined SE, well under 1). Float32 is publishable for this quantity, not merely fast."
+  },
+  "meta": {
+    "case": "B1 (kUPS examples/nvt_co2_pressure_test.yaml): 50 CO2, 30 A cubic box, host/empty.cif, exchange_prob=0",
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "backend": "cpu",
+    "ewald_cutoff_A": 12.0,
+    "ewald_precision": 1.0e-6,
+    "temperature_K": 298.15,
+    "n_warmup_cycles": 2000,
+    "n_production_cycles": 10000,
+    "cycle_length": 50,
+    "seed": 42,
+    "step_trans": 0.3,
+    "step_rot": 0.3,
+    "pureadsorb_commit": "f6a99ca",
+    "date": "2026-09-27",
+    "note": "The design's own estimate was ~0.005 kT of Float32 rounding error per move; this measurement is what decides the question empirically rather than by estimate."
+  }
+}

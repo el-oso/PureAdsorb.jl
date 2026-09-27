@@ -1,0 +1,38 @@
+{
+  "pureadsorb": {
+    "energy_per_system_eV": { "mean": -0.9632716355574094, "sem": 0.010113653768116017, "n_blocks": 20 },
+    "acceptance": { "translation": 0.8276361581785068, "rotation": 0.7048417915469939, "reinsertion": 0.3741395293202954 },
+    "n_warmup_cycles": 2000,
+    "n_production_cycles": 10000,
+    "cycle_length": 50,
+    "seed": 42,
+    "step_trans_A": 0.3,
+    "step_rot": 0.3
+  },
+  "kups": {
+    "energy_per_system_eV": { "mean": -0.96398658, "sem": 0.00809324, "n_blocks": 39 },
+    "loading": { "mean": 50.0, "sem": 0.0 },
+    "acceptance": { "translation": null, "rotation": null, "reinsertion": null }
+  },
+  "comparison": {
+    "quantity": "mean total energy of 50 CO2 in a 30 A cubic box with a non-interacting host (guest-guest LJ + Ewald only)",
+    "diff_eV": 0.0007150044425906063,
+    "combined_se_eV": 0.012953961571522445,
+    "diff_over_combined_se": 0.05519163929781912
+  },
+  "meta": {
+    "case": "B1 (kUPS examples/nvt_co2_pressure_test.yaml): 50 CO2, 30 A cubic box, host/empty.cif, exchange_prob=0",
+    "host": "neuromancer",
+    "pureadsorb_backend": "cpu",
+    "kups_gpu": "NVIDIA GeForce RTX 4070",
+    "julia": "1.13.0",
+    "precision": "f64",
+    "ewald_cutoff_A": 12.0,
+    "ewald_precision": 1.0e-6,
+    "temperature_K": 298.15,
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "pureadsorb_commit": "f6a99ca",
+    "date": "2026-09-27",
+    "note": "kUPS's own step sizes adapt continuously (R4); ours are frozen at construction. Cycle lengths and move counts match exactly (nsys*ncycles*50)."
+  }
+}

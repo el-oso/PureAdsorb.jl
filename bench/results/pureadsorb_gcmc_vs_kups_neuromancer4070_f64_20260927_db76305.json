@@ -1,0 +1,94 @@
+{
+  "pureadsorb": {
+    "loading": {
+      "mean": 31.170800000000003,
+      "sem": 0.5771595735438626,
+      "nblocks": 10
+    },
+    "energy_eV": {
+      "mean": -7.449638870780703,
+      "sem": 0.15094932112431367,
+      "nblocks": 10
+    },
+    "q_st_eV": {
+      "mean": 0.26291145365820845,
+      "sem": 0.0020774911929476456,
+      "corr_UN": -0.9872973340120611
+    },
+    "max_occupancy": 49,
+    "capacity": 300,
+    "n_warmup_cycles": 1000,
+    "n_production_cycles": 10000,
+    "min_cycle_length": 20,
+    "exchange_prob": 1.0,
+    "seed": 42,
+    "backend": "cpu"
+  },
+  "kups": {
+    "energy_full_system_eV": {
+      "mean": -9269.38671875,
+      "sem": 0.24102404713630676,
+      "n_blocks": 4
+    },
+    "energy_host_only_eV": {
+      "mean": -9261.9521484375,
+      "sem": 0.0,
+      "n_blocks": 25
+    },
+    "energy_guest_dependent_eV": {
+      "mean": -7.4345703125,
+      "sem": 0.24102404713630676
+    },
+    "loading": {
+      "mean": 31.21579933166504,
+      "sem": 0.8790535926818848,
+      "n_blocks": 4
+    },
+    "heat_of_adsorption_raw_eV": {
+      "mean": -0.2603582739830017,
+      "sem": 0.002976414980366826,
+      "n_blocks": 4
+    },
+    "heat_of_adsorption_sign_corrected_eV": {
+      "mean": 0.2603582739830017,
+      "sem": 0.002976414980366826
+    }
+  },
+  "comparison": {
+    "loading": {
+      "diff": -0.04499933166503567,
+      "combined_se": 1.0515932636434404,
+      "diff_over_combined_se": -0.042791574671301257
+    },
+    "energy_eV": {
+      "diff": -0.01506855828070286,
+      "combined_se": 0.2843910843290552,
+      "diff_over_combined_se": -0.05298533994570575
+    },
+    "q_st_eV": {
+      "diff": 0.0025531796752067404,
+      "combined_se": 0.0036297404579566134,
+      "diff_over_combined_se": 0.7034055753518172
+    }
+  },
+  "meta": {
+    "case": "kUPS examples/mcmc_rigid.yaml UNCHANGED: RUBTAK 3x3x3 + CO2, 298.15 K, real-space/Ewald cutoff 12 A, Ewald precision 1e-6, pressure=1e4 Pa (yaml comment says '10 bar', wrong: this is 0.1 bar, matched literally), 100% exchange (translation/rotation/reinsertion are 0; exchange_prob unset there defaults to 0.5, the only nonzero weight), num_warmup_cycles=1000, num_cycles=10000, min_cycle_length=20, seed=42",
+    "fugacity_pa": 9994.878903375942,
+    "fugacity_coefficient_phi": 0.9994878903375942,
+    "note_fugacity": "phi~0.9995 at this pressure: this comparison does not exercise the equation-of-state path beyond a 0.05% correction; ideal_gas_tests.jl's CO2-at-5-MPa case validates that separately (a ~20% effect there).",
+    "note_qst_sign": "kUPS's GCMC analyzer (application/mcmc/analysis.py:122-126) computes cov(U,N)/var(N) - kT; its own Widom analyzer (analysis.py:326-332) computes kT - <dU*W>/<W>, the opposite sign. PureAdsorb's fluctuation_qst follows the Widom convention, so heat_of_adsorption_sign_corrected_eV (kUPS's raw value negated) is what is compared above.",
+    "note_energy_baseline": "kUPS reports the FULL system energy including U_host-host, a constant PureAdsorb's total_energy never computes since it cancels in every difference. energy_host_only_eV comes from a separate init_adsorbates=[0], exchange_prob=0, 100-cycle run of the same host at the same seed/cutoff/precision.",
+    "note_nblocks": "kUPS's n_blocks is chosen automatically by its own optimal_block_average (4 here); PureAdsorb's is fixed at 10 (run_gcmc!'s own default) -- different block-count rules, as in every other cross-code comparison in this project.",
+    "host": "neuromancer",
+    "gpu_kups": "NVIDIA GeForce RTX 4070",
+    "backend_pureadsorb": "cpu",
+    "julia": "1.13.0",
+    "ewald_cutoff_A": 12.0,
+    "ewald_precision": 1.0e-6,
+    "temperature_K": 298.15,
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "pureadsorb_commit": "db76305",
+    "date": "2026-09-27",
+    "kups_raw_source": "kups_gcmc_main_neuromancer4070_f64_20260927.json"
+  }
+}

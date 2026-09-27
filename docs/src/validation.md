@@ -197,5 +197,40 @@ tolerance by the number of terms `total_energy` actually sums, the false-positiv
 every checkpoint, both precisions
 (`bench/results/pureadsorb_audit_tolerance_falsepositive_neuromancer4070_cuda_20260927_7f1032f.json`).
 
+**C4 — kUPS GCMC cross-check.** kUPS's shipped `examples/mcmc_rigid.yaml`, run UNCHANGED: its own
+comment mislabels a pressure of 1e4 Pa (0.1 bar) as "10 bar", and leaves
+translation/rotation/reinsertion at 0 with `exchange_prob` unset (defaulting to 0.5, the only
+nonzero weight, so every cycle is an exchange attempt) — task 9 matches both quirks literally
+rather than correcting them, since correcting either stops being the same case. RUBTAK 3x3x3 +
+CO2, 298.15 K, matched cutoffs/precision/seed/cycle counts:
+
+| Quantity | PureAdsorb | kUPS | Combined SE | Deviation |
+|---|---|---|---|---|
+| Loading (guests) | 31.171 ± 0.577 | 31.216 ± 0.879 | 1.052 | 0.043 σ |
+| Energy (eV) | −7.4496 ± 0.1509 | −7.4346 ± 0.2410 | 0.2844 | 0.053 σ |
+| q_st (eV) | 0.26291 ± 0.00208 | 0.26036 ± 0.00298 | 0.00363 | 0.703 σ |
+
+Two conventions this comparison must get right: kUPS reports the FULL system energy including
+`U_host-host`, subtracted here via a second kUPS run of the same host at zero guests (exactly
+Milestone B's B2 issue); and kUPS's GCMC analyzer computes the OPPOSITE sign of its own Widom
+analyzer for `q_st` (`cov(U,N)/var(N) - kT` vs. `kT - <dU*W>/<W>`), so its raw output is negated
+before comparison, matching PureAdsorb's own Widom-convention `fluctuation_qst`. At this pressure
+`phi=0.99949`, so the comparison does not exercise the equation-of-state path beyond a 0.05%
+correction (C2, above, covers that). All three quantities agree within 1 combined standard error.
+
+**kUPS's GCMC memory ceiling is 8 systems** on a 12 GiB RTX 4070 (`bench/run_kups_gcmc.sh
+nscale`), worse than its 32-system NVT ceiling for a comparable case — bounding what a batched
+throughput comparison could even attempt.
+
+**RASPA IRMOF-1 methane isotherm: not attempted.** PureAdsorb's `read_cif` requires space group P1
+and a populated `_atom_site_charge` column. Three independent, unmodified public IRMOF-1 CIFs were
+checked (RASPA2's own canonical file, `numat/EQeq`, `SimonEnsemble/PorousMaterials.jl`): none has
+both — the RASPA2 file is `F m -3 m` with no charges, and the two P1 files also carry no charges
+(IRMOF-1's usual force fields assign charge per atom type/role, not per atom in the CIF). Producing
+a compliant file would mean either symmetry-expanding the non-P1 file or matching a separate
+literature charge table onto bare element-symbol labels by geometric role — exactly the kind of
+unstated structure hand-conversion this milestone's plan rules out, so it was not attempted, and no
+comparison against the published RASPA isotherm was run.
+
 Every number above and its provenance is in `bench/results/README.md` and the JSON/test files it
 cites.

@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "kups-jax",
+    "precision": "f64",
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "date": "2026-09-27T21:08:31+02:00",
+    "config": "N independent copies of examples/mcmc_rigid.yaml (RUBTAK 3x3x3 + CO2, 100% exchange), num_warmup_cycles=0"
+  },
+  "num_cycles": 200,
+  "samples": [
+    {
+      "nsys": 1,
+      "num_cycles": 200,
+      "wall_s": 25.440875573
+    },
+    {
+      "nsys": 2,
+      "num_cycles": 200,
+      "wall_s": 30.462691247
+    },
+    {
+      "nsys": 4,
+      "num_cycles": 200,
+      "wall_s": 31.367093123
+    },
+    {
+      "nsys": 8,
+      "num_cycles": 200,
+      "wall_s": 37.987017977
+    }
+  ],
+  "first_failure": {
+    "nsys": 16,
+    "error": "W0927 21:08:21.584978  100828 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 13.18GiB (rounded to 14153538048)requested by op  jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 13.18GiB. "
+  }
+}

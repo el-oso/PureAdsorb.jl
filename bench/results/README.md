@@ -1159,3 +1159,93 @@ median ratio to within 0.02 — the sparsest loadings (`N=6..8`, under 4,000 occ
 discriminate reliably, the sparse-loading fallback the design anticipates.
 
 File: `pureadsorb_henry_r2_detailedbalance_neuromancer4070_cuda_20260927_72d9547.json`.
+
+## Milestone C validation against kUPS GCMC and RASPA (task 9)
+
+### kUPS GCMC cross-check
+
+`bench/run_kups_gcmc.sh main` runs kUPS's shipped `examples/mcmc_rigid.yaml` UNCHANGED — its own
+comment labels the pressure "10_000  # Pa (10 bar)", which is wrong (1e4 Pa is 0.1 bar), and
+`translation_prob`/`rotation_prob`/`reinsertion_prob` are all 0 there with `exchange_prob` left
+unset (defaulting to `RunConfig`'s 0.5, the only nonzero weight, so every cycle is an exchange
+attempt). Task 9 matches both quirks literally rather than correcting them, since correcting
+either would no longer be the same case. `bench/gcmc_vs_kups.jl` runs the PureAdsorb side at the
+matched parameters (RUBTAK 3x3x3, CO2, 298.15 K, real-space/Ewald cutoff 12 A, Ewald precision
+1e-6, `num_warmup_cycles=1000`, `num_cycles=10000`, `min_cycle_length=20`, seed 42, capacity 300,
+CPU backend) and writes the combined comparison:
+
+| Quantity | PureAdsorb | kUPS | Combined SE | Deviation |
+|---|---|---|---|---|
+| Loading (guests) | 31.171 ± 0.577 | 31.216 ± 0.879 | 1.052 | 0.043 σ |
+| Energy (eV) | −7.4496 ± 0.1509 | −7.4346 ± 0.2410 | 0.2844 | 0.053 σ |
+| q_st (eV) | 0.26291 ± 0.00208 | 0.26036 ± 0.00298 | 0.00363 | 0.703 σ |
+
+`pureadsorb_gcmc_vs_kups_neuromancer4070_f64_20260927_db76305.json` (PureAdsorb on CPU, kUPS on
+the RTX 4070); the raw kUPS output (`bench/run_kups_gcmc.sh main`) is
+`kups_gcmc_main_neuromancer4070_f64_20260927.json`.
+
+Two conventions this comparison must not get wrong, both recorded in the JSON's own `meta` notes:
+
+- **Energy baseline.** kUPS reports the FULL system energy including `U_host-host`, a constant
+  PureAdsorb's `total_energy` never computes since it cancels in every difference (exactly
+  Milestone B's B2 issue). `energy_host_only_eV` (−9261.9521 eV, SEM 0 to machine precision) comes
+  from a second kUPS run of the same host: `init_adsorbates: [0]`, `exchange_prob: 0`, 100 cycles.
+  Subtracting it from kUPS's full-system mean (−9269.3867 eV) gives the guest-dependent energy
+  PureAdsorb's own number is compared against.
+- **`q_st` sign.** kUPS's GCMC analyzer (`application/mcmc/analysis.py:122-126`) computes
+  `cov(U,N)/var(N) - kT`; its own Widom analyzer (`analysis.py:326-332`) computes the opposite,
+  `kT - <dU*W>/<W>`. PureAdsorb's `fluctuation_qst` follows the Widom convention, so kUPS's raw
+  GCMC output (−0.26036 eV) is negated before comparison, not used as reported.
+
+At this pressure `peng_robinson_fugacity` gives `phi=0.99949`: this comparison exercises the
+combinatorial insertion/deletion machinery and the energy/q_st pipeline under real interactions,
+**not** the equation-of-state path beyond a 0.05% correction (`ideal_gas_tests.jl`'s CO2-at-5-MPa
+case, a ~20% effect, covers that separately). kUPS's own `n_blocks` is chosen automatically by
+`optimal_block_average` (4 here); PureAdsorb's is fixed at 10 (`run_gcmc!`'s own default) — the
+same "different block-count rules, neither claims tighter agreement than the looser" caveat as
+every other cross-code comparison in this file.
+
+All three quantities agree within 1 combined standard error, well inside the 3σ bar this
+project's other cross-code checks (`reference_tests.jl`) use.
+
+### kUPS GCMC memory ceiling
+
+`bench/run_kups_gcmc.sh nscale 200 64` batches N independent copies of the same `mcmc_rigid.yaml`
+case (200 cycles, no warmup) doubling `nsys` until failure:
+
+| nsys | wall time (s) |
+|---|---|
+| 1 | 25.4 |
+| 2 | 30.5 |
+| 4 | 31.4 |
+| 8 | 38.0 |
+| 16 | **RESOURCE_EXHAUSTED**, 13.18 GiB requested |
+
+`kups_gcmc_nscale_neuromancer4070_f64_20260927.json`. **kUPS's GCMC ceiling on this 12 GiB card is
+8 systems** — worse than Milestone B's 32-system NVT ceiling for a comparable RUBTAK+CO2 case, as
+the design doc anticipated (a GCMC batch additionally reserves `max_num_adsorbates` buffer slots
+per system, auto-estimated at up to `1e4` times the ideal-gas reservoir occupancy). This bounds
+what a like-for-like batched throughput comparison against kUPS's GCMC could even attempt; task 9
+did not attempt one (task 10 covers PureAdsorb's own throughput separately).
+
+### RASPA IRMOF-1 methane isotherm: blocked, not attempted
+
+PureAdsorb's `read_cif` accepts only space group P1 with a populated `_atom_site_charge` column
+(`src/structure.jl`). Three independent, publicly available IRMOF-1 structure files were checked
+directly (fetched unmodified, not edited):
+
+| Source | Space group | Charge column |
+|---|---|---|
+| `numat/RASPA2` (`structures/mofs/cif/IRMOF-1.cif`, D. Dubbeldam, RASPA's own canonical file) | `F m -3 m` (225) | absent |
+| `numat/EQeq` (`IRMOF-1.cif`) | P1 | absent |
+| `SimonEnsemble/PorousMaterials.jl` (`viz/IRMOF-1.cif`) | P1 | absent |
+
+No file combining both requirements was found. IRMOF-1's usual force fields (UFF/DREIDING LJ,
+literature or DDEC partial charges) assign charge **per atom type/role** (Zn, the central oxo
+O, carboxylate O, carboxylate C, substituted/unsubstituted ring C, H) rather than storing a value
+per atom in the CIF; producing a P1-with-charges file would mean either symmetry-expanding the
+non-P1 RASPA2 file or matching a separate literature charge table onto the P1 files' bare
+element-symbol labels by geometric/topological role — both are exactly the "hand-convert a
+structure without saying exactly what was done" the plan rules out, so neither was attempted. Per
+the plan's own contingency, this half of task 9 is reported as blocked rather than worked around:
+**no RASPA IRMOF-1 methane isotherm comparison was run.**

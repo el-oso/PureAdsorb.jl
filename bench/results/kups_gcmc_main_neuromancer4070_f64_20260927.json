@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "host": "neuromancer4070",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "kups-jax",
+    "precision": "f64",
+    "kups_commit": "e183c9aae820b8c98333f8f9ac27a7ac9cfa213d",
+    "date": "2026-09-27T21:03:00+02:00",
+    "config": "examples/mcmc_rigid.yaml unchanged: RUBTAK 3x3x3, CO2, 298.15K, pressure=1e4 Pa (labelled 10 bar in the yaml, actually 0.1 bar), 100% exchange (other three move probs are 0), num_cycles=10000, num_warmup_cycles=1000, min_cycle_length=20, seed=42",
+    "baseline_config": "same host, init_adsorbates=[0], exchange_prob=0, 100 cycles, gives U_host-host (kUPS reports the FULL system energy; PureAdsorb never does)"
+  },
+  "main": {
+    "energy": {
+      "mean": -9269.38671875,
+      "sem": 0.24102404713630676,
+      "n_blocks": 4
+    },
+    "loading": {
+      "mean": 31.21579933166504,
+      "sem": 0.8790535926818848,
+      "n_blocks": 4
+    },
+    "heat_of_adsorption": {
+      "mean": -0.2603582739830017,
+      "sem": 0.002976414980366826,
+      "n_blocks": 4
+    }
+  },
+  "baseline": {
+    "energy": {
+      "mean": -9261.9521484375,
+      "sem": 0.0,
+      "n_blocks": 25
+    },
+    "loading": {
+      "mean": 0.0,
+      "sem": 0.0,
+      "n_blocks": 25
+    },
+    "heat_of_adsorption": {
+      "mean": null,
+      "sem": null,
+      "n_blocks": 25
+    }
+  }
+}

@@ -7,6 +7,7 @@ makedocs(;
     source = "src", build = "build",
     pages = [
         "Home" => "index.md",
+        "Why this package exists" => "context.md",
         "Theory" => "theory.md",
         "Design" => "design.md",
         "Validation" => "validation.md",

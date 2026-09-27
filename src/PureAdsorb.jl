@@ -7,6 +7,7 @@ using SpecialFunctions: erfc
 using Random: Xoshiro, AbstractRNG
 using LinearAlgebra: det, norm, normalize, cross, dot, I, Diagonal
 using YAML
+using Unitful: Unitful, ustrip, @u_str
 
 include("constants.jl")
 include("cell.jl")
@@ -25,6 +26,7 @@ include("guest.jl")
 include("moves.jl")
 include("audit.jl")
 include("nvt.jl")
+include("units.jl")
 
 export Framework, read_cif, replicate, ForceField, read_forcefield, Guest, read_guest,
     EwaldParams, FrameworkBatch, widom, WidomResult, SystemState,

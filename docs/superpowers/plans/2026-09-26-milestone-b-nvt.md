@@ -689,6 +689,42 @@ not of insufficient work. The throughput floor for this move is about 0.15 µs; 
 chains is fifty times off it, and 5.79 ms at one chain is four orders off. Both are the same
 defect.
 
+### Addendum, 2026-09-27 — the GPU figures above were not warmed to boost clock
+
+`bench/chain_sweep_bench.jl` (the source of every GPU number in this section, and of the CPU row
+below) times each kernel with `Chairmarks.@be(...; seconds = 10, samples = 10, evals = 1)` and no
+warm-up loop of its own. Reading `Chairmarks.jl`'s `@be` implementation: because `evals` is given
+explicitly, its calibration phase is skipped, and its sampling loop stops at the *first* of "ran
+out of time" or "collected `samples` samples" — not the maximum of the two. Every kernel this
+script measures finishes 10 calls in well under the 10-second budget, so the loop always exits on
+the sample count; the nominal multi-second budget never actually binds. Total recorded launches
+per data point are 1 discarded warm-up call plus 10 timed samples, on top of one untimed call the
+script makes before `@be` runs — about a dozen launches regardless of `nsys`, on an RTX 4070 that
+idles at 210 MHz against a 3,105 MHz boost clock.
+
+That a dozen launches is not enough is independently confirmed by `bench/mc_step_bench.jl`
+(written after this plan; see `docs/src/benchmarks.md`), which measured this same card's
+clock-ramp directly: `mc_step!` at `nsys=1`, Float64, drops from about 2.8 ms on the first calls
+to 220–250 µs at steady state, with the ramp itself taking 100–150 calls. `chain_sweep_bench.jl`
+has no wall-clock warm-up loop at all (`mc_step_bench.jl` added one — loop on wall-clock time
+until 0.5 s elapses, immediately before timing — specifically because of this measurement), so
+every GPU figure quoted above from it (the "5.79 ms"/"8.24 µs" pair the curve-shape argument and
+item 1's "Expected" column are built on, and the GPU-vs-CPU comparison in Defect 2) was almost
+certainly measured near the idle clock and is **unreliable** — plausibly off by close to the
+2.8 ms/220 µs ≈ 11–13× ratio measured above, which matches the roughly 8–10× gap between what
+this section quotes and the corresponding rows actually committed in
+`bench/results/pureadsorb_chainsweep_neuromancer4070_cuda_{f32,f64}_20260927_0eba49b.json` (e.g.
+`f64`, `nsys=1`: 44.9 ms recorded there, not the 5.79 ms — itself the `f32` row — quoted in the
+prose above). The CPU row ("367–382 ns/move") is unaffected by the clock question but is a
+separate unit error: the committed CPU JSON gives 367–382 *µs*/move, a thousand-fold larger.
+
+None of this changes any conclusion the plan actually acted on: item 1 (the workgroup-per-chain
+kernel) was built regardless, and its replacement, `mc_step!`, was re-measured with a correct
+wall-clock warm-up and gives 187.2 µs/move at one chain, Float64 (`docs/src/benchmarks.md`) — the
+current, trustworthy baseline. This addendum exists so the "5.79 ms → 10–30 µs" and "8.24 µs"
+figures above are not mistaken for validated measurements; they were never re-measured warm, and
+should not be cited as such.
+
 ### Ranked plan
 
 | # | Item | Physics | Expected | Deciding measurement |

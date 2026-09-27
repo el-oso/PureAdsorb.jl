@@ -204,3 +204,90 @@ never `eachindex` over those arrays, since a work-item only ever touches its own
 
 Kernels never throw for any other reason either: every check that could fail is performed
 before the kernel launches.
+
+## Milestone C: grand canonical Monte Carlo
+
+The canonical (NVT) moves above sample at a fixed guest count. Grand canonical Monte Carlo (μVT)
+lets that count fluctuate, which is what produces an adsorption isotherm. Three additions make
+this possible: a variable-occupancy `SystemState`, two new moves (insertion and deletion), and a
+driver that mixes them with the existing NVT moves.
+
+**Variable occupancy** (`src/state.jl`) — `SystemState` already reserves a fixed CAPACITY per
+system (`guest_offsets`) and tracks a live `occupancy` count separately; Milestone B never changes
+`occupancy` after construction, and Milestone C is what exercises it. `insert_guest!` writes the
+new guest at slot `occupancy[n]+1` and increments; `delete_guest!` swaps the system's LAST occupied
+slot into the freed one and decrements, keeping every occupied slot contiguous from the start of
+the system's reserved block without ever shifting the array. Both update only
+`refpoints`/`orientations`/`host_energy`/`occupancy`; a caller applying a μVT move is responsible
+for updating `Sk` and `energy` to match, exactly as an NVT move's own kernels do. Every energy
+loop is bounded by `occupancy`, never by the reserved capacity — a slot beyond `occupancy` holds a
+stale or sentinel pose no move may touch.
+
+**The μVT moves** (`src/moves.jl`) — `mc_insert!`/`mc_delete!` share `mc_step!`'s own
+evaluate/decide/apply three-kernel structure: an evaluate kernel fans a chain's host-atom
+(insertion only — deletion reads the cached `host_energy` instead), guest-guest and k-vector loops
+across `nblocks_per_chain` workgroups, calling the SAME `host_guest_realspace_energy_range` and
+`reciprocal_exchange_energy` the NVT path uses; a decide kernel (one work-item per chain) sums the
+partial sums and applies `metropolis_accept_muvt`; an apply kernel updates `Sk` on the chains that
+accepted. The one piece that could not be reused as-is is the guest-guest term:
+`guest_guest_move_delta` sums an old/new POSE-PAIR delta for a guest that already exists and is
+moving, whereas an exchange move's guest has only ONE real pose (a candidate insertion, or a guest
+about to be removed) — `guest_pair_realspace_energy_range` is that single-pose analogue.
+`exchange_constant_coeffs` precomputes the pose-independent term's two affine coefficients
+(`p`, `q` such that the term is `p + q·occupancy`, since the tail correction and net-charge terms
+are exactly affine in occupancy) once per run, from the host-resident `batch`, so a device-resident
+`batch` never needs a scalar-indexing round trip on a hot exchange attempt.
+
+`mc_exchange!` is the only sanctioned entry point for insertion/deletion: it draws ONE fair coin
+per launch (`rand(rng, Bool)`, shared across every chain in the batch, exactly as `movetype` is
+shared for the NVT moves) and calls `mc_insert!` on `true`, `mc_delete!` on `false` — see
+`docs/src/theory.md`'s "Insertion and deletion are not individually detailed-balanced" for why
+calling either one alone, on any fixed schedule, samples the wrong equilibrium loading while every
+existing energy audit still passes.
+
+**The GCMC driver** (`src/gcmc.jl`) — `run_gcmc!` mirrors `run_nvt!`'s warmup-then-production
+structure, with two differences the μVT ensemble forces. First, each move attempt is an exchange
+attempt with probability `exchange_prob` and an NVT move otherwise, both drawn from the SAME
+`Xoshiro(seed)` stream `run_nvt!` uses for its own movetype draw — `exchange_prob=0` reproduces
+`run_nvt!`'s exact draw sequence bit for bit, which is what lets `run_gcmc!` reduce to `run_nvt!`
+for a fixed seed. Second, a cycle's length (the number of move attempts per cycle) is recomputed
+from `state`'s LIVE occupancy at the START OF EVERY CYCLE, rather than fixed once before the loop
+as `run_nvt!` does: `run_nvt!`'s occupancy never changes, so fixing it once there is exact, but
+occupancy drifts under exchange, and a length fixed to its initial value would bias sampling
+density as the chain equilibrates toward a different loading. `run_gcmc!` reports, per system, the
+production-average loading and energy (block-averaged over cycles, `block_mean_sem`) and the
+fluctuation heat of adsorption `q_st` (`fluctuation_qst`, `docs/src/theory.md`'s own derivation),
+together with `max_occupancy` against `capacity` — the diagnostic "Capacity and truncation" above
+needs, since a chain that saturates its capacity is a chain sampling a silently truncated
+distribution even when `mc_insert!`'s own fail-fast check never triggered.
+
+**Isotherms on the batch axis** (`src/isotherm.jl`) — an isotherm is a sweep over pressure, and
+each pressure point is an independent system, so it maps directly onto `FrameworkBatch`'s existing
+batch axis. `run_isotherm!` builds ONE batch of `length(pressures) * nreplicas` systems — system
+`(p-1)*nreplicas + r` at pressure `pressures[p]`'s Peng–Robinson fugacity, replica `r` — and since
+every system shares the same host framework, `FrameworkBatch`'s own deduplication (above) means
+this batch costs exactly one framework's own setup, regardless of how many pressure points or
+replicas it carries. Every system starts with zero guests, which keeps `initial_poses`'
+hard-core-rejection placement work a no-op for the whole batch (there is nothing to place). One
+`run_gcmc!` call runs the whole batch; `combine_replicas` then folds each pressure's `nreplicas`
+independent chains into one `IsothermResult` point, combining each chain's OWN reported
+block-averaged error (`within`, ordinary independent-error propagation of the replica mean) with
+the ordinary sample variance of the replicas' own point estimates (`between`, which catches
+finite-warmup or seed-dependent slow-relaxation spread the within term cannot see) — added rather
+than chosen between, since each is a real, independent source of uncertainty and neither bounds
+the other away. `capacity` is a single value shared by every system in the batch, not sized per
+pressure: sizing it per pressure would need an a priori loading estimate at each point, which
+nothing in this package can produce before running the chain that would need it, and an
+oversized capacity costs nothing per move (every loop is bounded by live occupancy).
+
+## Fail-fast checks Milestone C adds
+
+- `mc_insert!`: any system where `capacity_hits` is nonzero — a physically-accepted insertion had
+  no free slot to write to — throws immediately, naming the offending system indices, rather than
+  silently rejecting the move (`docs/src/theory.md`'s "Capacity and truncation").
+- `insert_guest!`: `host_energy_new` is a required positional argument with no default, so a
+  caller cannot forget to supply it and silently corrupt the cached host-guest energy.
+- `run_gcmc!`/`run_isotherm!`: `exchange_prob` must lie in `[0,1]`; `fugacity` must have one entry
+  per system.
+- `peng_robinson_fugacity`: throws if no cubic root has `Z` above the excluded-volume parameter
+  `B` (an unphysical state point far outside any real gas's range), naming every input.

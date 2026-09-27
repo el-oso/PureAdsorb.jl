@@ -8,7 +8,11 @@ adsorption, each with a standard error. Two [`KernelAbstractions`](https://githu
 kernels — a hard-core rejection test, then the energy on the survivors — run unchanged on the
 CPU, on NVIDIA GPUs (CUDA.jl) and on AMD GPUs (AMDGPU.jl). A batch of independent chains can also
 sample the canonical (NVT) ensemble at fixed guest count by Metropolis Monte Carlo, with Widom
-insertion carried along the chain to reach finite-loading chemical potentials.
+insertion carried along the chain to reach finite-loading chemical potentials, or the grand
+canonical (μVT) ensemble by [`run_gcmc!`](@ref), where the guest count itself fluctuates at fixed
+fugacity — the ensemble an adsorption **isotherm** actually asks for. [`run_isotherm!`](@ref)
+sweeps a batch of pressure points and replicas in one call, reporting loading, energy and the
+fluctuation isosteric heat of adsorption against pressure.
 
 PureAdsorb reproduces the conventions of [kUPS](https://github.com/cusp-ai-oss/kups)
 (commit `e183c9a`), CuspAI's Widom/Monte Carlo engine, so results from the two codes compare

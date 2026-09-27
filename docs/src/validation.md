@@ -19,6 +19,10 @@ Each test item below is a `@testitem` under `test/`, run through TestItemRunner.
 | Generic indexing | `generic_tests.jl` | `ForceField`, `tail_delta`, `kvectors`/`structure_factor` and `ewald_energy` accept `OffsetArray`- and `view`-wrapped inputs; mismatched-length inputs raise `DimensionMismatch` |
 | StrictMode audit | `bench/audit.jl` | `insertion_energy` (Float64 and Float32), `minimum_image`, `rotate` and `erfc_dev` are gated on `:typestable` and `:noalloc`; `STRICT_MODE=fast` (default) is a value-free heuristic scan, `STRICT_MODE=full` backs the same guarantees with AllocCheck and JET as the pre-merge gate |
 | Cross-code reference | `reference_tests.jl` (tag `:slow`) | RUBTAK + CO2 against the kUPS numbers below, within 3 combined standard errors |
+| Peng–Robinson fugacity vs kUPS | `fugacity_tests.jl` | CO2 and methane, temperatures 0.6–2× critical, pressures 1 Pa to 5× critical pressure: `Z` and `f` agree with kUPS's own module to 1e-10 relative; the ideal-gas limit `φ → 1` as `P → 0`; a three-real-root state point (below the critical temperature) pins the LIQUID-branch (smallest-root) selection against kUPS |
+| Ideal-gas anchors (Loschmidt, kUPS's own example) | `ideal_gas_tests.jl` | With guest–host and guest–guest interactions switched off (a single ε=0 LJ type, `tail=false`, zero guest charges — checked directly, not assumed), an ideal-gas μVT chain's mean and variance of `N`, from 1500–3000 independent single-system replicas, match `⟨N⟩ = fV/k_BT` and Poisson `\mathrm{Var}(N)=⟨N⟩` within 5 standard errors at two PHYSICALLY anchored state points computed independently of the code under test: Loschmidt's number (1 atm, 273.15 K, ⟨N⟩=1 in 37,219 ų) and kUPS's own example point (1e4 Pa, 298.15 K, RUBTAK 3×3×3's 61,457 ų giving ⟨N⟩=0.1493) |
+| The fugacity path exercises the equation of state | `ideal_gas_tests.jl` | Same ideal-gas chain, real CO2 critical constants, 298 K and 5e6 Pa (φ well below 1): the chain's mean `N` matches `φPV/k_BT` within 5 SE and misses the "used raw `P` instead of `f`" alternative by more than 5 SE — a state point where the two predictions differ by about 20%, not a regime where they coincide by chance |
+| R2 merged Henry's-law / detailed-balance test | `henry_detailed_balance_tests.jl` (tag `:gpu`) | With real interactions on, `P(N+1)/P(N) = (fV/((N+1)k_BT))\langle\exp(-\Delta U_{\mathrm{ins}}/k_BT)\rangle_N` (`docs/src/theory.md`'s acceptance-ratio derivation) checked at every well-sampled loading `N` in one run, RUBTAK 3×3×3 + CO2 at 500 Pa (inside the Henry-linear regime, confirmed by a separate two-pressure isotherm check): every loading agrees within 4 combined standard errors, and the `N=0` value agrees with Milestone A's independently-computed Henry coefficient within 5 combined SE. A companion test perturbs the chain's own insertion/deletion fugacity by ×1.5 (leaving the comparison's target fugacity unperturbed) and confirms every well-sampled loading then fails by more than 3σ, with the recovered ratio matching the injected 1.5× factor — demonstrating the test's own discriminating power, not just that it can pass |
 
 ### CPU-vs-GPU relative differences
 
@@ -114,3 +118,84 @@ RUBTAK-plus-guests configuration (`test/nvt_tests.jl`).
 
 Every number and its provenance is in `bench/results/README.md`'s "Milestone B validation ladder"
 section and the JSON files it cites.
+
+## Milestone C (GCMC) validation ladder
+
+A grand canonical chain can be wrong in a way no energy check detects: the energies are computed
+correctly and only the ACCEPTANCE RATIO is wrong, which produces a stable, audit-passing chain
+that converges to the wrong loading (`docs/src/theory.md`'s "Units: two systems meeting at one
+boundary" and "Insertion and deletion are not individually detailed-balanced" both describe a
+real instance of exactly this). The ladder below is built around the particle number rather than
+around energy for that reason.
+
+**C0 — disabling exchange reproduces Milestone B exactly.** `run_gcmc!` at `exchange_prob=0`
+against `run_nvt!`, same seed, RUBTAK 3×3×3 + CO2 with 5 and 3 initial guests in two systems:
+`refpoints`, `orientations`, `Sk`, `energy`, `accepted` and `attempted` agree bit for bit, and both
+drivers' own reported energy/energy-error agree bit for bit too (`gcmc_tests.jl`). This pins the
+NVT-move machinery `run_gcmc!` shares with `run_nvt!` before any μVT-specific check runs.
+
+**C1 — the ideal-gas limit against physical anchors, not the code's own inputs.** With guest–host
+and guest–guest interactions switched off — a single ε=0 Lennard-Jones type, `tail_correction =
+false`, zero guest charges, confirmed directly (every term `exchange_constant_term` adds is
+exactly zero, and a 5000-attempt chain's running energy stays exactly `0.0` throughout, not merely
+small) — 1500–3000 independent single-system replicas' final occupancy, treated as iid draws of
+the stationary distribution, give a sample mean and variance matching `⟨N⟩ = fV/k_BT` and the
+Poisson relation `\mathrm{Var}(N)=⟨N⟩` within 5 standard errors, at TWO state points computed as
+literal, hand-transcribed numbers rather than by calling any of this package's own code
+(`ideal_gas_tests.jl`'s own comment: a self-referential target would be blind to a uniform scale
+error in `f`, exactly the class of bug a missing `PASCAL` factor is): Loschmidt's number (1 atm,
+273.15 K, ⟨N⟩=1 in 37,219 ų) and kUPS's own `examples/mcmc_rigid.yaml` state point (1e4 Pa,
+298.15 K, RUBTAK 3×3×3's 61,457 ų giving ⟨N⟩=0.1493, `k_BT=0.025693` eV, pinned as a literal
+too). A worked, one-off demonstration (not a permanent test, to avoid a scratch bug living on in
+`src/`) confirms this ladder rung has teeth: substituting `N` for `N+1` in
+`log_insertion_prefactor` and rerunning the Loschmidt case with identical seeds shifts the sample
+mean by an EXACT `+1.0` (a ~39σ effect) while leaving the variance bit-for-bit unchanged — an
+algebraic consequence of evaluating the correct prefactor one guest count too low, not a vague
+"gets worse".
+
+**C2 — the fugacity path exercises the equation of state.** Every other exchange test in this
+ladder runs at a pressure low enough that the fugacity coefficient `φ ≈ 1`, so a caller that
+accidentally passed raw pressure instead of `peng_robinson_fugacity`'s `f` would pass unnoticed.
+CO2 at 298 K and 5e6 Pa has `φ` well below 1 (Peng–Robinson, confirmed `< 0.8` before the chain
+even runs), so the ideal (`PV/k_BT`) and real (`φPV/k_BT`) predictions for `⟨N⟩` differ by more
+than 20% — a many-σ discriminator. The same ideal-gas replica machinery, real CO2 critical
+constants, matches the REAL prediction within 5 standard errors and misses the ideal one by more
+than 5 (`ideal_gas_tests.jl`).
+
+**C3 — R2, the merged Henry's-law / detailed-balance test.** With interactions on, RUBTAK 3×3×3 +
+CO2 at 500 Pa (confirmed inside the isotherm's Henry-linear regime by a separate two-pressure
+check: `loading/pressure` at 200 and 500 Pa matches the `N→0` slope `widom`'s own Henry
+coefficient predicts, within 5 combined standard errors), 64 replica chains run together with
+Widom test-particle insertion along each chain (Milestone B's own trick, generalized to whatever
+occupancy the chain currently holds). Every sample is binned by the chain's occupancy `N` at the
+moment it was taken, giving, per `N`, both the visit-count ratio `P(N{+}1)/P(N)` and the
+Widom-along-chain average `⟨\exp(-\Delta U_{\mathrm{ins}}/k_BT)⟩_N`
+(`docs/src/theory.md`'s own R2 formula, `P(N{+}1)/P(N) = (fV/((N{+}1)k_BT))⟨\exp(-\Delta
+U_{\mathrm{ins}}/k_BT)⟩_N`): every well-sampled loading agrees within 4 combined standard errors
+(a pooled-ratio-plus-jackknife estimator throughout, avoiding the Jensen-inequality bias a
+per-block ratio would carry), and the `N=0` value — expressed as a Henry coefficient — agrees with
+Milestone A's `widom`, run independently on the pristine framework with its own RNG stream, within
+5 combined standard errors. This one test ties Milestone C to Milestone B under the real
+potential, with a closed-form target at every loading rather than only at `N=0`.
+
+A companion test demonstrates C3's own discriminating power (mirroring how the Milestone B ladder
+demonstrates the energy audit's): running the identical setup with the chain's OWN
+insertion/deletion fugacity multiplied by 1.5, while the comparison's target fugacity stays the
+true, unperturbed value, makes every well-sampled loading fail by more than 3σ, with the
+recovered `\mathrm{LHS}/\mathrm{RHS}` ratio matching the injected 1.5× factor to within 0.15 — the
+test does not merely pass on correct code, it fails in the expected, quantitative way on
+incorrect code (`henry_detailed_balance_tests.jl`).
+
+**Audit false-positive rate on CUDA.** The same `audit_energy!` tolerance Milestone B's own ladder
+validates on the CPU was re-measured on CUDA specifically, where the device-resident chain state
+is a genuinely separate allocation from the host's rather than an alias of it: 224 (Float64) and
+256 (Float32) trials per checkpoint, at 1,000/5,000/20,000 accepted moves, RUBTAK 3×3×3 + CO2. A
+missing device-to-host sync of the audit's own running-error accumulators gave false-positive
+rates up to 39.1% at 1,000 moves (dropping toward 0% as more accumulated moves diluted the effect
+of the stale, all-zero accumulator); after syncing them and scaling the audit's recompute-side
+tolerance by the number of terms `total_energy` actually sums, the false-positive rate is 0.0% at
+every checkpoint, both precisions
+(`bench/results/pureadsorb_audit_tolerance_falsepositive_neuromancer4070_cuda_20260927_7f1032f.json`).
+
+Every number above and its provenance is in `bench/results/README.md` and the JSON/test files it
+cites.

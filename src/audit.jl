@@ -48,13 +48,13 @@ energy_audit_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
 """
     sk_audit_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) -> F
 
-Rounding-error tolerance for `audit_energy!`'s element-wise check on `state.Sk`: the same
-argument as `energy_audit_tolerance`, applied per k-vector, with `abs_accum` the running
-per-move rounding scale accumulated at that k-vector over `nmoves` accepted moves
-(`SystemState.sk_abs_accum`) and `magnitude` the rebuild-side scale for that k-vector — the sum of
-the magnitudes of the terms `structure_factor`'s rebuild actually sums there, scaled by how many
-terms it sums (`audit_energy!`'s own computation), since that recomputation's rounding grows with
-both.
+Rounding-error tolerance for `audit_energy!`'s element-wise check on `state.Sk` (or, with the same
+formula, `state.Sk_gg`): the same argument as `energy_audit_tolerance`, applied per k-vector, with
+`abs_accum` the running per-move rounding scale accumulated at that k-vector over `nmoves`
+accepted moves (`SystemState.sk_abs_accum`/`sk_abs_accum_gg`) and `magnitude` the rebuild-side
+scale for that k-vector — the sum of the magnitudes of the terms `structure_factor`'s rebuild
+actually sums there, scaled by how many terms it sums (`audit_energy!`'s own computation), since
+that recomputation's rounding grows with both.
 """
 sk_audit_tolerance(abs_accum::F, magnitude::F, nmoves::Integer) where {F} =
     _accumulation_tolerance(abs_accum, magnitude, nmoves)
@@ -82,6 +82,14 @@ equal, and a comparison that skipped this stage would pass regardless. On succes
 `state.Sk`'s slice with the rebuilt value (clearing any Float32 rounding drift instead of merely
 detecting it) and zeroes `state.sk_abs_accum`'s slice, since the accumulated error the tolerance
 was sized against is cleared at the same moment.
+
+When `has_ewald_split(batch)`, `state.Sk_gg`'s slice gets the identical rebuild-and-compare
+treatment against `batch.ks_gg` (no `Shost` term to add — the guest-guest table carries no host
+contribution at all), using `sk_tol` and `state.sk_abs_accum_gg` in place of `Sk`'s own; this is
+what makes a wrong `ΔS_gg` (`guest_move_delta`'s own self-term update) fail here rather than
+surviving into a self-consistent `total_energy` recomputation, exactly as for `Sk` above. Both
+`kvec_gg_range(state, n)` and `batch_kvec_gg_range(batch, n)` are empty when `!has_ewald_split`,
+so this stage is a no-op there rather than a branch.
 
 Only then recompute system `n`'s total energy from scratch (`total_energy`, now reading the
 just-rebuilt `Sk`) and compare it against `state.energy[n]`, the running value accumulated from
@@ -135,6 +143,27 @@ function audit_energy!(
     end
     state.Sk[kr] .= rebuilt_Sk
     state.sk_abs_accum[kr] .= zero(F)
+
+    kr_gg = kvec_gg_range(state, n)
+    krb_gg = batch_kvec_gg_range(batch, n)
+    rebuilt_Sk_gg = structure_factor(view(batch.ks_gg, krb_gg), sitepos, siteq)
+    for offset in eachindex(kr_gg, krb_gg)
+        kidx = kr_gg[offset]
+        running = state.Sk_gg[kidx]
+        rebuilt = rebuilt_Sk_gg[offset]
+        rebuild_magnitude = nterms_rebuild * total_abs_charge
+        τk = something(sk_tol, sk_audit_tolerance(state.sk_abs_accum_gg[kidx], rebuild_magnitude, nmoves))
+        discrepancy = abs(rebuilt - running)
+        discrepancy <= τk || throw(
+            ArgumentError(
+                "energy audit failed for system $n ($F): guest-guest structure factor at k-vector $offset disagrees " *
+                    "with the poses: running=$running, rebuilt=$rebuilt, discrepancy=$discrepancy exceeds tolerance " *
+                    "$τk over $nmoves accepted move(s) since the last audit"
+            )
+        )
+    end
+    state.Sk_gg[kr_gg] .= rebuilt_Sk_gg
+    state.sk_abs_accum_gg[kr_gg] .= zero(F)
 
     recomputed = total_energy(batch, state, guest, ff, n)
     accumulated = state.energy[n]

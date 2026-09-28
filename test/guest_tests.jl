@@ -253,6 +253,42 @@ end
     @test_broken prod_broken ≈ ref_broken rtol = 1.0e-10
 end
 
+@testitem "total_energy with the split enabled agrees with the split disabled (gate 2)" begin
+    # Gate 2: split-enabled and split-disabled must agree to within the Ewald truncation error the
+    # split's own precision implies -- not an arbitrary bound. Comparing split-on against
+    # split-off is the SAME mechanism the oracle tests above measure (two independently-truncated
+    # Ewald decompositions -- host-guest at `alpha`, guest-guest at `alpha_gg` -- lose the exact
+    # truncation-error cancellation a single decomposition compared to itself gets for free), just
+    # against `total_energy`'s own single-decomposition formula instead of an independent
+    # from-scratch implementation. `bench/ewald_split_precision_sweep.jl` measured this relationship
+    # directly for RUBTAK 3x3x3 (cutoff_gg=13, oracle precision=1e-12,
+    # `bench/results/ewald_split_precision_sweep.json`'s "rubtak_cutoff13_oracle1e-12"): relative
+    # error 3.65e-8 at `ewald_gg.precision = 1e-6` (this test's own value), falling to 6.0e-10 at
+    # 1e-8 and 1.8e-11 at 3e-9 -- monotonic in precision, no floor. Measuring the SAME split-vs-
+    # split-disabled comparison this test performs (rather than vs. the independent oracle) gives
+    # 1.0e-9 to 3.5e-9 at `precision = 1e-6`, tighter than the independent-oracle figure since both
+    # sides here share `total_energy`'s own formula. `1e-6` relative is ~300x that measured value:
+    # comfortably non-vacuous while covering a different seed/system without re-measuring per run.
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    ewald_gg = EwaldParams(cutoff = 13.0, precision = 1.0e-6)
+    b_split = FrameworkBatch([sc, sc], ff, g, ewald; fullk = false, ewald_gg)
+    b_nosplit = FrameworkBatch([sc, sc], ff, g, ewald; fullk = true)
+    @test PureAdsorb.has_ewald_split(b_split)
+    @test !PureAdsorb.has_ewald_split(b_nosplit)
+    st_split = PureAdsorb.SystemState(b_split, g, [4, 3], ff; T = 298.15, seed = 9)
+    st_nosplit = PureAdsorb.SystemState(b_nosplit, g, [4, 3], ff; T = 298.15, seed = 9)
+    for n in 1:2
+        e_split = PureAdsorb.total_energy(b_split, st_split, g, ff, n)
+        e_nosplit = PureAdsorb.total_energy(b_nosplit, st_nosplit, g, ff, n)
+        @test e_split ≈ e_nosplit rtol = 1.0e-6
+    end
+end
+
 @testitem "guest_move_delta with ewald_gg equals the difference of two total_energy calls" begin
     using StaticArrays, LinearAlgebra, Random
     fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))

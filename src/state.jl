@@ -53,7 +53,9 @@ constructor requires one or the other.
 structure factor (no `Shost` term — the guest-guest table carries no host contribution at all)
 on `batch.ks_gg`; both stay empty when `!has_ewald_split(batch)`, so every guest-guest-table sum
 elsewhere in the package contributes nothing and `Sk` alone (as above) carries the whole
-reciprocal-space picture, exactly as before this capability existed.
+reciprocal-space picture, exactly as before this capability existed. `sk_abs_accum_gg` is
+`Sk_gg`'s own per-k-vector running rounding scale, updated and read exactly as `sk_abs_accum` is
+for `Sk` (above).
 
 `energy` is a per-system running total, set at construction to `total_energy(batch, state,
 guest, ff, n)` for each system `n` (`src/guest.jl`) and meant to be updated incrementally from
@@ -71,6 +73,7 @@ the running total, which heavy cancellation across guests (for `Sk`) or across a
 chain's fluctuations (for `energy`) can make far smaller than the terms that produced it.
 `apply_sk_kernel!`/`decide_move_kernel!` add to these on every acceptance; `audit_energy!` reads
 them to size its tolerance and zeroes them once it has re-set `Sk`/`energy` to an exact value.
+`sk_abs_accum_gg` is the same running scale for `Sk_gg` (below), empty whenever `Sk_gg` is.
 
 `host_energy` is a per-guest cache of guest `i`'s own host-guest real-space energy
 (`host_guest_realspace_energy`), index-matched to `refpoints`/`orientations`. The host is rigid,
@@ -112,6 +115,7 @@ struct SystemState{F, VP, VQ, VI, VS, VE, VU, VM, VA, VO}
     nsys::Int
     k_gg_offsets::VI
     Sk_gg::VS
+    sk_abs_accum_gg::VA
 end
 Adapt.@adapt_structure SystemState
 
@@ -126,25 +130,25 @@ kvec_gg_range(state::SystemState, n::Integer) = (state.k_gg_offsets[n] + 1):stat
 
 function SystemState(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg, sk_abs_accum_gg
     )
     F = eltype(energy)
     return SystemState{F}(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg, sk_abs_accum_gg
     )
 end
 
 function SystemState{F}(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg, sk_abs_accum_gg
     ) where {F}
     return SystemState{
         F, typeof(refpoints), typeof(orientations), typeof(guest_offsets), typeof(Sk), typeof(energy), typeof(rng_seed),
         typeof(accepted), typeof(sk_abs_accum), typeof(occupancy),
     }(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys), k_gg_offsets, Sk_gg
+        host_energy, rng_seed, rng_counter, accepted, attempted, Int(nsys), k_gg_offsets, Sk_gg, sk_abs_accum_gg
     )
 end
 
@@ -466,6 +470,7 @@ function SystemState(
     end
 
     sk_abs_accum = zeros(F, length(Sk))
+    sk_abs_accum_gg = zeros(F, length(Sk_gg))
     energy = zeros(F, nsys)
     energy_abs_accum = zeros(F, nsys)
     rng_seed = [splitmix64(UInt64(seed), UInt64(n)) for n in 1:nsys]
@@ -474,7 +479,7 @@ function SystemState(
     attempted = fill(zero(SVector{NMOVETYPES, Int32}), nsys)
     st = SystemState(
         guest_offsets, occupancy, refpoints, orientations, k_offsets, Sk, sk_abs_accum, energy, energy_abs_accum,
-        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg
+        host_energy, rng_seed, rng_counter, accepted, attempted, nsys, k_gg_offsets, Sk_gg, sk_abs_accum_gg
     )
     for n in 1:nsys
         st.energy[n] = total_energy(batch, st, guest, ff, n)

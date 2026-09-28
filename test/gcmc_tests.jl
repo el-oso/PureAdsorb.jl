@@ -99,6 +99,56 @@ end
     end
 end
 
+@testitem "with the split disabled, mc_step!/run_gcmc! reproduce master bit for bit (gate 1)" setup = [
+    GCMCOracle,
+] begin
+    # `FrameworkBatch` built with no `ewald_gg` (the default) reaches only the pre-split code paths
+    # in `moves.jl`/`guest.jl`/`audit.jl` -- every split-specific branch is either an `else` this
+    # commit did not touch, or a loop over a table that stays empty. The fixed values below were
+    # captured by running this exact scenario against `master` (commit 0375f3b, the branch's own
+    # merge-base at 072d494 has an identical `src/` for every file this split touches) and against
+    # this branch with `ewald_gg` omitted, and confirming every field matched bit for bit; they pin
+    # that result down as a regression test rather than re-diffing two checkouts on every run.
+    using StaticArrays
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc, sc], ff, g, ewald; fullk = true)
+
+    st = PureAdsorb.SystemState(b, g, [4, 3], ff; T = 298.15, seed = 9)
+    guest_c = PureAdsorb.compact_guest(b, g)
+    N = length(g.sites)
+    guest_types = SVector{N, Int}(b.guest_types)
+    ws = PureAdsorb.MoveWorkspace(Float64, st.nsys, 4)
+    step_trans = fill(0.3, st.nsys); step_rot = fill(0.3, st.nsys)
+    kT = PureAdsorb.KB * 298.15
+    for step in 1:400
+        mt = (step % 3) + 1
+        PureAdsorb.mc_step!(ws, b, st, guest_c, guest_types, mt, step_trans, step_rot, kT; backend = CPU(), groupsize = 32, nblocks_per_chain = 4)
+    end
+    @test st.energy == [-0.8440380557680278, -0.7472989299774928]
+    @test st.accepted == SVector{3, Int32}[[67, 63, 6], [74, 38, 7]]
+    @test st.attempted == SVector{3, Int32}[[133, 134, 133], [133, 134, 133]]
+    @test st.refpoints[1] == SVector(65.9191932104315, 23.454709150133425, 32.86032589108613)
+    @test st.refpoints[end] == SVector(51.803909935393136, 12.806216951951164, 30.1937655211142)
+    @test sum(st.Sk) == 10533.052993164842 - 126.98095726314742im
+
+    bg = FrameworkBatch([sc], ff, g, ewald; fullk = true)
+    stg = PureAdsorb.SystemState(bg, g, [3], ff; T = 298.15, seed = 17, capacities = [30])
+    results = run_gcmc!(
+        bg, stg, g, ff; T = 298.15, n_warmup = 30, n_production = 60, n_audit = 10_000,
+        step_trans = [0.3], step_rot = [0.3], fugacity = [1.0e3], exchange_prob = 0.3, seed = 23,
+        nblocks = 5, backend = CPU(), groupsize = 32, nblocks_per_chain = 4
+    )
+    @test stg.occupancy == [0]
+    @test stg.energy == [-9.547918011776346e-15]
+    @test sum(stg.Sk) == 5253.3114045520415 - 58.70555414633532im
+    @test results[1].max_occupancy == 3   # exchange genuinely ran (occupancy peaked mid-run)
+    @test results[1].energy == -9.547918011776346e-15
+end
+
 @testitem "the audit passes over a long mixed run and still catches an injected corruption" setup = [
     GCMCOracle,
 ] begin
@@ -121,6 +171,37 @@ end
         b, st, g, ff; T = 298.15, n_warmup = 0, n_production = 30, n_audit = 5, step_trans = [0.3],
         step_rot = [0.3], fugacity = [2.0e4], exchange_prob = 0.5, seed = 6, nblocks = 3
     )
+end
+
+@testitem "the audit passes over a long GCMC chain with the split enabled and still catches a corruption (gate 3)" setup = [
+    GCMCOracle,
+] begin
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    ewald_gg = EwaldParams(cutoff = 13.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald; fullk = false, ewald_gg)
+    @test PureAdsorb.has_ewald_split(b)
+    st = PureAdsorb.SystemState(b, g, [5], ff; T = 298.15, seed = 21, capacities = [40])
+
+    results = run_gcmc!(
+        b, st, g, ff; T = 298.15, n_warmup = 20, n_production = 200, n_audit = 25, step_trans = [0.3],
+        step_rot = [0.3], fugacity = [2.0e4], exchange_prob = 0.5, seed = 5, nblocks = 5
+    )   # must not throw -- the new Sk_gg rebuild-and-compare stage (`audit.jl`) ran throughout
+    @test results[1].max_occupancy <= results[1].capacity
+    recomputed = PureAdsorb.total_energy(b, st, g, ff, 1)
+    @test isapprox(st.energy[1], recomputed; atol = 1.0e-8 * max(abs(recomputed), 1.0))
+
+    # A corruption of the guest-only structure factor is the split-specific failure mode
+    # `audit_energy!`'s new stage exists to catch (`src/audit.jl`): without it, a wrong `ΔS_gg`
+    # from `guest_move_delta`'s split branch would leave `Sk_gg` and any energy recomputed from it
+    # self-consistently wrong, invisible to an energy-only comparison.
+    kr_gg = PureAdsorb.kvec_gg_range(st, 1)
+    @test !isempty(kr_gg)
+    st.Sk_gg[kr_gg[1]] += 1.0e-3
+    @test_throws "guest-guest structure factor" PureAdsorb.audit_energy!(b, st, g, ff, 1, 1)
 end
 
 @testitem "run_gcmc! propagates mc_insert!'s hard capacity failure" setup = [GCMCOracle] begin

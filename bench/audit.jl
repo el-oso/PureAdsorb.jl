@@ -156,6 +156,21 @@ results = vcat(
     ),
     signature_findings(PureAdsorb.reciprocal_cross_delta!, reciprocal_move_delta_bang_types(Float64); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.reciprocal_cross_delta!, reciprocal_move_delta_bang_types(Float32); guarantees = (:typestable, :noalloc)),
+    # `reciprocal_cross_delta_energy`/`reciprocal_exchange_cross_energy` (`moves.jl`'s split-aware
+    # production kernels): `reciprocal_cross_delta!` and `reciprocal_exchange_energy`'s own
+    # cross-only counterparts, without writing `ΔS`.
+    signature_findings(PureAdsorb.reciprocal_cross_delta_energy, reciprocal_move_delta_energy_types(Float64); guarantees = (:typestable, :noalloc)),
+    signature_findings(PureAdsorb.reciprocal_cross_delta_energy, reciprocal_move_delta_energy_types(Float32); guarantees = (:typestable, :noalloc)),
+    signature_findings(
+        PureAdsorb.reciprocal_exchange_cross_energy,
+        (PureAdsorb.Guest{Float64, 3}, SVector{3, SVector{3, Float64}}, SVector{3, SVector{3, Float64}}, Vector{SVector{3, Float64}}, Vector{Float64}, Vector{ComplexF64});
+        guarantees = (:typestable, :noalloc)
+    ),
+    signature_findings(
+        PureAdsorb.reciprocal_exchange_cross_energy,
+        (PureAdsorb.Guest{Float32, 3}, SVector{3, SVector{3, Float32}}, SVector{3, SVector{3, Float32}}, Vector{SVector{3, Float32}}, Vector{Float32}, Vector{ComplexF32});
+        guarantees = (:typestable, :noalloc)
+    ),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.energy_audit_tolerance, (Float32, Float32, Int); guarantees = (:typestable, :noalloc)),
     signature_findings(PureAdsorb.sk_audit_tolerance, (Float64, Float64, Int); guarantees = (:typestable, :noalloc)),

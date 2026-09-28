@@ -66,7 +66,7 @@ end
     run_isotherm!(fw::Framework{F}, ff::ForceField{F}, guest::Guest{F,N}, ewald::EwaldParams{F};
                  T, pressures, nreplicas, capacity, n_warmup, n_production, n_audit, step_trans,
                  step_rot, exchange_prob = 0.5, min_cycle_length = 1, seed = 0, nblocks = 10, backend = CPU(),
-                 groupsize = DEFAULT_GROUPSIZE,
+                 groupsize = DEFAULT_GROUPSIZE, ewald_gg = nothing,
                  nblocks_per_chain = default_nblocks_per_chain(F, length(pressures)*nreplicas)) -> IsothermResult{F}
 
 The convenience constructor task 6 asks for: "this framework, these pressures, this many
@@ -100,13 +100,19 @@ occupancy, not capacity, so an oversized capacity costs nothing per move. Every 
 comes close to saturating can be seen rather than silently trusted; `mc_insert!` itself still
 throws immediately, independent of this function, if any system actually needed a slot beyond
 capacity (`run_gcmc!`'s own docstring).
+
+`ewald_gg`, when given, is forwarded to `FrameworkBatch` (`fullk = false` in that case, since the
+two are mutually exclusive there): the guest-guest reciprocal term then gets its own splitting
+parameter and smaller k-set instead of riding along in the single `fullk = true` table.
+Omitting it (the default) leaves this function's own behavior exactly as it was before this
+capability existed.
 """
 function run_isotherm!(
         fw::Framework{F}, ff::ForceField{F}, guest::Guest{F, N}, ewald::EwaldParams{F};
         T, pressures::AbstractVector, nreplicas::Integer, capacity::Integer,
         n_warmup::Integer, n_production::Integer, n_audit::Integer, step_trans::Real, step_rot::Real,
         exchange_prob::Real = 0.5, min_cycle_length::Integer = 1, seed::Integer = 0, nblocks::Integer = 10,
-        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE,
+        backend = CPU(), groupsize::Integer = DEFAULT_GROUPSIZE, ewald_gg::Union{Nothing, EwaldParams{F}} = nothing,
         nblocks_per_chain::Integer = default_nblocks_per_chain(F, length(pressures) * nreplicas)
     ) where {F, N}
     nreplicas >= 1 || throw(ArgumentError("run_isotherm!: nreplicas=$nreplicas must be >= 1"))
@@ -115,7 +121,7 @@ function run_isotherm!(
     nsys = npress * nreplicas
 
     Tk = F(ustrip_maybe(u"K", T))
-    batch = FrameworkBatch(fill(fw, nsys), ff, guest, ewald; fullk = true)
+    batch = FrameworkBatch(fill(fw, nsys), ff, guest, ewald; fullk = isnothing(ewald_gg), ewald_gg)
     fugacity = Vector{F}(undef, nsys)
     for p in 1:npress
         f = peng_robinson_fugacity(F(ustrip_maybe(u"Pa", pressures[p])), Tk, guest).f

@@ -212,6 +212,69 @@ end
     @test_throws "energy audit failed" PureAdsorb.audit_energy!(b, st, g, ff, 1, 1)
 end
 
+@testitem "mc_step!/mc_exchange! agree between CPU and CUDA with the split enabled (gate 4)" tags = [
+    :gpu,
+] setup = [ExchangeOracle] begin
+    using StaticArrays, KernelAbstractions, Random
+    backend = nothing
+    if !isnothing(Base.find_package("CUDA"))
+        @eval using CUDA
+        CUDA.functional() && (backend = CUDABackend())
+    end
+    if isnothing(backend) && !isnothing(Base.find_package("AMDGPU"))
+        @eval using AMDGPU
+        AMDGPU.functional() && (backend = ROCBackend())
+    end
+    isnothing(backend) && error("no functional GPU backend; this item must run on a GPU host")
+
+    fw = read_cif(joinpath(pkgdir(PureAdsorb), "data", "RUBTAK.cif"))
+    ff = read_forcefield(joinpath(pkgdir(PureAdsorb), "data", "trappe.yaml"))
+    g = read_guest(joinpath(pkgdir(PureAdsorb), "data", "co2.yaml"), ff)
+    sc = replicate(fw, (3, 3, 3))
+    ewald = EwaldParams(cutoff = 12.0, precision = 1.0e-6)
+    ewald_gg = EwaldParams(cutoff = 13.0, precision = 1.0e-6)
+    b = FrameworkBatch([sc], ff, g, ewald; fullk = false, ewald_gg)
+    @test PureAdsorb.has_ewald_split(b)
+    st_cpu = PureAdsorb.SystemState(b, g, [3], ff; T = 298.15, seed = 3, capacities = [15])
+    st_gpu = deepcopy(st_cpu)
+    guest_c = PureAdsorb.compact_guest(b, g)
+    N = length(g.sites)
+    guest_types = SVector{N, Int}(b.guest_types)
+    p, q = PureAdsorb.exchange_constant_coeffs(ff, b, guest_c)
+
+    nbpc = PureAdsorb.default_nblocks_per_chain(Float64, st_cpu.nsys)
+    ws_cpu = PureAdsorb.MoveWorkspace(Float64, st_cpu.nsys, nbpc; backend = CPU())
+    ws_gpu = PureAdsorb.MoveWorkspace(Float64, st_cpu.nsys, nbpc; backend)
+    db = PureAdsorb.adapt(backend, b)
+    dst = PureAdsorb.adapt(backend, st_gpu)
+    dp = PureAdsorb.adapt(backend, p); dq = PureAdsorb.adapt(backend, q)
+    step_trans = [0.3]; step_rot = [0.3]
+    dstep_trans = PureAdsorb.adapt(backend, step_trans); dstep_rot = PureAdsorb.adapt(backend, step_rot)
+    kT = PureAdsorb.KB * 298.15
+    rng_cpu = Xoshiro(99)
+    rng_gpu = Xoshiro(99)
+    movechoices = (PureAdsorb.MOVE_TRANSLATION, PureAdsorb.MOVE_ROTATION, PureAdsorb.MOVE_REINSERTION)
+
+    for step in 1:200
+        if iseven(step)
+            PureAdsorb.mc_exchange!(rng_cpu, ws_cpu, b, st_cpu, guest_c, guest_types, p, q, [2.0e4], kT; backend = CPU())
+            PureAdsorb.mc_exchange!(rng_gpu, ws_gpu, db, dst, guest_c, guest_types, dp, dq, [2.0e4], kT; backend)
+        else
+            mt = rand(rng_cpu, movechoices)
+            rand(rng_gpu, movechoices)   # keep both streams in lockstep with the CPU side's draw
+            PureAdsorb.mc_step!(ws_cpu, b, st_cpu, guest_c, guest_types, mt, step_trans, step_rot, kT; backend = CPU())
+            PureAdsorb.mc_step!(ws_gpu, db, dst, guest_c, guest_types, mt, dstep_trans, dstep_rot, kT; backend)
+        end
+    end
+
+    occ_cpu = st_cpu.occupancy[1]
+    @test Array(dst.occupancy) == st_cpu.occupancy
+    @test all(isapprox.(Array(dst.refpoints)[1:occ_cpu], st_cpu.refpoints[1:occ_cpu]; rtol = 1.0e-8))
+    @test Array(dst.energy) ≈ st_cpu.energy rtol = 1.0e-8
+    @test Array(dst.Sk) ≈ st_cpu.Sk rtol = 1.0e-8
+    @test Array(dst.Sk_gg) ≈ st_cpu.Sk_gg rtol = 1.0e-8
+end
+
 @testitem "mc_insert!/mc_delete! agree between CPU and CUDA" tags = [:gpu] setup = [ExchangeOracle] begin
     using KernelAbstractions
     backend = nothing

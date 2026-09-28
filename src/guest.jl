@@ -361,6 +361,23 @@ function reciprocal_move_delta!(
     return T(KE) * ΔU
 end
 
+# Same formula as `reciprocal_cross_delta!`, without writing `ΔS`: for a caller (`moves.jl`'s
+# `evaluate_move_kernel!`/`evaluate_insert_kernel!`/`evaluate_delete_kernel!`) that only needs the
+# cross-table energy change over a (possibly strided) view of `ks`/`kprefactor`/`Shost`.
+function reciprocal_cross_delta_energy(
+        guest::Guest{T, N}, oldpos::SVector{3, T}, oldq::SVector{4, T}, newpos::SVector{3, T}, newq::SVector{4, T},
+        ks, kprefactor, Shost
+    ) where {T, N}
+    old_sites = guest_sites_at(guest, oldpos, oldq)
+    new_sites = guest_sites_at(guest, newpos, newq)
+    ΔU = zero(T)
+    for i in eachindex(ks)
+        _, contribution = _cross_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Shost[i])
+        ΔU += kprefactor[i] * contribution
+    end
+    return T(KE) * ΔU
+end
+
 # Same formula as `reciprocal_move_delta!`, without writing `ΔS`: for the throughput measurement
 # and any caller that only needs the energy change (a rejected move never applies `ΔS` anyway).
 function reciprocal_move_delta_energy(

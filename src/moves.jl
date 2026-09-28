@@ -375,11 +375,17 @@ guest) and the k-vector loop (`reciprocal_move_delta_energy`); the workgroup red
 work-items' contributions (`buf1`/`buf2`, a shared-memory tree reduction) into one partial sum per
 channel, written to `partial1[block, n]`/`partial2[block, n]`. `decide_move_kernel!` sums across
 blocks.
+
+`Sk_gg`/`k_gg_offsets` (`state`'s own guest-only structure factor and its offsets) are read only
+when `has_ewald_split(batch)`, in which case the k-vector loop splits into a cross-only term over
+`batch.ks`/`batch.Shost` and a self-only term over `batch.ks_gg`/`Sk_gg`; both arguments are empty
+and this reduces to the pre-split single-table formula, byte for byte, when `batch` has no split.
 """
 @kernel function evaluate_move_kernel!(
-        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), batch, guest::Guest{T, N},
-        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(rng_seed),
-        @Const(rng_counter), movetype::Int32, @Const(step_trans), @Const(step_rot), nblocks_per_chain::Int32, ::Val{G}
+        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), @Const(Sk_gg), batch, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(k_gg_offsets),
+        @Const(rng_seed), @Const(rng_counter), movetype::Int32, @Const(step_trans), @Const(step_rot), nblocks_per_chain::Int32,
+        ::Val{G}
     ) where {T, N, G}
     tid = @index(Local, Linear)
     grp = @index(Group, NTuple)
@@ -405,10 +411,17 @@ blocks.
         batch.positions, batch.types, batch.charges, (a0 + lane):L:(a0 + natoms), A, invA, alpha
     )
 
+    # Guest-guest real space attaches to the guest-guest splitting parameter, which equals the
+    # host's own whenever `batch` has no `ewald_gg` split (`FrameworkBatch`'s docstring) -- so
+    # this substitution changes nothing unless the split is actually in use.
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
+
     gr_lo = gr0 + one(gr0); gr_hi = gr0 + occupancy[n]
     ΔU_gg_partial = guest_guest_move_delta(
         guest, refpoints, orientations, (gr_lo + lane - 1):L:gr_hi, i, oldpos, oldq, newpos, newq,
-        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, ewald_cutoff_gg, A, invA, alpha_gg
     )
 
     # `k_offsets` (this kernel's own argument, `state.k_offsets`) ranges over `Sk`, which stays
@@ -417,12 +430,33 @@ blocks.
     # (`FrameworkBatch`'s docstring). The two ranges have the same length (framework `fw`'s own
     # k-vector count) but different absolute starts, so each is built from its own offsets and
     # paired by the shared relative stride `lane:L`, never by one absolute range applied to both.
+    #
+    # Without a split, `ks`/`Sk` hold the single combined table and `reciprocal_move_delta_energy`
+    # (the pre-existing formula) is exact, unchanged. With a split (`has_ewald_split(batch)`),
+    # `ks`/`Shost` (the coupled subset) carry the host-guest cross term alone
+    # (`reciprocal_cross_delta_energy`) and `ks_gg`/`Sk_gg` (every k-vector at `alpha_gg`) carry
+    # the guest self term alone, via the SAME `reciprocal_move_delta_energy` formula the unsplit
+    # path uses -- matching `guest_move_delta`'s own split (`src/guest.jl`).
     kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
     kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
-    ΔU_recip_partial = reciprocal_move_delta_energy(
-        guest, oldpos, oldq, newpos, newq, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
-        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
-    )
+    ΔU_recip_partial = if split
+        ΔU_cross = reciprocal_cross_delta_energy(
+            guest, oldpos, oldq, newpos, newq, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(batch.Shost, (kr_lo_b + lane - 1):L:kr_hi_b)
+        )
+        kr_lo_gg = k_gg_offsets[n] + one(eltype(k_gg_offsets)); kr_hi_gg = k_gg_offsets[n + 1]
+        kr_lo_b_gg = batch.k_gg_offsets[fw] + one(eltype(batch.k_gg_offsets)); kr_hi_b_gg = batch.k_gg_offsets[fw + 1]
+        ΔU_self = reciprocal_move_delta_energy(
+            guest, oldpos, oldq, newpos, newq, view(batch.ks_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg),
+            view(batch.kprefactor_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg), view(Sk_gg, (kr_lo_gg + lane - 1):L:kr_hi_gg)
+        )
+        ΔU_cross + ΔU_self
+    else
+        reciprocal_move_delta_energy(
+            guest, oldpos, oldq, newpos, newq, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+        )
+    end
 
     buf1 = @localmem T (G,)
     buf2 = @localmem T (G,)
@@ -503,6 +537,25 @@ workspace, regardless of acceptance, for `apply_sk_kernel!` to read; it only act
     move_newpos[n] = newpos; move_newq[n] = newq
 end
 
+# One k-table's share of an accepted move's structure-factor update, over the disjoint
+# stride-`L` slice `lane:L:(kr_hi-kr_lo+1)` of `(kr_lo, kr_hi)` (`Sk`'s own range) paired with
+# `(kr_lo_b, kr_hi_b)` (`ks`'s own range, `FrameworkBatch`'s docstring on the two ranges'
+# same-length-different-start relationship): shared by `apply_sk_kernel!` (the coupled/combined
+# table) and `apply_exchange_sk_kernel!`, and by the same call applied a second time to the
+# guest-guest table (`ks_gg`/`Sk_gg`) when `has_ewald_split(batch)` -- `ds = Snew - Sold`
+# (`_reciprocal_move_delta_k`) does not depend on `Sk`/`Shost` at all, so the same formula updates
+# either table correctly regardless of which reciprocal-energy formula scored the move.
+@inline function _apply_ds_range!(Sk, sk_abs_accum, ks, charges::SVector{N, T}, old_sites, new_sites, ds_bound::T, kr_lo, kr_hi, kr_lo_b, L, lane) where {N, T}
+    for rel in lane:L:(kr_hi - kr_lo + one(kr_hi))
+        kk = kr_lo + rel - one(rel)
+        kk_b = kr_lo_b + rel - one(rel)
+        ds, _ = _reciprocal_move_delta_k(ks[kk_b], charges, old_sites, new_sites, Sk[kk])
+        Sk[kk] += ds
+        sk_abs_accum[kk] += ds_bound
+    end
+    return nothing
+end
+
 """
     apply_sk_kernel!(Sk, sk_abs_accum, ks, accept_flag, move_oldpos, move_oldq, move_newpos,
                      move_newq, guest, k_offsets)
@@ -523,10 +576,17 @@ change), so it costs nothing to recompute per work-item. Rotations are hoisted o
 this package. A rejected chain's `accept_flag` is `0` and this kernel does nothing for it, so a
 rejected move leaves `Sk`/`sk_abs_accum` untouched, exactly as `guest_move_delta`'s own contract
 requires.
+
+When `has_ewald_split(batch)`, the identical update additionally runs against the guest-guest
+table (`batch.ks_gg`/`Sk_gg`/`sk_abs_accum_gg`, `state`'s own `k_gg_offsets`) via
+`_apply_ds_range!`: `ds` does not depend on `Sk`/`Shost`, so the SAME structure-factor change
+applies to either table, keeping `Sk_gg` in step with the `ΔS_gg` `guest_move_delta`'s split
+branch computes (`src/guest.jl`). `k_gg_offsets` is empty for every system when
+`!has_ewald_split(batch)`, so this is a no-op there rather than a branch.
 """
 @kernel function apply_sk_kernel!(
-        Sk, sk_abs_accum, batch, @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq), @Const(move_newpos),
-        @Const(move_newq), guest::Guest{T, N}, @Const(k_offsets)
+        Sk, sk_abs_accum, Sk_gg, sk_abs_accum_gg, batch, @Const(accept_flag), @Const(move_oldpos), @Const(move_oldq),
+        @Const(move_newpos), @Const(move_newq), guest::Guest{T, N}, @Const(k_offsets), @Const(k_gg_offsets)
     ) where {T, N}
     idx = @index(Global, NTuple)
     lane, n = idx[1], idx[2]
@@ -541,14 +601,11 @@ requires.
         # absolute start, so the loop pairs them by the shared relative offset `rel`.
         fw = batch.framework_of[n]
         kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
-        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
-        for rel in lane:L:(kr_hi - kr_lo + one(kr_hi))
-            kk = kr_lo + rel - one(rel)
-            kk_b = kr_lo_b + rel - one(rel)
-            ds, _ = _reciprocal_move_delta_k(batch.ks[kk_b], guest.charges, old_sites, new_sites, Sk[kk])
-            Sk[kk] += ds
-            sk_abs_accum[kk] += ds_bound
-        end
+        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets))
+        _apply_ds_range!(Sk, sk_abs_accum, batch.ks, guest.charges, old_sites, new_sites, ds_bound, kr_lo, kr_hi, kr_lo_b, L, lane)
+        kr_lo_gg = k_gg_offsets[n] + one(eltype(k_gg_offsets)); kr_hi_gg = k_gg_offsets[n + 1]
+        kr_lo_b_gg = batch.k_gg_offsets[fw] + one(eltype(batch.k_gg_offsets))
+        _apply_ds_range!(Sk_gg, sk_abs_accum_gg, batch.ks_gg, guest.charges, old_sites, new_sites, ds_bound, kr_lo_gg, kr_hi_gg, kr_lo_b_gg, L, lane)
     end
 end
 
@@ -592,9 +649,9 @@ function mc_step!(
     nsys = state.nsys
 
     evaluate_move_kernel!(backend)(
-        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, batch, guest, guest_types,
-        state.guest_offsets, state.occupancy, state.k_offsets, state.rng_seed, state.rng_counter, mt, step_trans,
-        step_rot, nbpc, Val(G);
+        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, state.Sk_gg, batch, guest, guest_types,
+        state.guest_offsets, state.occupancy, state.k_offsets, state.k_gg_offsets, state.rng_seed, state.rng_counter, mt,
+        step_trans, step_rot, nbpc, Val(G);
         ndrange = (G, nblocks_per_chain, nsys), workgroupsize = (G, 1, 1)
     )
     KernelAbstractions.synchronize(backend)
@@ -609,8 +666,8 @@ function mc_step!(
     KernelAbstractions.synchronize(backend)
 
     apply_sk_kernel!(backend)(
-        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_oldpos, ws.move_oldq, ws.move_newpos,
-        ws.move_newq, guest, state.k_offsets;
+        state.Sk, state.sk_abs_accum, state.Sk_gg, state.sk_abs_accum_gg, batch, ws.accept_flag, ws.move_oldpos, ws.move_oldq,
+        ws.move_newpos, ws.move_newq, guest, state.k_offsets, state.k_gg_offsets;
         ndrange = (nblocks_per_chain * G, nsys)
     )
     KernelAbstractions.synchronize(backend)
@@ -698,6 +755,28 @@ function reciprocal_exchange_energy(guest::Guest{T, N}, old_sites, new_sites, ks
 end
 
 """
+    reciprocal_exchange_cross_energy(guest, old_sites, new_sites, ks, kprefactor, Shost) -> ΔU
+
+`reciprocal_exchange_energy`'s cross-only counterpart, for the coupled (`ks`/`Shost`) table under
+`has_ewald_split`: the same insertion/deletion convention via `no_guest_sites`, but the linear
+formula `_cross_move_delta_k` uses against the host's own (constant) structure factor rather than
+the quadratic formula `_reciprocal_move_delta_k` uses against the running total `Sk` — matching
+`reciprocal_cross_delta_energy`'s own relationship to `reciprocal_move_delta_energy`
+(`src/guest.jl`). `evaluate_insert_kernel!`/`evaluate_delete_kernel!` pair this with
+`reciprocal_exchange_energy` called on the guest-guest table (`batch.ks_gg`/`Sk_gg`) for the self
+term, exactly as `guest_move_delta`'s split branch pairs `reciprocal_cross_delta!` with
+`reciprocal_move_delta!`.
+"""
+function reciprocal_exchange_cross_energy(guest::Guest{T, N}, old_sites, new_sites, ks, kprefactor, Shost) where {T, N}
+    ΔU = zero(T)
+    for i in eachindex(ks)
+        _, contribution = _cross_move_delta_k(ks[i], guest.charges, old_sites, new_sites, Shost[i])
+        ΔU += kprefactor[i] * contribution
+    end
+    return T(KE) * ΔU
+end
+
+"""
     exchange_constant_term(ff, batch, guest, n, Ng) -> value
 
 The pose-independent part of a μVT exchange move's `ΔU` for system `n`, currently holding `Ng`
@@ -722,8 +801,20 @@ against a from-scratch `total_energy` recomputation.
 `exchange_constant_coeffs`, below, exploits that this is exactly AFFINE in `Ng`: `tail_delta`
 (underlying `guest_tail_correction`) is quadratic in the guest count with no constant term
 (`8π/(3V) · Σ_ab (2·counts[i]·N·gcounts[j] + N²·gcounts[i]·gcounts[j])·c(a,b)`), so its forward
-difference is affine in `Ng`; `net_at(m)` is the same quadratic-in-`m` shape, so its forward
-difference is affine too; and `KE*(gself+gexcl)` does not depend on `Ng` at all.
+difference is affine in `Ng`; `net_at(m)` is the same quadratic-in-`m` shape (split or not, see
+below), so its forward difference is affine too; and `KE*(gself+gexcl)` does not depend on `Ng` at
+all.
+
+When `has_ewald_split(batch)`, `gself`/`gexcl` attach to `alpha_gg`/`ewald_cutoff_gg` rather than
+the host's own, and `net_at` splits its cross (bilinear in the host's and guests' charge, attached
+to `alpha`) and guest-self (quadratic in the guests' charge alone, attached to `alpha_gg`) pieces
+apart exactly as `total_energy`'s own split branch does (`src/guest.jl`) — required for
+`audit_energy!` to agree with the running energy these coefficients feed into `decide_insert_kernel!`/
+`decide_delete_kernel!`. `alpha_gg`/`ewald_cutoff_gg` equal the host's own when `!has_ewald_split`,
+so both branches compute the identical value there; the branch itself is kept (rather than always
+taking the split path) because the two branches sum the same terms in a different order and are
+not required to be BIT-identical, only equal, and gate 1 (bit-identical results with the split
+disabled) needs the former.
 """
 function exchange_constant_term(ff::ForceField{T}, batch::FrameworkBatch{T}, guest::Guest{T, N}, n::Integer, Ng::Integer) where {T, N}
     fw = batch.framework_of[n]
@@ -740,8 +831,15 @@ function exchange_constant_term(ff::ForceField{T}, batch::FrameworkBatch{T}, gue
     end
     Qh = sum(view(batch.charges, (a0 + 1):(a0 + natoms)))
     Qg = sum(guest.charges)
-    net_at(m) = -T(KE) * T(π) / (2 * V * alpha^2) * ((Qh + m * Qg)^2 - Qh^2)
-    gself, gexcl = guest_self_terms(guest, alpha, batch.ewald_cutoff)
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
+    net_at(m) = if split
+        -T(KE) * T(π) / (V * alpha^2) * Qh * (m * Qg) - T(KE) * T(π) / (2 * V * alpha_gg^2) * (m * Qg)^2
+    else
+        -T(KE) * T(π) / (2 * V * alpha^2) * ((Qh + m * Qg)^2 - Qh^2)
+    end
+    gself, gexcl = guest_self_terms(guest, alpha_gg, ewald_cutoff_gg)
     return T(KE) * (gself + gexcl) +
         guest_tail_correction(ff, host_counts, gcounts, Ng + 1, V) - guest_tail_correction(ff, host_counts, gcounts, Ng, V) +
         net_at(Ng + 1) - net_at(Ng)
@@ -823,11 +921,19 @@ scaled where needed), matching `host_energy[i]`'s per-guest-cache convention so
 `decide_insert_kernel!` can write `partial1`'s sum straight into `host_energy` on acceptance;
 `buf2` accumulates the guest-guest and reciprocal terms together, which never feed the cache.
 `decide_insert_kernel!` sums across blocks.
+
+Guest-guest real space and, when `has_ewald_split(batch)`, the k-vector loop split the same way
+`evaluate_move_kernel!`'s do: `ewald_cutoff_gg`/`alpha_gg` for the guest-guest pair term, a
+cross-only term over `batch.ks`/`batch.Shost` (`reciprocal_exchange_cross_energy`) plus a self-only
+term over `batch.ks_gg`/`Sk_gg` (`reciprocal_exchange_energy`, the same formula applied to the
+guest-only table) in place of the single combined `reciprocal_exchange_energy` call over `Sk` —
+`Sk_gg`/`k_gg_offsets` are empty when `!has_ewald_split(batch)`, so the split path is never taken
+there.
 """
 @kernel function evaluate_insert_kernel!(
-        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), batch, guest::Guest{T, N},
-        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(rng_seed),
-        @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
+        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), @Const(Sk_gg), batch, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(k_gg_offsets),
+        @Const(rng_seed), @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
     ) where {T, N, G}
     tid = @index(Local, Linear)
     grp = @index(Group, NTuple)
@@ -851,20 +957,38 @@ scaled where needed), matching `host_energy[i]`'s per-guest-cache convention so
         batch.positions, batch.types, batch.charges, (a0 + lane):L:(a0 + natoms), A, invA, alpha
     )
 
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
+
     gr_lo = gr0 + one(gr0); gr_hi = gr0 + Ng
     E_lj_partial, E_sr_partial = guest_pair_realspace_energy_range(
         guest, pos, q, refpoints, orientations, (gr_lo + lane - 1):L:gr_hi, zero(gr0),
-        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, ewald_cutoff_gg, A, invA, alpha_gg
     )
 
-    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
-    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
     zero_sites = no_guest_sites(T, Val(N))
     test_sites = guest_sites_at(guest, pos, q)
-    ΔU_recip_partial = reciprocal_exchange_energy(
-        guest, zero_sites, test_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
-        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
-    )
+    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+    ΔU_recip_partial = if split
+        ΔU_cross = reciprocal_exchange_cross_energy(
+            guest, zero_sites, test_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(batch.Shost, (kr_lo_b + lane - 1):L:kr_hi_b)
+        )
+        kr_lo_gg = k_gg_offsets[n] + one(eltype(k_gg_offsets)); kr_hi_gg = k_gg_offsets[n + 1]
+        kr_lo_b_gg = batch.k_gg_offsets[fw] + one(eltype(batch.k_gg_offsets)); kr_hi_b_gg = batch.k_gg_offsets[fw + 1]
+        ΔU_self = reciprocal_exchange_energy(
+            guest, zero_sites, test_sites, view(batch.ks_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg),
+            view(batch.kprefactor_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg), view(Sk_gg, (kr_lo_gg + lane - 1):L:kr_hi_gg)
+        )
+        ΔU_cross + ΔU_self
+    else
+        reciprocal_exchange_energy(
+            guest, zero_sites, test_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+        )
+    end
 
     buf1 = @localmem T (G,)
     buf2 = @localmem T (G,)
@@ -979,12 +1103,13 @@ SAME guest index every work-item of every workgroup assigned to chain `n` would 
 keyed only on `(rng_seed[n], rng_counter[n])`. `buf1` accumulates the guest-guest term alone (the
 piece `decide_delete_kernel!` negates together with the cached `host_energy[i]`); `buf2`
 accumulates the reciprocal term, which is added rather than negated (`decide_delete_kernel!`'s own
-docstring explains why).
+docstring explains why). Guest-guest real space and the k-vector loop split by `has_ewald_split`
+the same way `evaluate_insert_kernel!`'s own do (that kernel's docstring).
 """
 @kernel function evaluate_delete_kernel!(
-        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), batch, guest::Guest{T, N},
-        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(rng_seed),
-        @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
+        partial1, partial2, @Const(refpoints), @Const(orientations), @Const(Sk), @Const(Sk_gg), batch, guest::Guest{T, N},
+        guest_types::SVector{N, Int}, @Const(guest_offsets), @Const(occupancy), @Const(k_offsets), @Const(k_gg_offsets),
+        @Const(rng_seed), @Const(rng_counter), nblocks_per_chain::Int32, ::Val{G}
     ) where {T, N, G}
     tid = @index(Local, Linear)
     grp = @index(Group, NTuple)
@@ -999,21 +1124,38 @@ docstring explains why).
     lane = (b - one(Int32)) * G + tid
 
     A = batch.cells[fw]; invA = batch.invcells[fw]; alpha = batch.alphas[fw]
+    split = has_ewald_split(batch)
+    alpha_gg = split ? batch.alphas_gg[fw] : alpha
+    ewald_cutoff_gg = batch.ewald_cutoff_gg
     gr0 = guest_offsets[n]
     gr_lo = gr0 + one(gr0); gr_hi = gr0 + Ng
     E_lj_partial, E_sr_partial = guest_pair_realspace_energy_range(
         guest, pos, q, refpoints, orientations, (gr_lo + lane - 1):L:gr_hi, i,
-        batch.sigma, batch.epsilon, guest_types, batch.cutoff, batch.ewald_cutoff, A, invA, alpha
+        batch.sigma, batch.epsilon, guest_types, batch.cutoff, ewald_cutoff_gg, A, invA, alpha_gg
     )
 
-    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
-    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
     zero_sites = no_guest_sites(T, Val(N))
     sites_i = guest_sites_at(guest, pos, q)
-    ΔU_recip_partial = reciprocal_exchange_energy(
-        guest, sites_i, zero_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
-        view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
-    )
+    kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
+    kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
+    ΔU_recip_partial = if split
+        ΔU_cross = reciprocal_exchange_cross_energy(
+            guest, sites_i, zero_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(batch.Shost, (kr_lo_b + lane - 1):L:kr_hi_b)
+        )
+        kr_lo_gg = k_gg_offsets[n] + one(eltype(k_gg_offsets)); kr_hi_gg = k_gg_offsets[n + 1]
+        kr_lo_b_gg = batch.k_gg_offsets[fw] + one(eltype(batch.k_gg_offsets)); kr_hi_b_gg = batch.k_gg_offsets[fw + 1]
+        ΔU_self = reciprocal_exchange_energy(
+            guest, sites_i, zero_sites, view(batch.ks_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg),
+            view(batch.kprefactor_gg, (kr_lo_b_gg + lane - 1):L:kr_hi_b_gg), view(Sk_gg, (kr_lo_gg + lane - 1):L:kr_hi_gg)
+        )
+        ΔU_cross + ΔU_self
+    else
+        reciprocal_exchange_energy(
+            guest, sites_i, zero_sites, view(batch.ks, (kr_lo_b + lane - 1):L:kr_hi_b),
+            view(batch.kprefactor, (kr_lo_b + lane - 1):L:kr_hi_b), view(Sk, (kr_lo + lane - 1):L:kr_hi)
+        )
+    end
 
     buf1 = @localmem T (G,)
     buf2 = @localmem T (G,)
@@ -1126,10 +1268,15 @@ use to score the move, fanned across work-items instead of read by one. An excha
 ONE real pose to give this kernel, unlike `apply_sk_kernel!`'s old-and-new pair for a single guest
 that moved, so only `move_newpos`/`move_newq` (`MoveWorkspace`'s docstring) are read here.
 A rejected chain's `accept_flag` is `0` and this kernel does nothing for it.
+
+When `has_ewald_split(batch)`, the identical update additionally runs against the guest-guest
+table (`batch.ks_gg`/`Sk_gg`/`sk_abs_accum_gg`), exactly as `apply_sk_kernel!`'s own docstring
+describes for the NVT moves; `k_gg_offsets` is empty for every system when
+`!has_ewald_split(batch)`, so this is a no-op there.
 """
 @kernel function apply_exchange_sk_kernel!(
-        Sk, sk_abs_accum, batch, @Const(accept_flag), @Const(pose_pos), @Const(pose_q), guest::Guest{T, N},
-        @Const(k_offsets), ::Val{INSERT}
+        Sk, sk_abs_accum, Sk_gg, sk_abs_accum_gg, batch, @Const(accept_flag), @Const(pose_pos), @Const(pose_q),
+        guest::Guest{T, N}, @Const(k_offsets), @Const(k_gg_offsets), ::Val{INSERT}
     ) where {T, N, INSERT}
     idx = @index(Global, NTuple)
     lane, n = idx[1], idx[2]
@@ -1142,14 +1289,11 @@ A rejected chain's `accept_flag` is `0` and this kernel does nothing for it.
         ds_bound = 2 * sum(abs, guest.charges)
         fw = batch.framework_of[n]
         kr_lo = k_offsets[n] + one(eltype(k_offsets)); kr_hi = k_offsets[n + 1]
-        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets)); kr_hi_b = batch.k_offsets[fw + 1]
-        for rel in lane:L:(kr_hi - kr_lo + one(kr_hi))
-            kk = kr_lo + rel - one(rel)
-            kk_b = kr_lo_b + rel - one(rel)
-            ds, _ = _reciprocal_move_delta_k(batch.ks[kk_b], guest.charges, old_sites, new_sites, Sk[kk])
-            Sk[kk] += ds
-            sk_abs_accum[kk] += ds_bound
-        end
+        kr_lo_b = batch.k_offsets[fw] + one(eltype(batch.k_offsets))
+        _apply_ds_range!(Sk, sk_abs_accum, batch.ks, guest.charges, old_sites, new_sites, ds_bound, kr_lo, kr_hi, kr_lo_b, L, lane)
+        kr_lo_gg = k_gg_offsets[n] + one(eltype(k_gg_offsets)); kr_hi_gg = k_gg_offsets[n + 1]
+        kr_lo_b_gg = batch.k_gg_offsets[fw] + one(eltype(batch.k_gg_offsets))
+        _apply_ds_range!(Sk_gg, sk_abs_accum_gg, batch.ks_gg, guest.charges, old_sites, new_sites, ds_bound, kr_lo_gg, kr_hi_gg, kr_lo_b_gg, L, lane)
     end
 end
 
@@ -1207,8 +1351,9 @@ function mc_insert!(
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
 
     evaluate_insert_kernel!(backend)(
-        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, batch, guest, guest_types,
-        state.guest_offsets, state.occupancy, state.k_offsets, state.rng_seed, state.rng_counter, nbpc, Val(G);
+        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, state.Sk_gg, batch, guest, guest_types,
+        state.guest_offsets, state.occupancy, state.k_offsets, state.k_gg_offsets, state.rng_seed, state.rng_counter, nbpc,
+        Val(G);
         ndrange = (G, nblocks_per_chain, nsys), workgroupsize = (G, 1, 1)
     )
     KernelAbstractions.synchronize(backend)
@@ -1221,7 +1366,8 @@ function mc_insert!(
     KernelAbstractions.synchronize(backend)
 
     apply_exchange_sk_kernel!(backend)(
-        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_newpos, ws.move_newq, guest, state.k_offsets, Val(true);
+        state.Sk, state.sk_abs_accum, state.Sk_gg, state.sk_abs_accum_gg, batch, ws.accept_flag, ws.move_newpos,
+        ws.move_newq, guest, state.k_offsets, state.k_gg_offsets, Val(true);
         ndrange = (nblocks_per_chain * G, nsys)
     )
     KernelAbstractions.synchronize(backend)
@@ -1252,8 +1398,9 @@ function mc_delete!(
     dfug = adapt(backend, T(PASCAL) .* T.(fugacity))
 
     evaluate_delete_kernel!(backend)(
-        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, batch, guest, guest_types,
-        state.guest_offsets, state.occupancy, state.k_offsets, state.rng_seed, state.rng_counter, nbpc, Val(G);
+        ws.partial1, ws.partial2, state.refpoints, state.orientations, state.Sk, state.Sk_gg, batch, guest, guest_types,
+        state.guest_offsets, state.occupancy, state.k_offsets, state.k_gg_offsets, state.rng_seed, state.rng_counter, nbpc,
+        Val(G);
         ndrange = (G, nblocks_per_chain, nsys), workgroupsize = (G, 1, 1)
     )
     KernelAbstractions.synchronize(backend)
@@ -1266,7 +1413,8 @@ function mc_delete!(
     KernelAbstractions.synchronize(backend)
 
     apply_exchange_sk_kernel!(backend)(
-        state.Sk, state.sk_abs_accum, batch, ws.accept_flag, ws.move_newpos, ws.move_newq, guest, state.k_offsets, Val(false);
+        state.Sk, state.sk_abs_accum, state.Sk_gg, state.sk_abs_accum_gg, batch, ws.accept_flag, ws.move_newpos,
+        ws.move_newq, guest, state.k_offsets, state.k_gg_offsets, Val(false);
         ndrange = (nblocks_per_chain * G, nsys)
     )
     KernelAbstractions.synchronize(backend)

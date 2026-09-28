@@ -1,0 +1,118 @@
+{
+  "meta": {
+    "host": "neuromancer",
+    "julia": "1.13.0",
+    "date": "2026-09-28T02:09:23.830",
+    "gpu": "NVIDIA GeForce RTX 4070",
+    "backend": "cuda",
+    "nguests": 50,
+    "nsys_list": [
+      1,
+      256
+    ],
+    "groupsize": 256,
+    "cutoff_gg": 16.5,
+    "bench_seconds": 10,
+    "bench_samples": 10,
+    "commit": "f3c92f1",
+    "description": "Gate 5: mc_step!/mc_exchange! per-move cost with the k-space split off (fullk=true) against on (ewald_gg at cutoff_gg), RUBTAK 3x3x3 + 50 CO2 per system."
+  },
+  "results": [
+    {
+      "precision": "Float64",
+      "nsys": 1,
+      "off": {
+        "nsys": 1,
+        "split": false,
+        "n_cross": 4587,
+        "n_self": 0,
+        "nblocks_per_chain": 256,
+        "nvt_us": 465.56800000000004,
+        "gcmc_us": 306.23949999999996
+      },
+      "on": {
+        "nsys": 1,
+        "split": true,
+        "n_cross": 190,
+        "n_self": 1692,
+        "nblocks_per_chain": 256,
+        "nvt_us": 496.12000000000006,
+        "gcmc_us": 337.74850000000004
+      },
+      "speedup_nvt": 0.9384181246472627,
+      "speedup_gcmc": 0.9067086900459955
+    },
+    {
+      "precision": "Float64",
+      "nsys": 256,
+      "off": {
+        "nsys": 256,
+        "split": false,
+        "n_cross": 4587,
+        "n_self": 0,
+        "nblocks_per_chain": 1,
+        "nvt_us": 13.241482421875,
+        "gcmc_us": 9.117597656250002
+      },
+      "on": {
+        "nsys": 256,
+        "split": true,
+        "n_cross": 190,
+        "n_self": 1692,
+        "nblocks_per_chain": 1,
+        "nvt_us": 8.695126953125001,
+        "gcmc_us": 7.0037734375
+      },
+      "speedup_nvt": 1.5228624600030771,
+      "speedup_gcmc": 1.301812192757699
+    },
+    {
+      "precision": "Float32",
+      "nsys": 1,
+      "off": {
+        "nsys": 1,
+        "split": false,
+        "n_cross": 4587,
+        "n_self": 0,
+        "nblocks_per_chain": 1,
+        "nvt_us": 116.4985,
+        "gcmc_us": 106.10400000000001
+      },
+      "on": {
+        "nsys": 1,
+        "split": true,
+        "n_cross": 190,
+        "n_self": 1692,
+        "nblocks_per_chain": 1,
+        "nvt_us": 104.10000000000001,
+        "gcmc_us": 88.21050000000001
+      },
+      "speedup_nvt": 1.1191018251681075,
+      "speedup_gcmc": 1.202850000850239
+    },
+    {
+      "precision": "Float32",
+      "nsys": 256,
+      "off": {
+        "nsys": 256,
+        "split": false,
+        "n_cross": 4587,
+        "n_self": 0,
+        "nblocks_per_chain": 1,
+        "nvt_us": 2.0252421875,
+        "gcmc_us": 1.343298828125
+      },
+      "on": {
+        "nsys": 256,
+        "split": true,
+        "n_cross": 190,
+        "n_self": 1692,
+        "nblocks_per_chain": 1,
+        "nvt_us": 2.01533984375,
+        "gcmc_us": 1.2026464843750002
+      },
+      "speedup_nvt": 1.0049134858226065,
+      "speedup_gcmc": 1.116952359298747
+    }
+  ]
+}
